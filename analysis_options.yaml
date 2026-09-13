@@ -1,0 +1,7 @@
+# 用 Flutter 官方推荐规则即可；不过分自定义，避免新手看到一堆警告。
+analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - windows/**
+include: package:flutter_lints/flutter.yaml

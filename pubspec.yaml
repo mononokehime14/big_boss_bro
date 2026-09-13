@@ -1,0 +1,39 @@
+name: big_boss_bro
+description: 餐厅点单打单应用（类Loyverse）。跨平台 Flutter：Android + Windows。
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # 状态管理（简单易用，适合新手）
+  provider: ^6.1.1
+  # 本地设置持久化（打印机地址、纸宽、店名、货币符号）
+  shared_preferences: ^2.2.2
+
+  # ---- 打印 ----
+  # 蓝牙 SPP 传输（安卓）
+  flutter_bluetooth_serial: ^0.4.0
+  # Android 12+ 运行时蓝牙权限（BLUETOOTH_SCAN / BLUETOOTH_CONNECT）
+  permission_handler: ^11.3.0
+  # 中文小票编码：热敏打印机多数用 GBK，不是 UTF-8，避免乱码
+  gbk_codec: ^0.4.0
+  # Windows 系统打印机（USB）走 spooler RAW 通道，需要 dart:ffi 辅助库
+  ffi: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  # 资产（图片/图标）以后放这里：assets/images/
+  assets:
+    - assets/
