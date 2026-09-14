@@ -26,37 +26,67 @@ enum OrderStatus {
       );
 }
 
-/// 订单里快照的一行（固化菜名/份数/单价，不依赖菜单，方便存历史）。
+/// 订单里快照的一行（固化菜名/份数/单价/选项/备注，不依赖菜单，方便存历史）。
 class OrderLine {
   final String name;
   final int quantity;
   final double unitPrice;
 
+  /// 所选的定制项值，例如 ['Grande']。
+  final List<String> options;
+
+  /// 「其他备注」，例如“米饭替换成面条”。
+  final String note;
+
   const OrderLine({
     required this.name,
     required this.quantity,
     required this.unitPrice,
+    this.options = const [],
+    this.note = '',
   });
 
   double get subtotal => unitPrice * quantity;
 
-  OrderLine copyWith({String? name, int? quantity, double? unitPrice}) =>
+  /// 选项 + 备注的简短描述（打在小票里菜名的下面）。
+  String get detail {
+    final parts = <String>[];
+    if (options.isNotEmpty) parts.add(options.join(' / '));
+    if (note.trim().isNotEmpty) parts.add(note.trim());
+    return parts.join(' · ');
+  }
+
+  OrderLine copyWith({
+    String? name,
+    int? quantity,
+    double? unitPrice,
+    List<String>? options,
+    String? note,
+  }) =>
       OrderLine(
         name: name ?? this.name,
         quantity: quantity ?? this.quantity,
         unitPrice: unitPrice ?? this.unitPrice,
+        options: options ?? this.options,
+        note: note ?? this.note,
       );
 
   Map<String, dynamic> toJson() => {
         'name': name,
         'quantity': quantity,
         'unitPrice': unitPrice,
+        'options': options,
+        'note': note,
       };
 
   factory OrderLine.fromJson(Map<String, dynamic> json) => OrderLine(
         name: json['name'] as String,
         quantity: (json['quantity'] as num).toInt(),
         unitPrice: (json['unitPrice'] as num).toDouble(),
+        options:
+            (json['options'] as List?)?.map((e) => e.toString()).toList() ??
+                const [],
+        note: (json['note'] as String?) ?? '',
       );
 }
 

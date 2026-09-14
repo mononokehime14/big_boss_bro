@@ -70,9 +70,11 @@ flutter run -d windows       # 编译并弹出收银窗口
 
 **② 配打印机（重点）**
 
-1. 设置 → **打印机** → 打印方式选「**Windows 打印机（USB）**」→「**选择打印机**」→ 选你那台 → 「**打印测试页**」。
-   （详细说明见 `setup.md` 第 5 节；网络/以太网打印机就选「网络（IP）」填 IP + 9100。）
-2. 测试页若中文正常、宽度正常，就可以正式用了。
+1. 设置 → **打印机** → 打印方式选「**Windows 打印机（USB）**」→「**选择打印机**」→ 选你那台。
+2. 设置里「**纸宽**」选 **80mm**；「**铺满纸宽（Font A）**」保持**开启**。
+3. 「**小票编码**」：中文机用 `gbk`；若你的机器打不了中文，就切 `latin1` 或 `cp850`，并把「界面语言」切成**西语/英语**。
+4. 点「**打印测试页**」：看那条 `----` 刻度尺**是否顶到纸两边**、西语重音行/中文行**是否正常**。
+   乱码就换一个编码再打一次（详细排查见 `setup.md` 第 5 节 ④）。
 
 **③ 按这个顺序点一遍**
 
@@ -85,7 +87,33 @@ flutter run -d windows       # 编译并弹出收银窗口
 | 4 | 订单页「进行中」→ 该单点「**结账**」→ 选支付方式 | 单子移到「已结单」；**打出一张顾客小票**（含单价/金额/支付方式） |
 | 5 | 关掉 App 再启动 | 订单仍在（持久化） |
 
-**④ 下一轮要做的（已排好）**：Excel 导入菜单 + 每道菜的个性化定制（选项/其他备注/常用标签）。
+**④ 验证 Excel 导入 + 个性化定制（本轮新功能）**
+
+```powershell
+flutter pub get     # ← 新依赖 file_picker / archive，必须先拉
+flutter test        # 应全绿（含解析你那份真实 xlsx 的测试）
+flutter run -d windows
+```
+
+| 步骤 | 操作 | 期望 |
+|---|---|---|
+| 1 | 设置 → **从 Excel 导入菜单** → 「选择 Excel 文件」→ 选 `data/palacio_royal_09_12_2026.xlsx` | 预览显示 **分类 2 / 菜品 12 / 定制项 12**，并提示「没有价格列」 |
+| 2 | 点「导入」 | 菜单被替换 |
+| 3 | 看点单页 | **先显示两个彩色「种类」卡片**（Vegetables 红 / Arroz 蓝，相邻不同色）+ 各自的菜品数 |
+| 4 | 点一个种类 | 顶部出现该**种类的颜色条**（显示种类名），下面才是该种类的菜品；**菜品格子底色 = 种类颜色、白字显示菜名+价格**（没有图案占位） |
+| 5 | 点顶部颜色条 | 返回种类列表 |
+| 6 | 点一道菜（如 `Verdura Cantones`） | **屏幕中间**弹出「个人化定制」：`Size` = Mediano / Grande（默认第一个） |
+| 7 | 选 `Grande` → 「其他备注」输入 `米饭换面条` → 勾选「存为常用标签」→ 加入购物车 | 购物车该行**菜名下面显示** `Grande · 米饭换面条`，行首是**种类颜色的小圆点** |
+| 8 | 再点同一道菜选 `Mediano` | 购物车里**另起一行**（同菜不同选项 = 不同行） |
+| 9 | 点一道**没有定制项**的菜 | **直接加购**；提示条上有「备注」按钮可补备注；**长按**任何菜都能打开定制窗 |
+| 10 | 设置 → 选择打印机 | 打印机列表也是**屏幕中间**的对话框 |
+| 11 | 下单 → 打厨房单；结账 → 打顾客小票 | 两张票上**菜名下面都印出**选项和备注 |
+| 12 | 菜品管理 → 编辑分类 | 可以**手动挑分类颜色**（第一个是「自动」） |
+
+> 现在没有价格列（价格都是 0）。想显示价格：在 Excel 里加一列 **`价格`**（支持 `12,50` 这种西语写法），再导入一次；
+> 或直接在「菜品管理」里逐个改价。
+
+**⑤ 还没做的**：菜品图片、折扣、税、日结算、AA 分开支付、西语英语界面补全。
 
 ---
 
@@ -263,3 +291,92 @@ C:\flutter\bin\flutter  build apk --release
 - `2026-01-01` **修复 Windows 构建报错**：`Method not found: 'free'`（`windows_print_service.dart`）。
   根因：`package:ffi` 已移除顶层 `free()`。修：全部改为 `calloc.free(ptr)` / `malloc.free(ptr)`（谁分配谁释放），
   并把内存分配提到 try 前、在 `finally` 统一释放。详见 `troubleshooting.md` 问题 5。
+- `2026-01-01` **修复小票乱码 + 80mm 纸宽铺满（你实测反馈）**：
+  - 乱码根因：中文热敏机要**先发 `FS &`（1C 26）进中文模式**再发 GBK。原来没发 → 打印机按默认单字节内码解释双字节 GBK → 乱码（所以 ASCII/数字正常）。西语重音在不同内码里字节也不同。
+  - 纸宽根因：打印机可能默认用 **Font B（9×17）**，48 列只占 432 点 ≈ 60mm。现发 **`ESC M 0`（1B 4D 00）选 Font A（12×24）**，80mm 下 48 列正好 576 点铺满。
+  - 新增设置：**「小票编码」**（`gbk`/`utf8`/`latin1`/`cp850`）+ **「铺满纸宽（Font A）」**开关。
+  - `services/escpos.dart` 重写：`TicketLine`（可逐行指定编码）、`encodeText`（GBK/UTF8/Latin1/CP850）、
+    `buildEscPosBytes(lines, codec, fontA)`（`ESC @` → `ESC M 0` → `FS &` → `ESC a 0` → 行 → 切纸）。
+  - `services/ticket_builder.dart`：返回 `List<TicketLine>`；**测试页加了刻度尺（`----`）+ ASCII/西语重音/中文三种样例**，方便自查。
+  - `data/settings_store.dart` 新增 `receiptCodec`(默认 gbk)/`useFontA`(默认 true)；`settings_controller` 加 setter；
+    `print_service.dart` 按设置传 codec/fontA；设置页加下拉 + 开关。
+  - 排查步骤写进 `setup.md` 第 5 节 ④（乱码 / 纸宽 / 打不出来 三种情况）。
+- `2026-01-01` **中文能力探测 + 小票语言（你复测反馈后追加）**：
+  - 你复测时用的是 `utf8`，而**只有编码=gbk 时才会发 `FS &` 进中文模式**，所以那次对中文是**无效测试**。
+  - 测试页新增 **`[GBK强制]` 行**：不管当前编码设置，都强制用 GBK 中文模式打一行中文
+    （`escpos.gbkProbeBytes()`：`FS &` + GBK 中文 + `FS .`）。**这一行正常=打印机支持中文；乱码=没有中文字库。**
+  - 新增设置 **「小票语言」**（`Settings.receiptLang`，''=跟随界面）：**界面语言与小票语言可分开**
+    —— 界面用中文、小票打成西语（`L10n.tFor(lang, key)`）。
+  - 你实测：纸宽已正确（FontA 关闭也铺满 → 你的打印机默认就是 12×24 字体）。
+  - 状态：**待你按 `setup.md` 第 5 节 ④ 判定 D 项**，然后按结论设 gbk 或（西语 + cp850/latin1）。
+- `2026-01-01` **固定测试页 + 决定性诊断 + 编码单测（第三次反馈后）**：
+  - 你复测：`utf8` 和 `gbk` **都乱码**，只有 ASCII 正常 → 说明问题不在“选哪个编码”。
+  - 测试页内容**固定**为：`ASCII` 行、`Espanol: Gracias`、`中文A(FS&): 恭喜您，打印成功！`、`中文B(ESCt): 恭喜您，打印成功！`、
+    **`[BIG] ESC/POS CHECK`（双倍大小）**、刻度尺。
+  - **决定性检查 `[BIG]`**：若它没变大 → 说明 ESC/POS 指令**没被透传**（多半是 Windows 驱动把内容当文本重渲染了），
+    这才是乱码根源 → 换 **「Generic / Text Only」** 驱动或改用网络/蓝牙通道。
+  - 中文探测给了**两种进中文模式的方式**（`FS &` 与 `ESC t 255` + `FS &`），便于判断打印机支持哪种。
+  - 新增 `test/escpos_test.dart`：证明 ① GBK 中文按 2 字节/字且能往返、② ASCII 单字节、
+    ③ 字节流确实含 `ESC @` / `ESC M 0` / `FS &` / 切纸指令（回答“指令有没有加”）。
+  - `services/escpos.dart` 新增 `gbkProbeFs` / `gbkProbeEscT` / `doubleSizeBytes`。
+  - 排查步骤重写进 `setup.md` 第 5 节 ④（4 步：看 BIG → 看中文探测 → 看刻度尺 → 驱动）。
+- `2026-01-01` **★找到中文乱码真凶并修复（单测抓出来的）**：
+  - `test/escpos_test.dart` 报 `Expected: <18>  Actual: <9>` —— 「恭喜您，打印成功！」9 个字，
+    GBK 应为 18 字节，实际只有 9 字节。
+  - 根因：`gbk_codec` 里 **`gbk.encode()` 返回的是 16 位 GBK 码点**（`中`=0xD6D0=54992），
+    **不是字节流**；当字节发送时被截断成 1 个错字节 → **中文全乱**。
+    ASCII 因为不在映射表里、走 `ret.add(charCode)` 原样单字节，所以一直正常 —— 完美解释“数字对、文字乱”。
+  - 正确 API 是同一包里的 **`gbk_bytes.encode()`**（会把码点拆成两个字节：`中` → `D6 D0`）。
+    我从 pub 缓存读了包源码（`converter_gbk.dart` vs `converter_gbk_byte.dart`）确认，
+    并从数据表查出真值核对：中=D6D0、恭=B9A7、，=A3AC、！=A3A1。
+  - 修：`services/escpos.dart` 全部改用 `gbk_bytes`，封装 `gbkBytes()` + 兜底（码点>255 → `?`）；
+    `test/escpos_test.dart` 用**已知真值**锁死行为（中 → [0xD6,0xD0]、18 字节、字节均 0..255、可往返解码）。
+  - 详见 `troubleshooting.md` 问题 7（含“别凭记忆用第三方包 / 写能证伪的测试”两条经验）。
+  - 状态：**待你重跑 `flutter test`（应全绿）并在收银机打测试页**——中文现在应该能正常了。
+- `2026-01-01` **Excel 导入菜单 + 每道菜个性化定制（本轮大功能）**：
+  - 新增依赖 **`file_picker`（选文件）+ `archive`（解压 xlsx）** → 改完要 `flutter pub get`。
+  - `services/xlsx_reader.dart`（新）：自己解压 xlsx 读 XML，把第一个工作表读成二维字符串表
+    （自己写 ~150 行，避开 `excel` 包的 API 变动坑）。
+  - `services/menu_importer.dart`（新）：按**表头名字**识别 `分类 / 菜名 / 价格(可选) / 图标(可选)`，
+    **其余列两两一组** 视为 `(定制项名, 选项列表)`，选项用 `/` 分隔；价格支持 `12,50` 西语写法。
+  - `models/menu_option_group.dart`（新）+ `MenuItem.options`；`CartItem` 加 `selections/note` 与**复合键**
+    （同菜不同选项/备注 = 不同行）；`OrderLine` 加 `options/note`。
+  - `state/pos_controller.dart`：`addToCart(item, selections:, note:)`、购物车改用复合键、
+    `replaceMenu()`（导入覆盖菜单）、`_sameList()`（追单合并要求选项+备注全同）。
+  - `widgets/item_customize_sheet.dart`（新）：点菜弹「个性化定制」——
+    定制项单选 chips + 「其他备注」（常用标签点选 + 输入框 + 「存为常用标签」勾选）。
+  - `widgets/menu_grid.dart`：**有定制项 → 弹定制窗；没有 → 直接加购**（提示条上有「备注」按钮）；**长按**总是弹定制窗。
+  - `widgets/cart_panel.dart`：按复合键分行，菜名下显示选项/备注。
+  - `services/receipt_layout.dart`：**厨房单 / 顾客小票**在菜名下面缩进打印选项与备注。
+  - `screens/menu_import_screen.dart`（新）：选文件 / 填路径 → 解析 → 预览（分类数/菜品数/定制项数 + 提醒）→ 确认导入。
+  - `screens/settings_screen.dart`：新增「**从 Excel 导入菜单**」入口与「**常用备注**」管理（增删标签）。
+  - `screens/menu_manage_screen.dart`：编辑菜品时**保留原定制项**（不会被抹掉）。
+  - `l10n/app_strings.dart`：补 zh/es/en 文案（个性化 / 备注 / 导入）。
+  - `test/menu_importer_test.dart`（新）：合成表格单测 + **直接解析你那份真实 `data/palacio_royal_09_12_2026.xlsx`**
+    （断言 2 个分类 / 12 个菜品 / 每菜一组 `Size: Mediano,Grande`）。
+  - `test/pos_controller_test.dart`：修正购物车键用法 + 新增「同菜不同选项分行」「删菜清空购物车」用例。
+  - 状态：**待你 `flutter pub get` 后 `flutter test`，再在 App 里导入 Excel 验证**。
+- `2026-01-01` **三点 UI 改进（你验收后提的）**：
+  1. **弹出窗口改到屏幕中间**：`item_customize_sheet.dart` → **`item_customize_dialog.dart`**（居中 Dialog，
+     标题固定 + 内容可滚动 + 按钮固定在底部）；设置里「选择打印机」也从底部抽屉改成**居中 AlertDialog**。
+     （旧的两个文件已留空占位，只为避免悬空引用，以后可删。）
+  2. **分类配色**：新增 `utils/category_colors.dart`（10 色调色板，**按顺序轮换 → 相邻分类必然不同色**）；
+     `Category` 增加 `colorValue`（导入时自动分配，也可在「菜品管理」里手动选色）。
+     点单页**菜品格子底色 = 所属分类颜色**、白字直接显示菜名+价格，**去掉了图案/emoji 占位**；
+     购物车行首也改成同色小圆点。
+  3. **点单改成两步**：新增 `widgets/category_grid.dart`（种类列表，彩色卡片）与 `widgets/menu_area.dart`（两步切换）；
+     点单页**先显示种类 → 点击进入该种类的菜品**，顶部有色条显示当前种类、点一下返回种类列表；
+     原来的「顶部分类标签」已不再使用（`category_chips.dart` 留空占位）。
+  - `state/pos_controller.dart` 新增 `clearCategory()`；`l10n` 补 `category.back/pick/empty`、`menu.catColor`。
+  - `test/menu_importer_test.dart` 新增：**每个分类都有颜色、且相邻分类不同色**。
+  - 状态：**待你 `flutter test` + `flutter run -d windows` 看效果**。
+
+
+To Fix:
+- 外卖还是堂食
+- 追加单Chop suey de pollo 备注没有打上，选择了米饭换成面条，只要标签亮起来，不需要放到
+- 特别备注按照种类划分
+- 先选桌子，选完看到有多少菜，再加单
+- 结算summary
+- 现金结账，输入收入额，显示找零
+- 菜品管理需要输入密码，需要一个我的账户

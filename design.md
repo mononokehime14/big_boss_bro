@@ -209,7 +209,45 @@ Provider 给 `BuildContext` 提供了三种用法，语义不同：
   - `closeOrder(id, method)`：进行中 → **已结单**（记支付方式/结单时间 → 打顾客小票）。
 - 这样“加菜/追单”“先下单后结账”“一桌多次点单”都天然支持。
 
-### 8. 异步与重建（容易踩的两个点）
+### 8. 菜单来源：手输 or **Excel 导入**，以及**个性化定制**
+
+**菜单数据的来源**
+```
+Excel(.xlsx) ──xlsx_reader──> 二维字符串表 ──menu_importer──> MenuData(分类+菜品+定制项)
+                                                                    │
+                                        PosController.replaceMenu() ─┘─> MenuStore 持久化 ─> 界面
+```
+- `services/xlsx_reader.dart`：xlsx 就是个 zip，自己解压后读 `sharedStrings.xml` + `worksheets/sheet1.xml`，
+  拼成「二维字符串表」。**故意不依赖 `excel` 包**（它的 API 跨大版本变过，容易踩坑）。
+- `services/menu_importer.dart`：**按表头名字**识别列（中/英/西都认），然后再解析：
+  - `分类` / `菜名` / `价格`(可选) / `图标`(可选)
+  - **其余列两两一组** = `(定制项名, 选项列表)`，选项用 `/` 分隔 → `Size` + `Mediano/Grande`
+  - 价格兼容 `12,50`（西语逗号小数）与 `€9.90`
+- 导入是**整表替换**：`replaceMenu()` 会覆盖分类/菜品、清空购物车（避免指向已不存在的菜）并落盘。
+
+**个性化定制怎么进到订单里**
+- `MenuItem.options : List<MenuOptionGroup>`（来自 Excel 的定制项）。
+- 点菜时 `item_customize_sheet.dart` 收集两个东西：**所选的选项** + **「其他备注」**，
+  然后 `pos.addToCart(item, selections:, note:)`。
+- 购物车用**复合键** `CartItem.key = 菜id|选项|备注`：
+  所以「同一道菜、大份」和「同一道菜、中份」是**两行**，不会互相覆盖。
+- 订单行 `OrderLine` 也带 `options/note`，于是**厨房单和顾客小票**都会在菜名下面缩进打印出来。
+- 「其他备注」的**常用标签**存在 `Settings.savedNotes`（设置页可增删）；
+  定制弹窗里点标签即可复用，输入新备注时可勾选「存为常用标签」。
+
+**点单界面：两步导航 + 分类配色**
+
+- `PosController.selectedCategoryId` 为空 = **第一步（选种类）**，非空 = **第二步（选菜品）**。
+  `widgets/menu_area.dart` 根据它切换：`CategoryGrid`（种类卡片）↔ `CategoryHeader + MenuGrid`。
+  点顶部色条 → `clearCategory()` 回到种类列表。
+- 配色在 `utils/category_colors.dart`（**纯 Dart**，服务和测试都能用）：
+  10 色调色板 + `paletteColorAt(index)`。**按分类顺序轮换取色，所以相邻分类必然不同色**。
+  `Category.colorValue` 存最终颜色；为 0 时按序号自动取，用户也能在「菜品管理」里手动指定。
+- 菜品格子**底色 = 所属分类颜色**、白字显示菜名与价格（不再用 emoji/图案占位）。
+- 弹出窗统一**居中**：个性化定制用 `Dialog`（`widgets/item_customize_dialog.dart`），
+  选打印机用 `AlertDialog`——比底部抽屉更适合大屏触控收银机。
+
+### 9. 异步与重建（容易踩的两个点）
 
 - **fire-and-forget 加载**：`SettingsController()..load()` 在 provider 里不 await；`load` 完成后 `notifyListeners()` 让界面刷新。所以短暂“默认值 → 读到真实值”的过渡是预期行为。
 - **const 对重建的影响**：const widget 实例相同，父级重建时 Flutter 会**跳过它**。
@@ -217,13 +255,13 @@ Provider 给 `BuildContext` 提供了三种用法，语义不同：
   本项目已把读文案的组件（CategoryChips/CartBottomBar/空状态等）改为**非 const**，并在 `app.dart` 用
   `ValueListenableBuilder` 监听语言切换。
 
-### 9. 命名空间与名字冲突（务必记住）
+### 10. 命名空间与名字冲突（务必记住）
 
 Flutter 自带的 `foundation.Category` 与我们 `models/category.dart` 的 `Category` 重名，
 同文件既 import 两者会冲突。解决方案是 `import 'package:flutter/...' hide Category` 或
 `show ChangeNotifier`。详见 `troubleshooting.md` 问题 1。**新文件碰到类似情况照做即可。**
 
-### 10. 测试策略
+### 11. 测试策略
 
 - `test/receipt_layout_test.dart`：金额、中文按 2 列、58/80mm 不爆行、小票内容。
 - `test/pos_controller_test.dart`：点单逻辑（加购/数量合并/合计/结账/清空/删除/菜单CRUD/恢复默认）。

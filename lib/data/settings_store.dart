@@ -38,6 +38,17 @@ class Settings {
   /// 人类可读的“当前打印机”名称（用于设置页显示）。
   String printerName;
 
+  /// 小票编码（内码）：gbk / utf8 / latin1 / cp850。
+  /// 中文热敏机用 gbk；西语/英语单字节打印机用 latin1 或 cp850。
+  String receiptCodec;
+
+  /// 是否用 Font A（12×24）打印 —— 让 80mm 的 48 列正好铺满纸宽。
+  bool useFontA;
+
+  /// 小票上的表头语言：''=跟随界面语言；'zh'/'es'/'en' 可单独指定。
+  /// （例如：界面用中文，但打印机没有中文字库 → 小票打成西语。）
+  String receiptLang;
+
   /// 餐厅自己的桌号清单（可在设置里增删）。
   List<String> tables;
 
@@ -53,6 +64,9 @@ class Settings {
     this.printerPort = 9100,
     this.windowsPrinterName = '',
     this.printerName = '',
+    this.receiptCodec = 'gbk',
+    this.useFontA = true,
+    this.receiptLang = '',
     List<String>? tables,
     List<String>? savedNotes,
   })  : tables = tables ?? List.of(_defaultTables),
@@ -73,6 +87,9 @@ class SettingsStore {
   static const _kWindowsPrinter = 'windows_printer';
   static const _kTables = 'tables';
   static const _kSavedNotes = 'saved_notes';
+  static const _kReceiptCodec = 'receipt_codec';
+  static const _kUseFontA = 'use_font_a';
+  static const _kReceiptLang = 'receipt_lang';
 
   static List<String> _decodeList(String? raw, List<String> fallback) {
     if (raw == null) return List.of(fallback);
@@ -99,6 +116,9 @@ class SettingsStore {
       printerName: prefs.getString(_kPrinterName) ?? '',
       tables: tables,
       savedNotes: _decodeList(prefs.getString(_kSavedNotes), const []),
+      receiptCodec: prefs.getString(_kReceiptCodec) ?? 'gbk',
+      useFontA: prefs.getBool(_kUseFontA) ?? true,
+      receiptLang: prefs.getString(_kReceiptLang) ?? '',
     );
   }
 
@@ -114,5 +134,8 @@ class SettingsStore {
     await prefs.setString(_kPrinterName, settings.printerName);
     await prefs.setString(_kTables, jsonEncode(settings.tables));
     await prefs.setString(_kSavedNotes, jsonEncode(settings.savedNotes));
+    await prefs.setString(_kReceiptCodec, settings.receiptCodec);
+    await prefs.setBool(_kUseFontA, settings.useFontA);
+    await prefs.setString(_kReceiptLang, settings.receiptLang);
   }
 }

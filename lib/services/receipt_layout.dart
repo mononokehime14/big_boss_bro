@@ -161,6 +161,11 @@ List<String> buildReceiptLines(ReceiptData r) {
         padRight('${l.quantity}', qtyW) +
         padLeft(l.unitPrice.toStringAsFixed(2), unitW) +
         padLeft(l.subtotal.toStringAsFixed(2), amtW));
+    // 选项 / 备注：缩进打在下一行
+    final detail = l.detail;
+    if (detail.isNotEmpty) {
+      lines.add('  ${_truncateToWidth(detail, cols - 3)}');
+    }
   }
 
   lines.add(divider);
@@ -203,6 +208,11 @@ List<String> buildKitchenLines(KitchenData k) {
   for (final l in k.lines) {
     lines.add(padRight(_truncateToWidth(l.name, nameW - 1), nameW) +
         padLeft('${l.quantity}', qtyW));
+    // 选项 / 备注：缩进打在下一行（厨房必须看得见）
+    final detail = l.detail;
+    if (detail.isNotEmpty) {
+      lines.add('  ${_truncateToWidth(detail, cols - 3)}');
+    }
   }
 
   lines.add(divider);

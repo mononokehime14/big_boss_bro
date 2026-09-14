@@ -3,8 +3,10 @@ import 'package:provider/provider.dart';
 
 import '../data/settings_store.dart';
 import '../l10n/app_strings.dart';
+import '../services/escpos.dart';
 import '../services/receipt_print_service.dart';
 import '../state/settings_controller.dart';
+import 'menu_import_screen.dart';
 import 'menu_manage_screen.dart';
 
 /// 设置页：店名、货币符号、纸宽、界面语言、蓝牙打印机连接与测试。
@@ -21,6 +23,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _tableCtl = TextEditingController();
   final _ipCtl = TextEditingController();
   final _portCtl = TextEditingController();
+  final _noteCtl = TextEditingController();
   bool _initialized = false;
   bool _scanning = false;
 
@@ -44,6 +47,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _tableCtl.dispose();
     _ipCtl.dispose();
     _portCtl.dispose();
+    _noteCtl.dispose();
     super.dispose();
   }
 
@@ -82,16 +86,88 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // ---- 菜品管理 ----
           _sectionTitle(L10n.t('settings.menuManage')),
           _card(
-            child: ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.restaurant_menu,
-                  color: Color(0xFF1FA85A)),
-              title: Text(L10n.t('settings.menuManage')),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const MenuManageScreen()),
-              ),
+            child: Column(
+              children: [
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.restaurant_menu,
+                      color: Color(0xFF1FA85A)),
+                  title: Text(L10n.t('settings.menuManage')),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const MenuManageScreen()),
+                  ),
+                ),
+                // 从 Excel 导入菜单
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.upload_file,
+                      color: Color(0xFF1FA85A)),
+                  title: Text(L10n.t('menu.import')),
+                  subtitle: Text(
+                    L10n.t('menu.import.hint'),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const MenuImportScreen()),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // ---- 常用备注（点菜时的“其他备注”标签）----
+          _sectionTitle(L10n.t('settings.notes')),
+          _card(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (settings.savedNotes.isEmpty)
+                  Text(
+                    L10n.t('custom.note.hint'),
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  )
+                else
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final n in settings.savedNotes)
+                        InputChip(
+                          label: Text(n),
+                          onDeleted: () => settingsCtl.removeSavedNote(n),
+                        ),
+                    ],
+                  ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _noteCtl,
+                        decoration: InputDecoration(
+                          labelText: L10n.t('settings.notes.hint'),
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        onSubmitted: (_) => _addNote(settingsCtl),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.tonal(
+                      onPressed: () => _addNote(settingsCtl),
+                      child: Text(L10n.t('settings.table.add')),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 16),
@@ -215,6 +291,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _tableCtl.clear();
   }
 
+  void _addNote(SettingsController ctl) {
+    final v = _noteCtl.text.trim();
+    if (v.isEmpty) return;
+    ctl.addSavedNote(v);
+    _noteCtl.clear();
+  }
+
   void _save(SettingsController ctl) {
     ctl.update((s) {
       s.storeName = _storeCtl.text.trim().isEmpty
@@ -267,7 +350,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 12),
         ..._transportConfig(ctl, settings),
-        const SizedBox(height: 10),
+        const SizedBox(height: 16),
+        // ---- 小票编码（乱码就换一个再打测试页）----
+        Text(L10n.t('settings.codec'),
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
+        const SizedBox(height: 4),
+        DropdownButton<String>(
+          value: settings.receiptCodec,
+          isExpanded: true,
+          items: kReceiptCodecs
+              .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+              .toList(),
+          onChanged: (v) {
+            if (v != null) ctl.setReceiptCodec(v);
+          },
+        ),
+        Text(
+          L10n.t('settings.codec.hint'),
+          style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+        ),
+        const SizedBox(height: 8),
+        // ---- 小票语言（可独立于界面语言）----
+        Text(L10n.t('settings.receiptLang'),
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
+        const SizedBox(height: 4),
+        DropdownButton<String>(
+          value: settings.receiptLang,
+          isExpanded: true,
+          items: [
+            DropdownMenuItem(
+                value: '',
+                child: Text(L10n.t('settings.receiptLang.follow'))),
+            for (final code in L10n.supported)
+              DropdownMenuItem(
+                  value: code, child: Text(L10n.languageNames[code] ?? code)),
+          ],
+          onChanged: (v) => ctl.setReceiptLang(v ?? ''),
+        ),
+        const SizedBox(height: 8),
+        // ---- 铺满纸宽（Font A）----
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: settings.useFontA,
+          onChanged: (v) => ctl.setUseFontA(v),
+          title: Text(L10n.t('settings.fontA')),
+          subtitle: Text(
+            L10n.t('settings.fontA.hint'),
+            style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+          ),
+        ),
+        const SizedBox(height: 4),
         FilledButton.tonalIcon(
           onPressed: () => _printTest(settings),
           icon: const Icon(Icons.local_printshop_outlined),
@@ -374,36 +506,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return devices;
   }
 
+  /// 选择打印机：**屏幕中间的对话框**（不再是从底部弹出的抽屉）。
   Future<PrinterDevice?> _pickDevice(List<PrinterDevice> devices) {
-    return showModalBottomSheet<PrinterDevice>(
+    return showDialog<PrinterDevice>(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetContext) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const SizedBox(height: 10),
-            Padding(
-              padding: const EdgeInsets.all(8),
-              child: Text(
-                L10n.t('settings.choosePrinter'),
-                textAlign: TextAlign.center,
-                style:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-              ),
-            ),
-            for (final d in devices)
-              ListTile(
-                leading: const Icon(Icons.print, color: Color(0xFF1FA85A)),
-                title: Text(d.name),
-                subtitle: Text(d.address),
-                onTap: () => Navigator.pop(sheetContext, d),
-              ),
-            const SizedBox(height: 10),
-          ],
+      builder: (dialogContext) => AlertDialog(
+        title: Text(L10n.t('settings.choosePrinter')),
+        contentPadding: const EdgeInsets.symmetric(vertical: 8),
+        content: SizedBox(
+          width: 460,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final d in devices)
+                ListTile(
+                  leading: const Icon(Icons.print, color: Color(0xFF1FA85A)),
+                  title: Text(d.name),
+                  subtitle: Text(d.address),
+                  onTap: () => Navigator.pop(dialogContext, d),
+                ),
+            ],
+          ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(L10n.t('common.cancel')),
+          ),
+        ],
       ),
     );
   }

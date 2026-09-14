@@ -6,6 +6,7 @@ import '../models/category.dart';
 import '../models/menu_item.dart';
 import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
+import '../utils/category_colors.dart';
 import '../utils/format.dart';
 
 /// 菜品/分类管理：增删改菜单，改动自动持久化。
@@ -99,8 +100,9 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
 
   Widget _categoryTile(PosController pos, Category c) {
     final selected = _selectedCatId == c.id;
+    final index = pos.categories.indexWhere((e) => e.id == c.id);
     return ListTile(
-      leading: Text(c.emoji, style: const TextStyle(fontSize: 24)),
+      leading: _colorDot(categoryColorAt(c.colorValue, index < 0 ? 0 : index)),
       title: Text(c.name),
       selected: selected,
       onTap: () => setState(() {
@@ -122,10 +124,44 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
     );
   }
 
+  /// 分类颜色的圆点（取代原来的图案/emoji）。
+  Widget _colorDot(int colorValue) => Container(
+        width: 28,
+        height: 28,
+        decoration: BoxDecoration(
+          color: Color(colorValue),
+          shape: BoxShape.circle,
+        ),
+      );
+
+  /// 对话框里可选的颜色圆片。
+  Widget _colorSwatch(int colorValue, bool selected, VoidCallback onTap) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            color: Color(colorValue),
+            shape: BoxShape.circle,
+            border: selected
+                ? Border.all(color: Colors.black87, width: 3)
+                : Border.all(color: Colors.black12, width: 1),
+          ),
+          child: selected
+              ? const Icon(Icons.check, color: Colors.white, size: 18)
+              : null,
+        ),
+      );
+
   Widget _itemTile(BuildContext context, PosController pos, MenuItem m,
       String currency) {
+    final catIndex = pos.categories.indexWhere((c) => c.id == m.categoryId);
+    final colorValue = catIndex >= 0
+        ? categoryColorAt(pos.categories[catIndex].colorValue, catIndex)
+        : 0xFF1FA85A;
     return ListTile(
-      leading: Text(m.emoji, style: const TextStyle(fontSize: 24)),
+      leading: _colorDot(colorValue),
       title: Text(m.name),
       subtitle: Text(money(m.price, currency)),
       trailing: Row(
@@ -178,55 +214,76 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
 
   Future<Category?> _showCategoryDialog(BuildContext context, {Category? existing}) {
     final nameCtl = TextEditingController(text: existing?.name ?? '');
-    final emojiCtl = TextEditingController(text: existing?.emoji ?? '🍽️');
+    final pos0 = context.read<PosController>();
+    final autoIndex = existing == null
+        ? pos0.categories.length
+        : pos0.categories.indexWhere((c) => c.id == existing.id);
+    // 0 = 自动（按顺序从调色板取，保证相邻不同色）
+    var picked = existing?.colorValue ?? 0;
+
     return showDialog<Category>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(existing == null
-            ? L10n.t('menu.addCategory')
-            : L10n.t('menu.editCategory')),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameCtl,
-              autofocus: true,
-              decoration: InputDecoration(
-                labelText: L10n.t('menu.catName'),
-                border: const OutlineInputBorder(),
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setInner) => AlertDialog(
+          title: Text(existing == null
+              ? L10n.t('menu.addCategory')
+              : L10n.t('menu.editCategory')),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: nameCtl,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: L10n.t('menu.catName'),
+                  border: const OutlineInputBorder(),
+                ),
               ),
+              const SizedBox(height: 16),
+              Text(
+                L10n.t('menu.catColor'),
+                style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  // 「自动」：按分类顺序自动配色
+                  _colorSwatch(
+                    categoryColorAt(0, autoIndex < 0 ? 0 : autoIndex),
+                    picked == 0,
+                    () => setInner(() => picked = 0),
+                  ),
+                  for (final c in kCategoryPalette)
+                    _colorSwatch(c, picked == c, () => setInner(() => picked = c)),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text(L10n.t('common.cancel')),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: emojiCtl,
-              decoration: InputDecoration(
-                labelText: L10n.t('menu.catEmoji'),
-                border: const OutlineInputBorder(),
-              ),
+            FilledButton(
+              onPressed: () {
+                final pos = context.read<PosController>();
+                final name = nameCtl.text.trim();
+                if (name.isEmpty) return;
+                final cat = Category(
+                  id: existing?.id ?? pos.nextId(),
+                  name: name,
+                  emoji: existing?.emoji ?? '',
+                  colorValue: picked,
+                );
+                Navigator.pop(dialogContext, cat);
+              },
+              child: Text(L10n.t('menu.confirmCategory')),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(L10n.t('common.cancel')),
-          ),
-          FilledButton(
-            onPressed: () {
-              final pos = context.read<PosController>();
-              final name = nameCtl.text.trim();
-              if (name.isEmpty) return;
-              final emoji = emojiCtl.text.trim().isEmpty ? '🍽️' : emojiCtl.text.trim();
-              final cat = Category(
-                id: existing?.id ?? pos.nextId(),
-                name: name,
-                emoji: emoji,
-              );
-              Navigator.pop(dialogContext, cat);
-            },
-            child: Text(L10n.t('menu.confirmCategory')),
-          ),
-        ],
       ),
     );
   }
@@ -261,7 +318,6 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
   Future<MenuItem?> _showItemDialog(BuildContext context,
       {required String categoryId, MenuItem? existing}) {
     final nameCtl = TextEditingController(text: existing?.name ?? '');
-    final emojiCtl = TextEditingController(text: existing?.emoji ?? '🍛');
     final priceCtl =
         TextEditingController(text: existing?.price.toString() ?? '');
     return showDialog<MenuItem>(
@@ -278,14 +334,6 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
               autofocus: true,
               decoration: InputDecoration(
                 labelText: L10n.t('menu.itemName'),
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: emojiCtl,
-              decoration: InputDecoration(
-                labelText: L10n.t('menu.itemEmoji'),
                 border: const OutlineInputBorder(),
               ),
             ),
@@ -311,13 +359,14 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
               final name = nameCtl.text.trim();
               final price = double.tryParse(priceCtl.text.trim());
               if (name.isEmpty || price == null || price < 0) return;
-              final emoji = emojiCtl.text.trim().isEmpty ? '🍛' : emojiCtl.text.trim();
               final item = MenuItem(
                 id: existing?.id ?? pos.nextId(),
                 name: name,
                 price: price,
-                emoji: emoji,
+                emoji: existing?.emoji ?? '',
                 categoryId: categoryId,
+                // 保留原来的「定制项」（Excel 导入的），编辑时不要弄丢
+                options: existing?.options ?? const [],
               );
               Navigator.pop(dialogContext, item);
             },

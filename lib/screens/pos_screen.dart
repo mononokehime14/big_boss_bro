@@ -4,14 +4,15 @@ import 'package:provider/provider.dart';
 import '../state/settings_controller.dart';
 import '../widgets/cart_bottom_bar.dart';
 import '../widgets/cart_panel.dart';
-import '../widgets/category_chips.dart';
-import '../widgets/menu_grid.dart';
+import '../widgets/menu_area.dart';
 import '../widgets/payment_flow.dart';
 
 /// 点单主界面（Loyverse 风格）。
 ///
+/// 点单区是**两步**：先显示「种类」，点进去再显示该种类的「菜品」。
+///
 /// - 宽屏（收银机）：左边 60% 点菜、右边 40% 常驻购物车，右下角是合计 + 下单。
-/// - 窄屏（手机）：保持「菜单 + 底部购物车」的方式，购物车点开是弹窗。
+/// - 窄屏（手机）：菜单 + 底部购物车栏，购物车点开是弹窗。
 class PosScreen extends StatelessWidget {
   const PosScreen({super.key});
 
@@ -32,15 +33,7 @@ class PosScreen extends StatelessWidget {
           if (constraints.maxWidth >= 800) {
             return Row(
               children: [
-                Expanded(
-                  flex: 6,
-                  child: Column(
-                    children: [
-                      CategoryChips(),
-                      const Expanded(child: MenuGrid()),
-                    ],
-                  ),
-                ),
+                const Expanded(flex: 6, child: MenuArea()),
                 const VerticalDivider(width: 1),
                 Expanded(
                   flex: 4,
@@ -61,9 +54,8 @@ class PosScreen extends StatelessWidget {
           // 窄屏：菜单 + 底部购物车栏
           return Column(
             children: [
-              // CategoryChips / CartBottomBar 读 L10n 文案，不能 const，否则切语言不刷新
-              CategoryChips(),
-              const Expanded(child: MenuGrid()),
+              const Expanded(child: MenuArea()),
+              // CartBottomBar 读 L10n 文案，不能 const，否则切语言不刷新
               CartBottomBar(),
             ],
           );

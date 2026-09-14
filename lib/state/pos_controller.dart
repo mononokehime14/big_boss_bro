@@ -80,7 +80,14 @@ class PosController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ---- 购物车（用 map 存，同一道菜只占一行，点击数量+1）----
+  /// 回到「选种类」这一步。
+  void clearCategory() {
+    _selectedCategoryId = '';
+    notifyListeners();
+  }
+
+  // ---- 购物车 ----
+  // 用 map 存，**键 = 菜 + 选项 + 备注**：同一道菜不同选项/备注算不同的行。
   final Map<String, CartItem> _cart = {};
   List<CartItem> get cartItems => _cart.values.toList();
   bool get cartEmpty => _cart.isEmpty;
@@ -90,34 +97,44 @@ class PosController extends ChangeNotifier {
   double get cartTotal =>
       _cart.values.fold(0.0, (sum, item) => sum + item.lineTotal);
 
-  /// 点一道菜：购物车里已有就数量+1，没有就新增一行。
-  void addToCart(MenuItem item) {
-    final existing = _cart[item.id];
+  /// 点一道菜：同菜+同选项+同备注 已在购物车里就数量+1，否则新增一行。
+  void addToCart(
+    MenuItem item, {
+    List<String> selections = const [],
+    String note = '',
+  }) {
+    final key = CartItem(menuItem: item, selections: selections, note: note).key;
+    final existing = _cart[key];
     if (existing != null) {
       existing.quantity++;
     } else {
-      _cart[item.id] = CartItem(menuItem: item);
+      _cart[key] = CartItem(
+        menuItem: item,
+        selections: List.of(selections),
+        note: note,
+      );
     }
     notifyListeners();
   }
 
-  void increment(String itemId) {
-    final item = _cart[itemId];
+  /// [key] 是 [CartItem.key]（不是菜品 id）。
+  void increment(String key) {
+    final item = _cart[key];
     if (item != null) item.quantity++;
     notifyListeners();
   }
 
-  void decrement(String itemId) {
-    final item = _cart[itemId];
+  void decrement(String key) {
+    final item = _cart[key];
     if (item == null) return;
     item.quantity--;
-    if (item.quantity <= 0) _cart.remove(itemId);
+    if (item.quantity <= 0) _cart.remove(key);
     notifyListeners();
   }
 
-  /// 从购物车删掉某一行。
-  void removeFromCart(String itemId) {
-    _cart.remove(itemId);
+  /// 从购物车删掉某一行（[key] 是 [CartItem.key]）。
+  void removeFromCart(String key) {
+    _cart.remove(key);
     notifyListeners();
   }
 
@@ -126,12 +143,14 @@ class PosController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 把当前购物车转成订单行快照。
+  /// 把当前购物车转成订单行快照（带上所选项与备注）。
   List<OrderLine> _cartLines() => cartItems
       .map((c) => OrderLine(
             name: c.menuItem.name,
             quantity: c.quantity,
             unitPrice: c.menuItem.price,
+            options: List.of(c.selections),
+            note: c.note,
           ))
       .toList();
 
@@ -160,15 +179,22 @@ class PosController extends ChangeNotifier {
 
     final merged = List<OrderLine>.from(_orders[i].lines);
     for (final c in cartItems) {
+      // 只有「菜名 + 单价 + 选项 + 备注」全都一样才合并
       final idx = merged.indexWhere((l) =>
-          l.name == c.menuItem.name && l.unitPrice == c.menuItem.price);
+          l.name == c.menuItem.name &&
+          l.unitPrice == c.menuItem.price &&
+          _sameList(l.options, c.selections) &&
+          l.note == c.note);
       if (idx >= 0) {
-        merged[idx] = merged[idx].copyWith(quantity: merged[idx].quantity + c.quantity);
+        merged[idx] =
+            merged[idx].copyWith(quantity: merged[idx].quantity + c.quantity);
       } else {
         merged.add(OrderLine(
           name: c.menuItem.name,
           quantity: c.quantity,
           unitPrice: c.menuItem.price,
+          options: List.of(c.selections),
+          note: c.note,
         ));
       }
     }
@@ -272,9 +298,19 @@ class PosController extends ChangeNotifier {
 
   void deleteMenuItem(String id) {
     _menu.removeWhere((m) => m.id == id);
-    _cart.remove(id); // 若该菜已在购物车里，一并移除
+    // 该菜在购物车里的所有行（可能因选项/备注不同有多行）一并移除
+    _cart.removeWhere((_, v) => v.menuItem.id == id);
     notifyListeners();
     _persistMenu();
+  }
+
+  /// 两个字符串列表内容是否一致。
+  static bool _sameList(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   /// 生成一个新的分类/菜品 id（时间戳+自增，保证唯一）。
@@ -291,6 +327,20 @@ class PosController extends ChangeNotifier {
         !_categories.any((c) => c.id == _selectedCategoryId)) {
       _selectedCategoryId = '';
     }
+    notifyListeners();
+    _persistMenu();
+  }
+
+  /// 用导入的菜单（例如 Excel）覆盖当前菜单，并持久化。
+  /// 购物车会清空，避免里面还留着已经不存在的菜。
+  void replaceMenu(MenuData data) {
+    _categories = data.categories;
+    _menu = data.items;
+    if (_selectedCategoryId.isNotEmpty &&
+        !_categories.any((c) => c.id == _selectedCategoryId)) {
+      _selectedCategoryId = '';
+    }
+    _cart.clear();
     notifyListeners();
     _persistMenu();
   }

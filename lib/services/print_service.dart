@@ -86,20 +86,25 @@ class UnifiedPrintService implements ReceiptPrintService {
     return _write(settings, TicketBuilder.testLines(settings));
   }
 
-  /// 把行文本按当前通道发出去。
-  Future<PrintError?> _write(Settings settings, List<String> lines) async {
+  /// 把行文本按当前通道发出去（编码/字体取自设置）。
+  Future<PrintError?> _write(Settings settings, List<TicketLine> lines) async {
+    final bytes = buildEscPosBytes(
+      lines,
+      codec: settings.receiptCodec,
+      fontA: settings.useFontA,
+    );
     switch (settings.transport) {
       case PrintTransport.bluetooth:
-        return _bt.printBytes(settings, buildEscPosBytes(lines));
+        return _bt.printBytes(settings, bytes);
 
       case PrintTransport.network:
-        return _net.printBytes(settings, buildEscPosBytes(lines));
+        return _net.printBytes(settings, bytes);
 
       case PrintTransport.windows:
         if (!Platform.isWindows) return PrintError.unsupported;
         return WindowsPrintService.printRaw(
           settings.windowsPrinterName,
-          buildEscPosBytes(lines),
+          bytes,
         );
     }
   }

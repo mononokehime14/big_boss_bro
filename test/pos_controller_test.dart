@@ -68,7 +68,44 @@ void main() {
     final pos = PosController();
     pos.addToCart(sampleMenu.first);
     expect(pos.cartCount, 1);
-    pos.decrement(sampleMenu.first.id);
+    // 注意：购物车用「菜 + 选项 + 备注」的复合键，不是菜品 id
+    pos.decrement(pos.cartItems.first.key);
+    expect(pos.cartEmpty, isTrue);
+  });
+
+  test('同一道菜不同选项/备注 = 不同的行', () {
+    final pos = PosController();
+    final beef = sampleMenu.first; // 牛肉炒饭
+    pos.addToCart(beef); // 无选项
+    pos.addToCart(beef); // 同菜同选项 → 数量 2，仍是一行
+    expect(pos.cartItems.length, 1);
+    expect(pos.cartCount, 2);
+
+    pos.addToCart(beef, selections: const ['Grande']); // 大份 → 新的一行
+    expect(pos.cartItems.length, 2);
+    expect(pos.cartCount, 3);
+
+    pos.addToCart(beef, note: '米饭换面条'); // 有备注 → 又是新的一行
+    expect(pos.cartItems.length, 3);
+
+    // 选项/备注会带进订单行
+    final order = pos.placeOrder(table: '2')!;
+    expect(order.lines.length, 3);
+    final withNote = order.lines.firstWhere((l) => l.note.isNotEmpty);
+    expect(withNote.note, '米饭换面条');
+    final withOption = order.lines.firstWhere((l) => l.options.isNotEmpty);
+    expect(withOption.options, ['Grande']);
+    expect(withOption.detail, 'Grande');
+  });
+
+  test('删除菜品会把购物车里它的所有行一起删掉', () {
+    final pos = PosController();
+    final beef = sampleMenu.first;
+    pos.addToCart(beef);
+    pos.addToCart(beef, selections: const ['Grande']);
+    expect(pos.cartItems.length, 2);
+
+    pos.deleteMenuItem(beef.id);
     expect(pos.cartEmpty, isTrue);
   });
 

@@ -27,6 +27,12 @@ dependencies:
   # Windows 系统打印机（USB）走 spooler RAW 通道，需要 dart:ffi 辅助库
   ffi: ^2.1.0
 
+  # ---- 菜单 Excel 导入 ----
+  # 选文件（Windows / 安卓都支持）
+  file_picker: ^8.0.0
+  # xlsx 本质是 zip，用它解压后读里面的 XML
+  archive: ^3.6.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

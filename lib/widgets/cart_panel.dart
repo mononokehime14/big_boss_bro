@@ -5,6 +5,7 @@ import '../l10n/app_strings.dart';
 import '../models/order.dart';
 import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
+import '../utils/category_colors.dart';
 import '../utils/format.dart';
 
 /// 购物车面板（可放在右侧常驻，也可放进底部弹窗）。
@@ -102,7 +103,7 @@ class _CartPanelState extends State<CartPanel> {
                     itemCount: pos.cartItems.length,
                     separatorBuilder: (_, __) => const Divider(height: 1),
                     itemBuilder: (context, i) =>
-                        _CartLine(itemId: pos.cartItems[i].menuItem.id),
+                        _CartLine(cartKey: pos.cartItems[i].key),
                   ),
           ),
           const Divider(height: 1),
@@ -246,21 +247,33 @@ class _CartPanelState extends State<CartPanel> {
 }
 
 class _CartLine extends StatelessWidget {
-  final String itemId;
+  /// 购物车行的唯一键（菜 + 选项 + 备注），见 `CartItem.key`。
+  final String cartKey;
 
-  const _CartLine({required this.itemId});
+  const _CartLine({required this.cartKey});
 
   @override
   Widget build(BuildContext context) {
     final pos = context.watch<PosController>();
     final settings = context.watch<SettingsController>().settings;
-    final item = pos.cartItems.firstWhere((c) => c.menuItem.id == itemId);
+    final item = pos.cartItems.firstWhere((c) => c.key == cartKey);
+
+    // 用「分类颜色」的小圆点代替图案（和点单页保持一致）
+    final catIndex =
+        pos.categories.indexWhere((c) => c.id == item.menuItem.categoryId);
+    final dotColor = Color(catIndex >= 0
+        ? categoryColorAt(pos.categories[catIndex].colorValue, catIndex)
+        : 0xFF1FA85A);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: [
-          Text(item.menuItem.emoji, style: const TextStyle(fontSize: 22)),
+          Container(
+            width: 14,
+            height: 14,
+            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+          ),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -271,6 +284,17 @@ class _CartLine extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
+                // 选项 / 备注（有才显示）
+                if (item.detail.isNotEmpty)
+                  Text(
+                    item.detail,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF1FA85A),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 Text(
                   money(item.menuItem.price, settings.currencySymbol),
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
@@ -280,8 +304,8 @@ class _CartLine extends StatelessWidget {
           ),
           _Stepper(
             quantity: item.quantity,
-            onMinus: () => pos.decrement(itemId),
-            onPlus: () => pos.increment(itemId),
+            onMinus: () => pos.decrement(cartKey),
+            onPlus: () => pos.increment(cartKey),
           ),
           SizedBox(
             width: 70,
@@ -292,7 +316,7 @@ class _CartLine extends StatelessWidget {
             ),
           ),
           IconButton(
-            onPressed: () => pos.removeFromCart(itemId),
+            onPressed: () => pos.removeFromCart(cartKey),
             icon: const Icon(Icons.close, size: 18),
             color: Colors.grey,
             visualDensity: VisualDensity.compact,

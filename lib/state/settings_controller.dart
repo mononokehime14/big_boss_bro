@@ -28,6 +28,27 @@ class SettingsController extends ChangeNotifier {
   void setCurrencySymbol(String v) => _settings.currencySymbol = v;
   void setPaperWidth(String v) => _settings.paperWidth = v;
 
+  /// 小票编码（gbk / utf8 / latin1 / cp850）。
+  void setReceiptCodec(String v) {
+    _settings.receiptCodec = v;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  /// 是否用 Font A（铺满 80mm 纸宽）。
+  void setUseFontA(bool v) {
+    _settings.useFontA = v;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  /// 小票语言：''=跟随界面语言；'zh'/'es'/'en'。
+  void setReceiptLang(String v) {
+    _settings.receiptLang = v;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
   // ---- 打印方式与打印机 ----
 
   void setTransport(PrintTransport t) {
