@@ -5,6 +5,7 @@ import '../models/order.dart';
 import 'bluetooth_print_service.dart';
 import 'escpos.dart';
 import 'network_print_service.dart';
+import 'receipt_layout.dart';
 import 'receipt_print_service.dart';
 import 'ticket_builder.dart';
 import 'windows_print_service.dart';
@@ -76,6 +77,8 @@ class UnifiedPrintService implements ReceiptPrintService {
     );
   }
 
+  /// 打「顾客小票 / 单子」：结账窗口第 ① 步就打了（明细 + 合计）。
+  /// 订单这时还没收款，所以纸上没有支付方式/实收/找零 —— 这是有意的（只打一张）。
   @override
   Future<PrintError?> printReceipt(Order order, Settings settings) {
     return _write(settings, TicketBuilder.receiptLines(order, settings));
@@ -84,6 +87,11 @@ class UnifiedPrintService implements ReceiptPrintService {
   @override
   Future<PrintError?> printTestPage(Settings settings) {
     return _write(settings, TicketBuilder.testLines(settings));
+  }
+
+  @override
+  Future<PrintError?> printSummary(SummaryData data, Settings settings) {
+    return _write(settings, TicketBuilder.summaryLines(data));
   }
 
   /// 把行文本按当前通道发出去（编码/字体取自设置）。

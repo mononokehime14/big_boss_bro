@@ -60,14 +60,19 @@ flutter test
 ```
 
 `test/` 里现在有：
+- `pricing_test.dart`：**折扣 / 税 / 金额取整**（金额规则只有一处，必须钉死）
+- `split_payment_test.dart`：**AA 分开付**（收满才结单）、日结统计、分摊小票/顾客小票排版
+- `auth_test.dart`：**账号与权限**（默认管理员、登录、临时提权、不能删最后一个管理员）
 - `receipt_layout_test.dart`：金额、中文宽度、小票不爆行
 - `pos_controller_test.dart`：点单逻辑（加购/数量合并/合计/结账/清空/删除）
 - `order_store_test.dart`：订单保存/读回
 - `menu_store_test.dart`：菜单（分类+菜品）保存/读回
-- `widget_test.dart`：冒烟测试（App 能启动并显示「菜单」）
+- `menu_importer_test.dart`：Excel 导入解析
+- `settings_test.dart`：设置（备注分组 / 日结支出 / 默认密码）
+- `widget_test.dart`：冒烟测试（**先出登录页 → 用 admin/8888 登录 → 显示「菜单」**）
 
 会验证：
-- 金额格式化（`¥28.00` …）
+- 金额格式化（`¥28.00` …）、折扣/税的各种组合
 - 中文宽度（`牛肉炒饭` = 8 列）
 - 58mm 每行 ≤ 32 列（不爆行）、80mm 每行 ≤ 48 列
 - 小票含店名 / 合计 / 谢谢光临
@@ -75,6 +80,10 @@ flutter test
 > 预期：`All tests passed!` 就是好的。
 > ⚠️ 若 `flutter test` 报 `MyApp` 未定义：那是 `flutter create .` 生成的默认 `test/widget_test.dart` 覆盖了我给你的版本。
 > 把它**删掉**（重新用我提供的 `test/widget_test.dart`）即可；只保留 `receipt_layout_test.dart` 也不影响单测。
+
+> 🔑 **第一次启动会要求登录**：默认账号 `admin`、密码 `8888`。
+> 进去后到「设置 → 账号管理」改密码、加收银员账号。
+> 收银员做管理员的事（设置/日结/删单/菜单管理）时会要求输**管理员密码**（本次会话内有效）。
 
 ---
 

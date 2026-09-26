@@ -2,16 +2,64 @@ import 'dart:convert';
 
 import 'package:gbk_codec/gbk_codec.dart';
 
+/// 一行文字的放大方式 —— 直接对应 ESC/POS 的 `GS ! n`（0x1D 0x21 n）。
+///
+/// 这里只开放三档（**厨师单字体大小**设置用这三档）：
+/// - [normal]：1×1，58mm 32 列 / 80mm 48 列；
+/// - [large]：1×2（**只加高**）—— 列数不变，**排版一个字符都不会错位**，推荐先用它；
+/// - [xlarge]：2×2（双倍宽 + 双倍高）—— 每行列数**减半**（58mm 只剩 16 列），
+///   所以排版要用 [TicketScale.columnsFor] 换算，否则右边会被切掉。
+enum TicketScale {
+  normal(1, 1),
+  large(1, 2),
+  xlarge(2, 2);
+
+  /// 宽度倍数（1 或 2）。
+  final int width;
+
+  /// 高度倍数（1 或 2）。
+  final int height;
+
+  const TicketScale(this.width, this.height);
+
+  /// 设置里的「厨师单字体大小」：1 = 正常，2 = 大，3 = 特大。
+  static TicketScale fromKitchenFontSize(int fontSize) {
+    switch (fontSize) {
+      case 2:
+        return TicketScale.large;
+      case 3:
+        return TicketScale.xlarge;
+      default:
+        return TicketScale.normal;
+    }
+  }
+
+  /// 放大之后一行还放得下多少**字符列**（宽度倍数 2 时列数减半）。
+  int columnsFor(int paperColumns) => paperColumns ~/ width;
+
+  /// `GS ! n` 的参数：高 4 位是宽度倍数-1，低 4 位是高度倍数-1。
+  int get gsBangParam => ((width - 1) << 4) | (height - 1);
+}
+
 /// 小票里的一行。
 ///
 /// - 普通行：给 [text]，按默认/指定 [codec] 编码。
 /// - 原始行：给 [raw]（已经是最终字节），用于需要精确控制指令的场景（如中文能力探测）。
+/// - [scale] 不是 [TicketScale.normal] 时，这一行前后会包上 `GS ! n`（放大）/ 复原指令。
 class TicketLine {
   final String text;
   final String? codec;
   final List<int>? raw;
 
-  const TicketLine(this.text, {this.codec, this.raw});
+  /// 这一行的字号（默认正常大小）。
+  final TicketScale scale;
+
+  const TicketLine(
+    this.text, {
+    this.codec,
+    this.raw,
+    this.scale = TicketScale.normal,
+  });
 }
 
 /// 支持的小票编码（内码）。
@@ -73,7 +121,10 @@ List<int> doubleSizeBytes(String text) => <int>[
 ///                  若用 Font B（9×17），48 列只有 432 点 ≈ 60mm，纸宽就“没铺满”。
 /// - `1C 26`        `FS &` 进入**中文模式**（仅当编码为 gbk）。中文热敏机不加这一条会乱码。
 /// - `1B 61 00`     左对齐
-/// - 每行：按编码转字节 + 换行（带 [TicketLine.raw] 的行直接用原始字节）
+/// - 每行：按编码转字节 + 换行（带 [TicketLine.raw] 的行直接用原始字节）；
+///   [TicketLine.scale] 非正常时，行首发 `ESC 3 n`（把行距撑到字高，否则下一行会
+///   压在放大后的字上）+ `GS ! n` 放大，换行后发 `GS ! 0` 复原 + `ESC 2` 行距复位
+///   （**复原一定要在换行之后**，否则这一行会按原大小打出来）。
 /// - `1D 56 42 00`  半切纸
 List<int> buildEscPosBytes(
   List<TicketLine> lines, {
@@ -90,9 +141,18 @@ List<int> buildEscPosBytes(
     final raw = line.raw;
     if (raw != null) {
       out.addAll(raw);
-    } else {
-      out.addAll(encodeText(line.text, line.codec ?? codec));
-      out.addAll([0x0A]); // 换行
+      continue;
+    }
+    final scale = line.scale;
+    if (scale != TicketScale.normal) {
+      out.addAll(lineSpacing(scale)); // ESC 3 n → 行距 = 字高
+      out.addAll(gsBang(scale)); // GS ! n → 放大
+    }
+    out.addAll(encodeText(line.text, line.codec ?? codec));
+    out.addAll([0x0A]); // 换行
+    if (scale != TicketScale.normal) {
+      out.addAll(gsBang(TicketScale.normal)); // 字号复原
+      out.addAll([0x1B, 0x32]); // ESC 2 → 行距恢复默认（普通行不受影响）
     }
   }
 
@@ -100,6 +160,16 @@ List<int> buildEscPosBytes(
   out.addAll([0x1D, 0x56, 0x42, 0x00]); // 半切纸
   return out;
 }
+
+/// `GS ! n`：设置字符放大倍数（宽 × 高）。
+List<int> gsBang(TicketScale scale) => <int>[0x1D, 0x21, scale.gsBangParam];
+
+/// `ESC 3 n`：把行距设成 n 点。
+///
+/// Font A 一个字高 24 点，所以行距就取 `24 × 高度倍数`：
+/// 不设的话，有些机器打放大字时**下一行会压在它身上**（行距还是默认的 ~30 点）。
+List<int> lineSpacing(TicketScale scale) =>
+    <int>[0x1B, 0x33, 24 * scale.height];
 
 /// 把一段文本按指定编码转成字节。
 List<int> encodeText(String text, String codec) {

@@ -24,6 +24,19 @@ class SettingsController extends ChangeNotifier {
     await _store.save(_settings);
   }
 
+  /// 直接落盘：同步服务改了 `lastSyncAt` / `syncRefreshToken` / `menuVersion`
+  /// 这类字段后调用（它们不是用户手动改的，不用重建界面）。
+  Future<void> persist() => _store.save(_settings);
+
+  // ---- 后台同步（Supabase）----
+
+  /// 改一个同步配置项（地址 / key / 账号 / 设备名 / 开关）+ 通知界面 + 落盘。
+  Future<void> updateSync(void Function(Settings) mutate) async {
+    mutate(_settings);
+    notifyListeners();
+    await _store.save(_settings);
+  }
+
   void setStoreName(String v) => _settings.storeName = v;
   void setCurrencySymbol(String v) => _settings.currencySymbol = v;
   void setPaperWidth(String v) => _settings.paperWidth = v;
@@ -42,9 +55,31 @@ class SettingsController extends ChangeNotifier {
     _store.save(_settings);
   }
 
+  /// 店头信息（小票上店名下面居中打的几行：地址 / 电话 / RFC …）。
+  void setStoreHeader(String v) {
+    _settings.storeHeader = v;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  /// 厨师单字体大小：1 = 正常，2 = 大（双倍高），3 = 特大（双倍宽 + 双倍高）。
+  void setKitchenFontSize(int v) {
+    _settings.kitchenFontSize = (v < 1 || v > 3) ? 1 : v;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
   /// 小票语言：''=跟随界面语言；'zh'/'es'/'en'。
   void setReceiptLang(String v) {
     _settings.receiptLang = v;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  /// 点单区的排序方式：'default' / 'name'（首字母）/ 'popular'（流行度）。
+  /// 见 `utils/menu_sort.dart` 的 `MenuSort`。
+  void setMenuSort(String id) {
+    _settings.menuSort = id;
     notifyListeners();
     _store.save(_settings);
   }
@@ -84,18 +119,70 @@ class SettingsController extends ChangeNotifier {
     _store.save(_settings);
   }
 
-  // ---- 常用「其他备注」标签 ----
+  // ---- 常用「其他备注」标签（按菜品分类分组）----
 
-  void addSavedNote(String note) {
-    final v = note.trim();
-    if (v.isEmpty || _settings.savedNotes.contains(v)) return;
-    _settings.savedNotes.add(v);
+  /// [categoryId] 为 '' 表示「通用」（所有菜都能用）。
+  void addSavedNote(String categoryId, String note) {
+    _settings.addNote(categoryId, note);
     notifyListeners();
     _store.save(_settings);
   }
 
-  void removeSavedNote(String note) {
-    _settings.savedNotes.remove(note);
+  void removeSavedNote(String categoryId, String note) {
+    _settings.removeNote(categoryId, note);
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  // ---- 日结：支出 ----
+
+  void setDailyExpense(String dateKey, double value) {
+    _settings.setExpense(dateKey, value);
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  // ---- 菜品管理密码 ----
+
+  void setMenuPassword(String password) {
+    final v = password.trim();
+    if (v.isEmpty) return;
+    _settings.menuPassword = v;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  // ---- 税 ----
+
+  /// 税率（百分比，0 = 不收税）。
+  void setTaxRate(double rate) {
+    final v = rate < 0 ? 0.0 : rate;
+    _settings.taxRate = v;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  /// 价格是否已含税。
+  void setTaxIncluded(bool v) {
+    _settings.taxIncluded = v;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  // ---- 币种与汇率 ----
+
+  /// 店里收钱的货币（本位币）：MXN / USD / RMB。
+  void setBaseCurrency(String code) {
+    final v = code.trim();
+    if (v.isEmpty) return;
+    _settings.baseCurrency = v;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  /// 某个币种的汇率（**1 个该币种 = 多少本位币**）；填 0 = 清除。
+  void setExchangeRate(String code, double rate) {
+    _settings.setRate(code, rate);
     notifyListeners();
     _store.save(_settings);
   }

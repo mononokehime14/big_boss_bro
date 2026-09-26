@@ -1,5 +1,6 @@
 import '../data/settings_store.dart';
 import '../models/order.dart';
+import 'receipt_layout.dart';
 import 'receipt_print_service.dart';
 
 /// 不做任何事情的打印实现。
@@ -35,6 +36,10 @@ class UnsupportedPrintService implements ReceiptPrintService {
 
   @override
   Future<PrintError?> printTestPage(Settings settings) async =>
+      PrintError.unsupported;
+
+  @override
+  Future<PrintError?> printSummary(SummaryData data, Settings settings) async =>
       PrintError.unsupported;
 
   @override

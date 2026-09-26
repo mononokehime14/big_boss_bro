@@ -1,15 +1,22 @@
-import 'package:flutter/material.dart' hide Category;
+// 注：原来这里写的是 `hide Category` —— 那是我以为 material 也导出 Category。
+// 分析器明确说 material **不导出**这个成员（foundation 才导出），
+// 所以那个 hide 是多余的，反而报 undefined_hidden_name 警告，去掉了。
+import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../l10n/app_strings.dart';
 import '../models/category.dart';
 import '../models/menu_item.dart';
+import '../models/order.dart' show kCashCurrencies;
 import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
 import '../utils/category_colors.dart';
 import '../utils/format.dart';
 
-/// 菜品/分类管理：增删改菜单，改动自动持久化。
+/// 菜品/分类管理：增删改菜单、**设币种与汇率**、改菜价单位，改动自动持久化。
+///
+/// 为什么汇率放这儿：汇率是「菜价换算成外币」的参数，老板改菜单时顺手就能改，
+/// 不用再翻到设置页去找（你要求放这里）。收款框里三个币种的金额就是按它算的。
 class MenuManageScreen extends StatefulWidget {
   const MenuManageScreen({super.key});
 
@@ -20,10 +27,29 @@ class MenuManageScreen extends StatefulWidget {
 class _MenuManageScreenState extends State<MenuManageScreen> {
   String _selectedCatId = '';
 
+  /// 汇率输入框（按币种各一个；第一次 build 时懒创建）。
+  final Map<String, TextEditingController> _rateCtls = {};
+
+  @override
+  void dispose() {
+    for (final c in _rateCtls.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  static String _fmtRate(double v) => v <= 0
+      ? ''
+      : (v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2));
+
+  TextEditingController _rateCtl(String code, double rate) => _rateCtls
+      .putIfAbsent(code, () => TextEditingController(text: _fmtRate(rate)));
+
   @override
   Widget build(BuildContext context) {
     final pos = context.watch<PosController>();
-    final settings = context.watch<SettingsController>().settings;
+    final settingsCtl = context.watch<SettingsController>();
+    final settings = settingsCtl.settings;
     final currency = settings.currencySymbol;
 
     final cats = pos.categories;
@@ -36,6 +62,52 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // ---- 币种与汇率（收款框里的三个币种按它换算）----
+          _sectionTitle(L10n.t('menu.rates')),
+          Card(
+            color: Colors.white,
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    L10n.t('menu.rates.hint'),
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                  ),
+                  const SizedBox(height: 10),
+                  // 本位币 = 店里收钱的货币
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          L10n.t('menu.baseCurrency'),
+                          style: const TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      DropdownButton<String>(
+                        value: settings.baseCurrency,
+                        items: [
+                          for (final c in kCashCurrencies)
+                            DropdownMenuItem(value: c, child: Text(c)),
+                        ],
+                        onChanged: (v) {
+                          if (v != null) settingsCtl.setBaseCurrency(v);
+                        },
+                      ),
+                    ],
+                  ),
+                  const Divider(height: 18),
+                  for (final code in kCashCurrencies)
+                    if (code != settings.baseCurrency)
+                      _rateRow(
+                          settingsCtl, code, settings.rateFor(code), currency),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
           _sectionTitle(L10n.t('menu.categories')),
           Card(
             color: Colors.white,
@@ -72,6 +144,48 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
             onPressed: () => _resetMenu(pos),
             icon: const Icon(Icons.refresh),
             label: Text(L10n.t('menu.reset')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 一行汇率：`1 USD = [ 18.50 ]`。
+  ///
+  /// **改完立刻保存**（不用点按钮）；清空 = 没设汇率 → 收款时那个币种是灰的。
+  Widget _rateRow(
+    SettingsController ctl,
+    String code,
+    double rate,
+    String baseSymbol,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 90,
+            child: Text(
+              '1 $code =',
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            ),
+          ),
+          Expanded(
+            child: TextField(
+              controller: _rateCtl(code, rate),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                border: const OutlineInputBorder(),
+                isDense: true,
+                prefixText: '$baseSymbol ',
+                hintText: '0',
+              ),
+              onChanged: (v) => ctl.setExchangeRate(
+                code,
+                double.tryParse(v.trim().replaceAll(',', '.')) ?? 0,
+              ),
+            ),
           ),
         ],
       ),
@@ -163,7 +277,12 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
     return ListTile(
       leading: _colorDot(colorValue),
       title: Text(m.name),
-      subtitle: Text(money(m.price, currency)),
+      subtitle: Text(
+        // 有单位就显示成「¥140.00 / 份」
+        m.hasUnit
+            ? '${money(m.price, currency)} / ${m.unit}'
+            : money(m.price, currency),
+      ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -320,6 +439,8 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
     final nameCtl = TextEditingController(text: existing?.name ?? '');
     final priceCtl =
         TextEditingController(text: existing?.price.toString() ?? '');
+    // 菜价的单位（Excel 里的「单位」列，例如 份 / 杯 / 公斤）
+    final unitCtl = TextEditingController(text: existing?.unit ?? '');
     return showDialog<MenuItem>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -346,6 +467,15 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
                 border: const OutlineInputBorder(),
               ),
             ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: unitCtl,
+              decoration: InputDecoration(
+                labelText: L10n.t('menu.itemUnit'),
+                helperText: L10n.t('menu.itemUnitHint'),
+                border: const OutlineInputBorder(),
+              ),
+            ),
           ],
         ),
         actions: [
@@ -367,6 +497,7 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
                 categoryId: categoryId,
                 // 保留原来的「定制项」（Excel 导入的），编辑时不要弄丢
                 options: existing?.options ?? const [],
+                unit: unitCtl.text.trim(),
               );
               Navigator.pop(dialogContext, item);
             },

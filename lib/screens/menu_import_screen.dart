@@ -5,8 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../l10n/app_strings.dart';
+import '../models/menu_item.dart';
 import '../services/menu_importer.dart';
 import '../state/pos_controller.dart';
+import '../state/settings_controller.dart';
+import '../utils/format.dart';
 
 /// 从 Excel 导入菜单。
 ///
@@ -37,6 +40,7 @@ class _MenuImportScreenState extends State<MenuImportScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final currency = context.watch<SettingsController>().settings.currencySymbol;
     return Scaffold(
       appBar: AppBar(title: Text(L10n.t('menu.import'))),
       body: ListView(
@@ -146,6 +150,20 @@ class _MenuImportScreenState extends State<MenuImportScreen> {
                       style: TextStyle(
                           fontSize: 12, color: Colors.grey.shade700),
                     ),
+                    // ---- 价格示例：一眼确认「基础价 + 选项加价」读进来了 ----
+                    const SizedBox(height: 12),
+                    Text(
+                      L10n.t('menu.import.sample'),
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    for (final it in _result!.data.items.take(3))
+                      Text(
+                        '• ${it.name} = ${money(it.minUnitPrice, currency)}'
+                        '   (${_breakdown(it)})',
+                        style: const TextStyle(fontSize: 12),
+                      ),
                     const SizedBox(height: 10),
                     SizedBox(
                       width: double.infinity,
@@ -163,6 +181,23 @@ class _MenuImportScreenState extends State<MenuImportScreen> {
         ],
       ),
     );
+  }
+
+  /// 「基础价 + 各定制项（取第一个选项）加价」的可读说明，用在导入预览里。
+  String _breakdown(MenuItem it) {
+    final parts = <String>[
+      '${L10n.t('menu.basePrice')} ${money(it.price, '')}',
+    ];
+    for (final g in it.options) {
+      if (g.isEmpty) continue;
+      final first = g.options.first;
+      if (g.hasPrices) {
+        parts.add('${g.name} $first +${money(g.priceOf(first), '')}');
+      } else {
+        parts.add(g.name);
+      }
+    }
+    return parts.join(' + ');
   }
 
   Future<void> _pickFile() async {

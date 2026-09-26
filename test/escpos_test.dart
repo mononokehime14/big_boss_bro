@@ -83,4 +83,46 @@ void main() {
       expect(_contains(b, [0x1C, 0x2E]), isTrue, reason: 'FS . 退出');
     });
   });
+
+  // 厨师单字体大小 = ESC/POS 的 `GS ! n`（0x1D 0x21 n）。
+  group('字号指令（厨师单字体大小）', () {
+    test('正常字号：不发 GS !（老行为一个字都不变）', () {
+      final b = buildEscPosBytes([const TicketLine('AB')]);
+      expect(_contains(b, [0x1D, 0x21]), isFalse);
+    });
+
+    test('大（双倍高）= GS ! 0x01，打完后复原 GS ! 0x00', () {
+      final b = buildEscPosBytes(
+          [const TicketLine('AB', scale: TicketScale.large)]);
+      expect(_contains(b, [0x1D, 0x21, 0x01]), isTrue);
+      expect(_contains(b, [0x1D, 0x21, 0x00]), isTrue, reason: '要复原');
+    });
+
+    test('放大行同时也设行距（ESC 3 48 = 24 点 × 2），打完 ESC 2 复位', () {
+      final b = buildEscPosBytes(
+          [const TicketLine('AB', scale: TicketScale.large)]);
+      expect(_contains(b, [0x1B, 0x33, 0x30]), isTrue, reason: 'ESC 3 48');
+      expect(_contains(b, [0x1B, 0x32]), isTrue, reason: 'ESC 2 行距复位');
+    });
+
+    test('特大（双倍宽高）= GS ! 0x11', () {
+      final b = buildEscPosBytes(
+          [const TicketLine('AB', scale: TicketScale.xlarge)]);
+      expect(_contains(b, [0x1D, 0x21, 0x11]), isTrue);
+    });
+
+    test('双倍宽时列数减半（58mm 32→16，80mm 48→24）', () {
+      expect(TicketScale.normal.columnsFor(32), 32);
+      expect(TicketScale.large.columnsFor(32), 32, reason: '只加高，列数不变');
+      expect(TicketScale.xlarge.columnsFor(32), 16);
+      expect(TicketScale.xlarge.columnsFor(48), 24);
+    });
+
+    test('设置里的 1/2/3 映射到三档字号', () {
+      expect(TicketScale.fromKitchenFontSize(1), TicketScale.normal);
+      expect(TicketScale.fromKitchenFontSize(2), TicketScale.large);
+      expect(TicketScale.fromKitchenFontSize(3), TicketScale.xlarge);
+      expect(TicketScale.fromKitchenFontSize(9), TicketScale.normal);
+    });
+  });
 }

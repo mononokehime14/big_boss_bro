@@ -18,12 +18,22 @@
 ```
 ① 点菜 + 下单（给厨房）            ② 追单（可选）                ③ 结账（给顾客）
 ------------------------        ------------------           ------------------
-点单页点菜 → 底部「下单」          继续点菜 → 「下单」            订单页「进行中」找到该单
- → 购物车选「新单 + 桌号」           → 购物车切「追加到已有单」      → 点「结账」→ 选支付方式
- → 确认                             → 选那张单 → 确认              → 订单转「已结单」
- → 订单变「进行中」                  → 菜并入同一张单               → 打「顾客小票」
- → 打「厨房单」(菜名+数量+桌号)       → 打一张标注(追加)的厨房单      (单价/金额/支付方式)
+购物车顶部下拉选「桌号 / 外卖」      继续点菜                     订单页「进行中」找到该单
+ → 点菜 → 「下单」                 → 按钮自动变「加单」           → 点「结账」→ 选支付方式
+ → 确认（打厨房单）                 → 确认（打标注「追加」的厨房单） → 订单转「已结单」
+ → 订单变「进行中」                  → 菜并入同一张单               → 打「顾客小票」(单价/金额/支付方式)
 ```
+
+> **下单目标（桌号/外卖）怎么选**：不用先选桌、也不用进单独页面，**就在右侧购物车最上面的下拉框里选**
+> （`widgets/cart_panel.dart` 的 `_targetSelector`）。理由是收银员点菜和「给哪桌」是同一件事的两半，
+> 放在一起就不用为「改桌」跳来跳去。下拉里**已有菜的桌子标橙色 +「已有 N」**，空桌标绿色，
+> 一眼能看出哪桌还在吃。选中堂食某桌时，如果那桌有进行中的单，按钮自动变「**加单**」
+> （`PosController.openOrderForSelectedTable()` 判定）；**外卖永远不自动并入**（每单独立）。
+
+> **结账这一步现在能做的事**（`widgets/payment_flow.dart` 的收款框）：
+> 看金额明细（小计/折扣/税/合计）→ 给**折扣**（百分比或减金额）→ 选**收款币种**（MXN/USD/RMB，
+> 每格显示该币种的应收与汇率）→ 选现金（输入实收，下面大字显示找零）或刷卡（显示应收 + 银行卡动画）。
+> **一单一次收清**（不做 AA），收完即结单并打顾客小票。
 
 **两条关键设计**
 1. **先记单、后打印**：只要确认下单/结账，订单立刻保存；打印失败只提示“重试/跳过”，**订单绝不丢**。
@@ -39,14 +49,15 @@
 big_boss_bro/
 ├─ lib/
 │  ├─ main.dart              入口：按平台选打印服务 → 启动 App
-│  ├─ app.dart               主题(Loyverse绿 #1FA85A) + 用 MultiProvider 注入全局状态/服务
+│  ├─ app.dart               主题(Loyverse绿 #1FA85A) + MultiProvider 注入全局状态/服务 + **登录门禁**
 │  ├─ l10n/app_strings.dart  全部文案 zh/es/en，用 L10n.t('key') 取
-│  ├─ models/                数据“形状”：Category/MenuItem/CartItem/Order（含 toJson/fromJson）
-│  ├─ data/                  数据存取与默认值：sample_menu/菜单、订单、设置 三个 Store
-│  ├─ state/                 业务状态：pos_controller(点单/购物车/结账/历史/菜单)、settings_controller
-│  ├─ services/              打印：receipt_print_service(接口)/bluetooth_print_service(蓝牙)/stub_print_service(占位)/receipt_layout(排版)
-│  ├─ screens/               整页：home_shell(底部3tab)/pos_screen(点单)/orders_screen(历史)/settings_screen(设置)/menu_manage_screen(菜品)
-│  └─ widgets/               可复用块：category_chips/menu_grid/cart_bottom_bar/cart_sheet/payment_flow
+│  ├─ models/                数据“形状”：Category/MenuItem/CartItem/Order(+Payment)/Account
+│  ├─ utils/                 纯函数规则：pricing(折扣/税/金额)、category_colors、format
+│  ├─ data/                  数据存取与默认值：sample_menu/菜单、订单、设置、**账号** 四个 Store
+│  ├─ state/                 业务状态：pos_controller(点单/购物车/结账/收款/历史/菜单)、settings_controller、**auth_controller(账号/权限)**
+│  ├─ services/              打印与统计：receipt_print_service(接口)/print_service(三通道分发)/receipt_layout(排版)/sales_totals(日结统计)/escpos/ticket_builder/menu_importer
+│  ├─ screens/               整页：home_shell(底部3tab)/login_screen(**登录**)/pos_screen/orders_screen/daily_summary_screen/settings_screen/menu_manage_screen/menu_import_screen/**accounts_screen**
+│  └─ widgets/               可复用块：menu_area/menu_grid/cart_panel/payment_flow(**收款框**)/admin_gate/account_menu
 ├─ test/                     单元/冒烟测试
 ├─ android/ windows/         Flutter 自动生成的原生外壳
 ├─ pubspec.yaml              依赖清单  assets/ 资源
@@ -247,7 +258,81 @@ Excel(.xlsx) ──xlsx_reader──> 二维字符串表 ──menu_importer─�
 - 弹出窗统一**居中**：个性化定制用 `Dialog`（`widgets/item_customize_dialog.dart`），
   选打印机用 `AlertDialog`——比底部抽屉更适合大屏触控收银机。
 
-### 9. 异步与重建（容易踩的两个点）
+### 9. 金额规则：折扣与税（**只写一遍**）
+
+「金额算错」是收银系统最要命的 bug，所以规则**只集中在一处**：`utils/pricing.dart`。
+
+```
+小计 subtotal = Σ(单价 × 数量)
+折扣 discount = 小计 × 折扣率   或   固定金额（上限 = 小计）
+净额 net      = 小计 - 折扣
+税   tax      = 价外税：net × 税率        价内含税：net - net×100/(100+税率)
+应收 total    = 含税 ? net : net + tax
+```
+
+- `PriceBreakdown.of(...)` 是**纯函数**：购物车、订单、收款框、小票、日结全调它，
+  杜绝「购物车显示一个数、小票打另一个数」。每次计算都过 `round2()`（四舍五入到分）。
+- **顺序**：先打折、后算税（各地税务的通行做法）。
+- **什么时候算**：
+  - 税 —— 设置里配（税率 + 含税开关），**下单时快照进订单**（`Order.taxRate/taxIncluded`），
+    以后改设置不影响已开的单；`appendToOrder()` 用订单自己的税率重算。
+  - 折扣 —— **结账时**由收银员在收款框里输，写进订单（`Order.discountType/discountValue`）；
+    追单时也用订单自己的折扣重算，不会丢。
+- 归类：`DiscountType`（none/percent/amount）也在 pricing 里，`Order.discountLabel()` 负责显示成 `-10%` / `-¥20.00`。
+
+### 10. 账号与权限（管理员 / 收银员）
+
+```
+accounts(JSON) ──AccountStore──> AuthController ──> app.dart 门禁(未登录 → LoginScreen)
+                                        │
+                                        ├─ requireAdmin(context)：管理员直通 / 收银员输管理员密码**临时提权**
+                                        └─ 界面里的危险入口（设置、日结、删单、菜单管理）都包一层它
+```
+
+- 角色只有两种，避免复杂：`admin`（菜单/设置/日结/删单/账号管理）、`cashier`（点单/下单/结账/打折）。
+- **默认管理员**：`admin` / `8888`；`AccountStore.load()` 发现一条账号都没有时**自动创建**，
+  保证任何情况下都进得去（不会把自己锁在门外）。
+- **提权（elevate）**：收银员做管理员的事时弹「请输入管理员密码」，对了就在**本次会话**内有效，
+  退出登录/重启即失效。好处是收银台前面不用「退出→登录→做事→再退出→登录」。
+  这个状态记在 `AuthController._elevated`，界面用 `canManage` 判断、`isElevated` 给提示。
+- 密码是**明文存本机**的：这类离线收银机只需要挡「店员随手改菜单」，不用于防攻击；
+  真要更安全，以后把 `Account.pin` 换成哈希即可（改动只在 `Account` 和 `AuthController`）。
+- 安全护栏写在控制器里（不是界面里）：**不能删自己、不能删/降级最后一个管理员**。
+
+### 11. 收款：一次收清 + 三个币种 + 汇率
+
+```
+收款框（widgets/payment_flow.dart）
+  ├─ 应收（大字，本位币）+ 小计 / 折扣 / 税 / 合计明细
+  ├─ 收款币种：MXN / USD / RMB —— 每格写着「这个币种要收多少」+ 汇率
+  ├─ 现金 → 输入实收 → **大字找零**（不够就红字「还差」并禁用确认按钮）
+  └─ 刷卡 → 应收 + 银行卡动画（widgets/bank_card_anim.dart）
+        │
+        └─ CheckoutResult ──> PosController.closeOrder() ──> 打「顾客小票」
+```
+
+- **一单一次收清**：不做分开付（AA 已按你的要求删掉），所以 `Order.payments` 实际只有一条。
+  保留成列表是为了**老数据能读回来**（`Order._paymentsFromJson` 把只有 `paymentMethod` 的老单补成一条收款）。
+- **汇率口径**（`Settings.exchangeRates`）：**1 个外币 = 多少「店里收钱的货币」**（本位币 = `Settings.baseCurrency`）。
+  例：本位币 MXN、`1 USD = 18.5` → 应收 84 MXN 在收款框里显示成 `$4.54 USD`。
+  本位币自己的汇率恒为 1；没填（0）表示**没设汇率** → 那格是灰的，不瞎换算。
+  换算只有两个纯函数：`toForeign()` / `toBase()`（`utils/pricing.dart`，有单测）。
+  汇率在「**菜品管理 → 币种与汇率**」里改（老板改菜单时顺手能改）。
+- **账怎么记（关键不变量）**：
+  - `Payment.amount` **永远记本位币**（= 订单应收）→「已收 = 应收」永远成立，日结总营业额永远对得上；
+  - `Payment.received` / `change` 记**客人那个币种**的数字（实收/找零按那个币种打在小票上）；
+  - `Order.exchangeRate`：**0 = 用店里的货币收的**（不需要换算），> 0 = 外币汇率。
+    界面和打印都用这一条判断「是不是外币单」（`Order.isForeignCurrency`）。
+- **日结**（`services/sales_totals.dart`）：刷卡按订单应收（本位币）汇总；
+  现金**按客人付的币种分行**，金额取 `实收 - 找零`（= 钱箱里实际剩下的那种钱）。
+  所以「现金 USD」那一行是「钱箱里有多少美元」，而总营业额始终是本位币 —— 单位不同、不会对不上账。
+- **刷卡动画**：不连刷卡机，纯用 `AnimationController` + `Transform` 画一张会摇晃的卡 + 波纹，
+  只表示「请在刷卡机上操作」；刷卡机成功了收银员再点确认（钱的事不让程序自己猜）。
+- **菜品单位**：`MenuItem.unit`（Excel 的「单位」列）沿 `CartItem → OrderLine.unit` 带到小票；
+  菜单格子和购物车显示 `¥140.00 / 份`，厨房单的数量栏打 `2 份`；
+  **单位太长就只打数量**（`_qtyCell` 先量显示宽度），免得把整张票的列挤歪。
+
+### 12. 异步与重建（容易踩的两个点）
 
 - **fire-and-forget 加载**：`SettingsController()..load()` 在 provider 里不 await；`load` 完成后 `notifyListeners()` 让界面刷新。所以短暂“默认值 → 读到真实值”的过渡是预期行为。
 - **const 对重建的影响**：const widget 实例相同，父级重建时 Flutter 会**跳过它**。
@@ -255,19 +340,22 @@ Excel(.xlsx) ──xlsx_reader──> 二维字符串表 ──menu_importer─�
   本项目已把读文案的组件（CategoryChips/CartBottomBar/空状态等）改为**非 const**，并在 `app.dart` 用
   `ValueListenableBuilder` 监听语言切换。
 
-### 10. 命名空间与名字冲突（务必记住）
+### 12. 命名空间与名字冲突（务必记住）
 
 Flutter 自带的 `foundation.Category` 与我们 `models/category.dart` 的 `Category` 重名，
 同文件既 import 两者会冲突。解决方案是 `import 'package:flutter/...' hide Category` 或
 `show ChangeNotifier`。详见 `troubleshooting.md` 问题 1。**新文件碰到类似情况照做即可。**
 
-### 11. 测试策略
+### 13. 测试策略
 
+- `test/pricing_test.dart`：**折扣 / 税 / 取整 / JSON 往返 / 老数据兼容**（金额规则只有这一处，必须钉死）。
+- `test/currency_test.dart`：**汇率换算 / 外币结账 / 小票上的币种与单位 / 日结按币种分现金**。
+- `test/auth_test.dart`：默认管理员、登录、临时提权、不能删自己/最后一个管理员、账号持久化。
 - `test/receipt_layout_test.dart`：金额、中文按 2 列、58/80mm 不爆行、小票内容。
 - `test/pos_controller_test.dart`：点单逻辑（加购/数量合并/合计/结账/清空/删除/菜单CRUD/恢复默认）。
-- `test/order_store_test.dart`、`test/menu_store_test.dart`：持久化保存→读回。
-- `test/widget_test.dart`：App 能启动并出现“菜单”。
-这些都用**纯逻辑 + 假存储**（`SharedPreferences.setMockInitialValues`），不需要真机/打印。
+- `test/order_store_test.dart`、`test/menu_store_test.dart`、`test/settings_test.dart`：持久化保存→读回。
+- `test/widget_test.dart`：**先验证登录页，再用默认管理员登录**，能看到“菜单”标签。
+- 这些都用**纯逻辑 + 假存储**（`SharedPreferences.setMockInitialValues`），不需要真机/打印。
 
 ---
 
@@ -278,6 +366,9 @@ Flutter 自带的 `foundation.Category` 与我们 `models/category.dart` 的 `Ca
 - 2️⃣ Windows 构建报 `BluetoothConnection.output` 的 `Uint8List` / `allSent` → 用 `Uint8List.fromList` + `output.allSent`
 - 3️⃣ 切语言文字不刷新 → 不要用 `const` 包住读 `L10n.t` 的组件；`app.dart` 监听 `L10n.lang`
 - 4️⃣ `flutter test` 报 `MyApp` 未定义 → `flutter create` 生成的默认测试覆盖了你的 `widget_test.dart`，删掉即可
+- 5️⃣ `const` map 里 key 写重 → 编译报错（`app_strings.dart` 加文案时注意别和已有的重名）
+- 6️⃣ 加了「登录门禁」后旧的冒烟测试会挂 → 测试要**先登录**再断言主界面（见 `test/widget_test.dart`）
+- 7️⃣ 金额算错 → 只改 `utils/pricing.dart`，别在界面里另算一遍
 
 ---
 
@@ -291,8 +382,16 @@ Flutter 自带的 `foundation.Category` 与我们 `models/category.dart` 的 `Ca
 
 ## 八、后续可扩展点
 
-- **Windows USB/网络打单**：新增一个实现 `ReceiptPrintService` 的类，在 `main.dart` 换掉即可。
-- **菜品图片 / 折扣 / 桌号 / 税**：`models` 加字段 → `pos_controller` 加逻辑 → 界面加输入 → 小票加行。
-- **西语/英语补全**：往 `app_strings.dart` 对应 map 加 key。
-- **日结算**：今天所有结过的单子做一个汇总（可按日期统计营业额/单数）。
-- **分开支付（AA）**：从购物车挑出几项先结，剩下的再结，方便多人各自付各自。
+- **Windows USB/网络打单**：已实现（`print_service.dart` 三通道分发）；再加通道只需实现 `ReceiptPrintService`。
+- **菜品图片 / 零钱柜**：`models` 加字段 → `pos_controller` 加逻辑 → 界面加输入 → 小票加行。
+- **西语/英语补全**：文案已补齐（`app_strings.dart` 三个 map），还差**逐屏人工检查**（长文案会不会挤爆布局）。
+- **折扣更细**：现在是「整单折扣」。要做**单品折扣**就在 `OrderLine` 上加折扣字段，
+  并让 `PriceBreakdown` 的小计改成「按行算完再相加」；规则仍然只改 pricing 一处。
+- **税更细**：现在是「全店一个税率」。要做**按菜品分类不同税率**，
+  给 `Category`/`MenuItem` 加 `taxRate`，然后 `PriceBreakdown` 按行累加税（应收 = 各行净额+各行税）。
+- **AA 更细**：现在**没有**分开付（已按要求删掉）。真要做「按菜分账」（谁点了哪几个菜谁付），
+  在收款框里加一个「按菜勾选」界面，把选中的行金额作为本次收款额，
+  并让 `closeOrder` 支持传入已收金额（数据模型不用改：`payments` 本来就是列表）。
+- **账号安全**：`Account.pin` 明文 → 换哈希（只动 `Account` / `AuthController`）。
+- **云端同步 / 多收银台**：现在全部是本机 `shared_preferences`；要联网得加一层「Store 的远端实现」，
+  界面和控制器不用改（这也是把存取的 `data/×Store` 单独放一层的原因）。

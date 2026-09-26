@@ -297,6 +297,129 @@
 
 ---
 
-## 问题 8：（预留）下一个报错
+## 问题 8：Excel 改了结构后，导入把「选项价格」列当成了定制项名
+
+- **现象 / 报错原文**（`flutter test`）：
+  ```
+  test/menu_importer_test.dart: 真实样例 … 能解析出 2 个分类 / 12 个菜品 …
+  Expected: <2>
+    Actual: <9>
+  ```
+  （测试断言失败只是表象——真正的问题是**解析结果不对**。）
+
+- **原因**：你把 Excel **升级了结构**。原来是「分类 / 菜名 / (定制项, 选项)×N」，现在是：
+  ```
+  种类 | 菜品名字 | 基础价格 | 个性化定制项1 | 定制1选项 | 定制1选项价格 | 个性化定制项2 | 定制2选项
+  ```
+  即：**每个定制项占 3 列**（名字 / 选项 / **每个选项的加价**），并且分类从 2 个涨到 9 个。
+  而旧解析器是「剩下两列一组」，所以会把 `定制1选项价格` 当成**下一个定制项的名字**、
+  把 `个性化定制项2` 当成它的选项 → 选项组全乱、价格丢失。
+  （测试里写死的 `2 个分类 / 12 个菜品` 也是照旧文件写的，所以一起挂了。）
+
+- **处理**：
+  1. `models/menu_option_group.dart`：定制项增加 **`prices`（与选项一一对应的加价）** + `priceOf()` / `hasPrices`。
+  2. `models/menu_item.dart`：新增 **`unitPriceFor(selections)` = 基础价 + 各选中项加价**、`minUnitPrice`（菜单起价）。
+  3. `models/cart_item.dart`：新增 `unitPrice`（= `unitPriceFor`），购物车/订单金额都用它。
+  4. `services/menu_importer.dart`：分组规则改成
+     **「名字列 + 选项列 [+ 价格列]」**；价格列的判定是表头含「价格 / price / precio」
+     （所以「定制1选项价格」会被认成价格列，而不是定制项名）；`_parsePrices('140/185') → [140,185]`，
+     个数按选项数对齐、缺的补 0。
+  5. 界面：菜单格子显示**起价**（`minUnitPrice`）；定制弹窗显示**随选择实时变化的单价**，
+     并在选项上标出加价（如 `Grande +185`）。
+  6. 测试：真实文件那条**不再写死数量**（只验证结构 + 关键事实 + 「价格列没被当成定制项」这条回归），
+     并新增「三列一组」「价格不足补 0」的合成用例。
+
+- **涉及文件**：`lib/models/menu_option_group.dart`、`lib/models/menu_item.dart`、`lib/models/cart_item.dart`、
+  `lib/services/menu_importer.dart`、`lib/state/pos_controller.dart`、`lib/widgets/menu_grid.dart`、
+  `lib/widgets/cart_panel.dart`、`lib/widgets/item_customize_dialog.dart`、`lib/widgets/payment_flow.dart`、
+  `test/menu_importer_test.dart`、`test/pos_controller_test.dart`
+
+- **状态**：已修复 ✅
+
+- **以后注意**：
+  1. **测试不要写死会变的业务数据**（菜品数量、分类数量）——这类断言一改表就失效；
+     应该断言「结构/关系/关键事实」（如「每道菜的分类必须存在」「价格列不能被当成定制项」）。
+  2. 导入器这类代码，**列的角色要按表头语义识别**，并对新增列保持宽容。
+
+---
+
+## 问题 9：菜单里**价格全是 0**（你的 Excel 明明有 140 / 185）
+
+- **现象**（你在 App 里看到的）：点单页每个菜格子都显示 `$0`，定制弹窗里选 `Grande` 也不加价。
+  代码里 `prices` / `unitPriceFor()` 都已经写好、`flutter test` 也全绿——**但界面还是 0**。
+
+- **原因（两个叠在一起）**：
+  1. **旧解析器留下的数据**：菜单是存在 `shared_preferences` 里的（`data/menu_store.dart`）。
+     你上次导入是**旧解析器**干的活——那次它没识别出价格列（见问题 8），
+     所以**存进去的菜单里价格本来就是 0**。改代码只影响「以后导入」，**不会自动修好已经存下的数据**。
+  2. 所以：**必须重新导入一次 Excel**（或者进「菜品管理」逐个改价），价格才会出现在菜单里。
+
+- **处理**：
+  1. 让失败**看得见**：`services/menu_importer.dart` 在「所有菜的价格都是 0」时返回**警告**，
+     导入页会直接提示，不再让你蒙在鼓里。
+  2. 让结果**可核对**：`screens/menu_import_screen.dart` 的预览现在会**列出每个定制项的价格样本**
+     （如 `Size: Mediano 0 · Grande 185`），导入前就能看出价格有没有读进来。
+  3. 链路补齐：`MenuOptionGroup.prices` → `MenuItem.unitPriceFor(selections)` → `CartItem.unitPrice`
+     → 购物车/订单/小票金额全部一致（菜单格子显示 `minUnitPrice` 起价）。
+  4. `log.md` 的验证清单里写死一句：**改完导入逻辑后要重新导入一次**。
+
+- **涉及文件**：`lib/services/menu_importer.dart`、`lib/screens/menu_import_screen.dart`、
+  `lib/models/menu_option_group.dart`、`lib/models/menu_item.dart`、`lib/models/cart_item.dart`
+
+- **状态**：已修复 ✅（**待你重新导入 Excel 确认**）
+
+- **以后注意**：
+  1. **持久化的数据不会跟着代码一起修好**。改了「解析/计算」逻辑后，要问一句：
+     「已经存进去的老数据怎么办？」——要么让用户重导一次，要么写一段迁移代码。
+  2. 排查这类问题时，先分清楚是**读错了**还是**存错了**（这次是后者：数据早就存成 0 了）。
+
+---
+
+## 问题 10：`flutter test` 两个编译错误（标签字段挂错对象 / 测试里少 import material）
+
+- **现象 / 报错原文**（`flutter test`）：
+  ```
+  lib/services/receipt_layout.dart:424:25: Error: The getter 'thankyou' isn't defined for the type 'SplitData'.
+    lines.add(padCenter(d.thankyou, cols));
+                          ^^^^^^^^
+
+  test/widget_test.dart:29:40: Error: Undefined name 'TextField'.
+      await tester.enterText(find.byType(TextField).first, '8888');
+                                         ^^^^^^^^^
+  ```
+  两个错误都会让**整份测试文件编译不过**（显示 `Failed to load ...: Compilation failed`），
+  所以 `receipt_layout_test.dart` / `split_payment_test.dart` / `widget_test.dart` 三个文件直接没跑。
+
+- **原因**：
+  1. **字段挂错对象**。为了让小票文案能跟着「小票语言」变，我把小票的文字都放进 `xxxLabels` 类里
+     （`ReceiptLabels` / `KitchenLabels` / `SplitLabels`），数据放在 `xxxData` 里。
+     写 `buildSplitLines` 时，最后一行「谢谢光临」我写成了 `d.thankyou`，
+     但 `SplitData` 上没有这个字段 —— 它在 `d.labels.thankyou`。
+     （同一个文件里其它地方我写的是对的 `d.labels.labelTotal`，就这一行漏了 `labels`。）
+  2. **测试里用了 Flutter 组件类却没 import**。`TextField` 属于 `package:flutter/material.dart`，
+     而 `package:flutter_test/flutter_test.dart` **不会**把它转出来。
+     `find.text(...)` / `find.byType(TextField)` 里的 `TextField` 是真实类型，必须自己 import。
+
+- **处理**：
+  1. `lib/services/receipt_layout.dart`：`d.thankyou` → **`d.labels.thankyou`**。
+  2. `test/widget_test.dart`：加上 `import 'package:flutter/material.dart';`（放在 `flutter_test` 之前）。
+  3. 顺手把 widget_test 的等待改稳一点：`pumpAndSettle()` 之后再 `pump(100ms)` + `pumpAndSettle()`，
+     确保账号从本地读回来（登录页才会出现默认管理员）。
+
+- **涉及文件**：`lib/services/receipt_layout.dart`、`test/widget_test.dart`
+
+- **状态**：已修复 ✅（等你重跑 `flutter test` 确认）
+
+- **以后注意**：
+  1. **文案和数据分家时，最容易写错归属**。规则：`XxxData` 只放数据，`XxxLabels` 只放文字；
+     用到文字时一律 `d.labels.xxx`。加字段时**两边都看一眼**。
+  2. `flutter test` 一次只把「第一个编译错误」摆在你面前（每个测试文件单独编译）。修完一个**要再跑一次**，
+     可能还有下一个 —— 别以为修好一个就完事了。
+  3. 测试文件里凡是出现 Flutter 的组件类（`TextField`、`Text`、`Column`…），
+     就要 `import 'package:flutter/material.dart';`；只用 `find.text` / `expect` 则不需要。
+
+---
+
+## 问题 11：（预留）下一个报错
 
 > 遇到就照模板填（现象/原因/处理/文件/状态），并同步更新 `log.md` 变更记录。

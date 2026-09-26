@@ -2,14 +2,21 @@
 
 一套 Flutter 源码，同时编译出 **安卓** 和 **Windows** 两个平台。
 
-- 点单 dashboard（分类 + 菜品格子）
-- 购物车、改数量、结账
-- 蓝牙热敏打印机打小票 + 打印失败“重试/跳过，绝不丢单”
-- 已结订单历史（含删除）
-- 多语言：中文（当前）/ 西语 / 英语
+- 点单 dashboard（种类 → 菜品两步，格子按种类配色）
+- 购物车常驻右侧（宽屏 60/40）、桌号 / 堂食外卖、追加单（加单）
+- 每道菜的**个性化定制**（大小份、加料…）+ 按种类分组的常用备注；菜单可**从 Excel 导入**
+- 结账：**折扣**（百分比 / 减金额）、**税**（含税或价外税）、
+  **三个币种 MXN/USD/RMB 带汇率**（汇率在「菜品管理」里改）、现金实收 + **大字找零**、刷卡**银行卡动画**
+- 菜品**单位**（Excel 的「单位」列：份 / 杯 / 公斤），菜单、购物车、厨房单都会显示
+- 两种打印：下单打「厨房单」、结账打「顾客小票」；通道 = 蓝牙 / 网络 / Windows 打印机
+  （打印失败「重试 / 跳过」，**绝不丢单**）
+- 订单历史（进行中 / 已结单，可删除）、**日结**（营业额 + 折扣 + 税 + 分支付方式/币种 + 支出 + 净额）
+- **多账号 + 权限**：管理员（菜单/设置/日结/删单）与收银员（点单/结账/打折）
+- 多语言：中文 / 西语 / 英语（界面与小票可分别设语言）
 
+> 🔑 **第一次启动会要求登录**：默认账号 `admin`，密码 `8888`（进「设置 → 账号管理」可改密码、加收银员）。
 > 🖥️ 想在 **Windows 触屏收银机**上跑（安卓手机不在时）：请直接看 **`setup.md`**。
-> 架构与代码怎么分层、`Category` 名字冲突的坑，看 **`design.md`**。
+> 架构与代码怎么分层、权限与金额规则怎么设计的，看 **`design.md`**。
 
 ---
 
@@ -18,18 +25,20 @@
 ```
 lib/
   main.dart                           程序入口（在这里选打印服务）
-  app.dart                            主题（Loyverse 绿） + Provider 装配
+  app.dart                            主题（Loyverse 绿） + Provider 装配 + 登录门禁
   l10n/app_strings.dart               全部文案（zh/es/en）
-  models/                             分类 / 菜品 / 购物车行 / 订单
-  data/sample_menu.dart               示例菜单（写死，之后自己做管理界面）
-  data/settings_store.dart            设置存取（存到本机 shared_preferences）
-  state/pos_controller.dart           点单状态（购物车、结账、订单历史）
+  models/                             分类 / 菜品 / 购物车行 / 订单(+收款) / 账号
+  utils/pricing.dart                  金额规则：小计 / 折扣 / 税 / 应收（唯一一份）
+  data/                               sample_menu / 菜单 / 订单 / 设置 / 账号 的存取
+  state/pos_controller.dart           点单状态（购物车、下单、追单、收款结账、订单历史）
   state/settings_controller.dart      设置状态
+  state/auth_controller.dart          账号与权限（登录、临时提权、账号 CRUD）
   services/receipt_print_service.dart 打印服务【接口】
-  services/bluetooth_print_service.dart 蓝牙打印【实现】
+  services/print_service.dart         三通道分发（蓝牙 / 网络 / Windows 打印机）
   services/receipt_layout.dart        小票排版（纯逻辑，方便单测）
-  screens/                            主页 / 点单 / 订单 / 设置
-  widgets/                            分类标签 / 菜品格子 / 购物车 / 结账流程
+  services/sales_totals.dart          日结统计（纯函数）
+  screens/                            登录 / 主页 / 点单 / 订单 / 日结 / 设置 / 菜单 / 账号
+  widgets/                            菜单区 / 购物车 / 收款框 / 权限门禁 / 账号菜单
   utils/format.dart                   金额格式化
 ```
 

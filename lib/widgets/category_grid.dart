@@ -3,16 +3,23 @@ import 'package:provider/provider.dart';
 
 import '../l10n/app_strings.dart';
 import '../state/pos_controller.dart';
+import '../state/settings_controller.dart';
 import '../utils/category_colors.dart';
+import '../utils/menu_sort.dart';
 
 /// 第一步：显示所有「种类」。每个种类一个颜色，点一下进入里面的菜品。
+///
+/// 顺序按排序条选的来（默认 / 首字母 / 流行度）—— 但**颜色永远按菜单里的
+/// 原始顺序取**（`pos.categories` 的下标），否则换个排序颜色就跟着变了。
 class CategoryGrid extends StatelessWidget {
   const CategoryGrid({super.key});
 
   @override
   Widget build(BuildContext context) {
     final pos = context.watch<PosController>();
-    final categories = pos.categories;
+    final settings = context.watch<SettingsController>().settings;
+    final categories =
+        pos.categoriesSorted(MenuSort.fromId(settings.menuSort));
 
     // 每个种类下有几道菜
     final counts = <String, int>{};
@@ -40,7 +47,10 @@ class CategoryGrid extends StatelessWidget {
       itemCount: categories.length,
       itemBuilder: (context, i) {
         final cat = categories[i];
-        final color = Color(categoryColorAt(cat.colorValue, i));
+        final colorIdx = pos.categories.indexWhere((c) => c.id == cat.id);
+        final color =
+            Color(categoryColorAt(cat.colorValue, colorIdx < 0 ? 0 : colorIdx));
+        final sold = pos.salesOfCategory(cat.id);
         return Card(
           color: color,
           clipBehavior: Clip.antiAlias,
@@ -64,7 +74,8 @@ class CategoryGrid extends StatelessWidget {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    '${counts[cat.id] ?? 0} ${L10n.t('cart.items')}',
+                    '${counts[cat.id] ?? 0} ${L10n.t('cart.items')}'
+                    '${sold > 0 ? ' · ${L10n.t('menu.sold')} $sold' : ''}',
                     style: TextStyle(
                       color: Colors.white.withValues(alpha: 0.85),
                       fontSize: 13,

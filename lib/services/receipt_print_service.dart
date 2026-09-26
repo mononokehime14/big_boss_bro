@@ -1,5 +1,6 @@
 import '../data/settings_store.dart';
 import '../models/order.dart';
+import 'receipt_layout.dart';
 
 /// 一台可打印的设备。
 /// - 蓝牙：`address` 是 MAC 地址
@@ -52,11 +53,18 @@ abstract class ReceiptPrintService {
     bool isAppend = false,
   });
 
-  /// 打印「顾客小票」：结账时给客人（含单价/金额/支付方式）。
+  /// 打印「顾客小票 / 单子」：结账窗口第 ① 步点「确认并打印」时打给客人
+  /// （明细 + 单价/金额 + 折扣/税 + 合计）。
+  ///
+  /// 注意：这时订单还是**进行中**（还没收款），所以纸上**不会**有
+  /// 「支付方式 / 实收 / 找零」那几行 —— 结账流程有意只打这一张（不重复打纸）。
   Future<PrintError?> printReceipt(Order order, Settings settings);
 
   /// 打印一张测试页（验证通道、中文编码、纸宽）。
   Future<PrintError?> printTestPage(Settings settings);
+
+  /// 打印一张「日结」每日汇总。
+  Future<PrintError?> printSummary(SummaryData data, Settings settings);
 
   /// 释放资源。
   Future<void> dispose();
