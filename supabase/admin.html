@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大老板后台 · big_boss_bro</title>
+<style>
+  :root { --green:#1FA85A; --ink:#232829; --line:#e3e8e5; --bg:#f4f6f5; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { background:#fff; border-bottom:1px solid var(--line); padding:12px 16px;
+           display:flex; align-items:center; gap:12px; flex-wrap:wrap; position:sticky; top:0; z-index:5; }
+  h1 { font-size:17px; margin:0; font-weight:700; }
+  .grow { flex:1; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px;
+          margin:14px 16px; }
+  label { display:block; font-size:12px; color:#5b6b62; margin:6px 0 2px; }
+  input, select, button { font:inherit; padding:8px 10px; border:1px solid var(--line);
+          border-radius:8px; background:#fff; color:var(--ink); }
+  input[type=password], input[type=text], input[type=email] { width:100%; }
+  button { cursor:pointer; }
+  button.primary { background:var(--green); color:#fff; border-color:var(--green); font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+  .row > div { flex:1; min-width:180px; }
+  .tabs { display:flex; gap:8px; padding:0 16px; margin-top:12px; flex-wrap:wrap; }
+  .tab { background:#fff; border:1px solid var(--line); border-radius:999px; padding:7px 14px; }
+  .tab.on { background:var(--green); color:#fff; border-color:var(--green); font-weight:600; }
+  table { width:100%; border-collapse:collapse; background:#fff; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:12px; color:#5b6b62; font-weight:600; background:#fafcfb; position:sticky; top:0; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px;
+          background:#eef4f0; color:#2e7d32; }
+  .pill.orange { background:#fff4e5; color:#b25d00; }
+  .pill.purple { background:#f4ecfb; color:#6a1b9a; }
+  .pill.gray { background:#eef1ef; color:#55605a; }
+  .muted { color:#6b7a72; font-size:12px; }
+  .err { color:#c62828; font-size:13px; white-space:pre-wrap; }
+  .ok { color:var(--green); font-size:13px; }
+  .kpi { display:flex; gap:12px; flex-wrap:wrap; }
+  .kpi div { flex:1; min-width:130px; background:#fff; border:1px solid var(--line);
+             border-radius:10px; padding:10px 12px; }
+  .kpi b { display:block; font-size:20px; margin-top:2px; }
+  .scroll { max-height:62vh; overflow:auto; border:1px solid var(--line); border-radius:10px; }
+  details summary { cursor:pointer; color:#2e7d32; }
+  @media (max-width:600px){ .card{margin:10px} th:nth-child(4),td:nth-child(4){display:none} }
+</style>
+</head>
+<body>
+<header>
+  <h1>大老板后台</h1>
+  <span id="who" class="muted"></span>
+  <span class="grow"></span>
+  <span id="status" class="muted">未连接</span>
+  <button id="btnRefresh">刷新</button>
+  <button id="btnExport">导出备份</button>
+  <button id="btnLogout" hidden>退出</button>
+</header>
+
+<!-- ============ 登录 / 配置 ============ -->
+<div id="setup" class="card">
+  <div class="muted">填你的 Supabase 项目和「设备账号」（见仓库里 setup_supabase.md）。这些只存在这台浏览器的本地存储里。</div>
+  <div class="row" style="margin-top:8px">
+    <div>
+      <label>Supabase 项目地址</label>
+      <input id="url" type="text" placeholder="https://xxxxxxxx.supabase.co">
+    </div>
+    <div>
+      <label>anon public key</label>
+      <input id="key" type="text" placeholder="eyJhbGciOi...">
+    </div>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <div>
+      <label>账号（邮箱）</label>
+      <input id="email" type="email" placeholder="admin@bossbro.local">
+    </div>
+    <div>
+      <label>密码</label>
+      <input id="password" type="password" placeholder="••••••">
+    </div>
+    <div style="flex:0 0 auto">
+      <label>&nbsp;</label>
+      <button id="btnLogin" class="primary">登录</button>
+    </div>
+  </div>
+  <div id="setupMsg" class="err" style="margin-top:8px"></div>
+</div>
+
+<!-- ============ 主界面 ============ -->
+<div id="app" hidden>
+  <div class="tabs">
+    <button class="tab on" data-tab="live">进行中的单</button>
+    <button class="tab" data-tab="done">已结账的单</button>
+    <button class="tab" data-tab="day">日结</button>
+    <button class="tab" data-tab="menu">菜单</button>
+  </div>
+
+  <!-- 进行中 -->
+  <div id="tab-live" class="card">
+    <div class="row">
+      <div>
+        <label>每 20 秒自动刷新</label>
+        <select id="autoRefresh">
+          <option value="0">关</option>
+          <option value="20000" selected>开</option>
+        </select>
+      </div>
+      <div>
+        <label>货币符号</label>
+        <input id="cur" type="text" value="$">
+      </div>
+    </div>
+    <div class="muted" style="margin:10px 0 6px">进行中的单（有几台设备在点，这里都能看到）</div>
+    <div class="scroll"><table id="tblLive"></table></div>
+  </div>
+
+  <!-- 已结账 -->
+  <div id="tab-done" class="card" hidden>
+    <div class="row">
+      <div>
+        <label>日期</label>
+        <input id="doneDate" type="date">
+      </div>
+      <div style="flex:0 0 auto">
+        <label>&nbsp;</label>
+        <button id="btnToday">今天</button>
+      </div>
+      <div style="flex:0 0 auto">
+        <label>&nbsp;</label>
+        <button id="btnAllDays">全部</button>
+      </div>
+    </div>
+    <div class="muted" style="margin:10px 0 6px" id="doneSummary"></div>
+    <div class="muted loadInfo" style="margin-bottom:6px"></div>
+    <div class="scroll"><table id="tblDone"></table></div>
+  </div>
+
+  <!-- 日结 -->
+  <div id="tab-day" class="card" hidden>
+    <div class="row">
+      <div>
+        <label>哪一天</label>
+        <input id="dayDate" type="date">
+      </div>
+      <div style="flex:0 0 auto">
+        <label>&nbsp;</label>
+        <button id="btnDayGo" class="primary">看这天</button>
+      </div>
+    </div>
+    <div class="kpi" id="dayKpi" style="margin-top:14px"></div>
+    <div class="muted loadInfo" style="margin-top:10px"></div>
+    <div class="scroll" style="margin-top:12px; max-height:none"><table id="tblDay"></table></div>
+  </div>
+
+  <!-- 菜单 -->
+  <div id="tab-menu" class="card" hidden>
+    <div class="muted" id="menuInfo" style="margin-bottom:8px"></div>
+    <div class="scroll"><table id="tblMenu"></table></div>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// 极简后台：直连 Supabase 的 REST 接口（PostgREST + GoTrue），不依赖任何库。
+// 数据形状跟 App 里 `Order.toJson()` 一致：常用列 + data(整张单的 JSON)。
+// ---------------------------------------------------------------------------
+const LS = 'bossbro_admin_cfg';
+let cfg = JSON.parse(localStorage.getItem(LS) || '{}');
+let token = null;
+let refreshToken = null;
+let autoTimer = null;
+let orders = [];
+
+// 增量游标：自动刷新时只拉 `updated_at > since` 的订单（跟 App 里一个思路）。
+let since = null;
+let menu = null;
+
+// Supabase 的接口**一次最多给 1000 行**（「Max Rows」默认 1000），
+// 所以必须翻页 —— 不然单子一多，老日期的「已结账 / 日结」就会莫名其妙是空的。
+const PAGE = 1000;
+// 保险丝：最多加载这么多单（更早的请直接在 Supabase 的表里看），别把浏览器内存吃满。
+const MAX_ORDERS = 10000;
+
+const $ = (id) => document.getElementById(id);
+const money = (n) => ($('cur').value || '$') + (Number(n) || 0).toFixed(2);
+
+function saveCfg() {
+  cfg = {
+    url: $('url').value.trim().replace(/\/+$/, ''),
+    key: $('key').value.trim(),
+    email: $('email').value.trim(),
+  };
+  localStorage.setItem(LS, JSON.stringify(cfg));
+}
+
+function setStatus(text, isErr) {
+  $('status').textContent = text;
+  $('status').className = isErr ? 'err' : 'muted';
+}
+
+// ---- 登录（GoTrue）----
+async function login() {
+  saveCfg();
+  $('setupMsg').textContent = '';
+  if (!cfg.url || !cfg.key) { $('setupMsg').textContent = '请先填 Supabase 地址和 anon key'; return; }
+  try {
+    const res = await fetch(cfg.url + '/auth/v1/token?grant_type=password', {
+      method: 'POST',
+      headers: { apikey: cfg.key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: $('email').value.trim(), password: $('password').value }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error_description || body.msg || ('HTTP ' + res.status));
+    token = body.access_token;
+    refreshToken = body.refresh_token;
+    $('who').textContent = (body.user && body.user.email) || cfg.email;
+    $('setup').hidden = true;
+    $('app').hidden = false;
+    $('btnLogout').hidden = false;
+    setStatus('已连接');
+    await refreshAll(true);
+    startAuto();
+  } catch (e) {
+    $('setupMsg').textContent = '登录失败：' + e.message;
+  }
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(cfg.url + '/rest/v1' + path, {
+    ...opts,
+    headers: {
+      apikey: cfg.key,
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new Error((body && (body.message || body.hint)) || ('HTTP ' + res.status));
+  return body;
+}
+
+// ---- 数据 ----
+const ORDER_COLS = 'id,status,order_type,table_no,total,item_count,cashier,device_id,rev,updated_at,closed_at,data';
+
+/// 拉订单：**翻页**拉（每页 1000），最多 MAX_ORDERS 单。
+/// 只在「登录 / 手动刷新」时调用（自动刷新走 loadIncremental，省流量）。
+async function loadOrders() {
+  const out = [];
+  for (let offset = 0; offset < MAX_ORDERS; offset += PAGE) {
+    const rows = await api('/orders?select=' + ORDER_COLS +
+      '&order=updated_at.desc&limit=' + PAGE + '&offset=' + offset);
+    out.push(...rows);
+    if (rows.length < PAGE) break; // 这一页没满 → 拉完了
+  }
+  orders = out;
+  since = maxUpdatedAt(out);
+  const more = out.length >= MAX_ORDERS;
+  setLoadInfo('已加载最近 ' + out.length + ' 单' +
+    (more ? '（只加载到这里；更早的单请在 Supabase 里查）' : ''));
+}
+
+/// 「已加载多少单」的提示：可能有**两个**标签页里都有这块（已结账 / 日结），
+/// 所以按 class 一起更新 —— 单子多的时候，老日期看着是空的，得让人知道为什么。
+function setLoadInfo(text) {
+  document.querySelectorAll('.loadInfo').forEach((el) => { el.textContent = text; });
+}
+
+/// 自动刷新用：只拉「上次之后改过的」订单（每 20 秒一次也不会白烧流量），
+/// 拉回来按 id 合并进内存里那份（所以页面开着越久，历史越全）。
+async function loadIncremental() {
+  if (!since) return loadOrders();
+  const rows = await api('/orders?select=' + ORDER_COLS +
+    '&updated_at=gt.' + encodeURIComponent(since) +
+    '&order=updated_at.asc&limit=' + PAGE);
+  if (!rows.length) return;
+  mergeOrders(rows);
+  since = maxUpdatedAt(rows);
+}
+
+/// 把服务器那几行并进内存（同 id 覆盖成服务器那份）。
+function mergeOrders(rows) {
+  const byId = {};
+  for (const o of orders) byId[o.id] = o;
+  for (const o of rows) byId[o.id] = o;
+  orders = Object.values(byId)
+    .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+}
+
+function maxUpdatedAt(rows) {
+  let best = since;
+  for (const o of rows) {
+    const t = String(o.updated_at || '');
+    if (t && (!best || t > best)) best = t;
+  }
+  return best;
+}
+
+async function loadMenu() {
+  const rows = await api('/menu?select=version,updated_at,data&id=eq.current');
+  menu = rows.length ? rows[0] : null;
+}
+
+/// [full] = true：整份重拉（登录 / 点「刷新」）；
+/// false：只拉增量（20 秒自动刷新用）。
+async function refreshAll(full) {
+  try {
+    if (full) { await loadOrders(); } else { await loadIncremental(); }
+    await loadMenu();
+    renderLive();
+    renderDone();
+    renderMenu();
+    setStatus('已连接 · ' + new Date().toLocaleTimeString());
+  } catch (e) {
+    setStatus('出错：' + e.message, true);
+  }
+}
+
+// ---- 渲染小工具 ----
+const TYPE = { dine_in: '堂食', takeaway: '外卖', phonecall_takeaway: '电话外卖' };
+function typeLabel(t) { return TYPE[t] || t || '-'; }
+function typePill(t) {
+  const cls = t === 'phonecall_takeaway' ? 'pill purple' : (t === 'takeaway' ? 'pill gray' : 'pill');
+  return '<span class="' + cls + '">' + typeLabel(t) + '</span>';
+}
+function tableOf(o) {
+  const d = o.data || {};
+  if (d.orderType === 'dine_in' || o.order_type === 'dine_in') return o.table_no ? ('桌 ' + o.table_no) : '堂食';
+  return '';
+}
+function localTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString();
+}
+function dayKey(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function linesHtml(o) {
+  const d = o.data || {};
+  const lines = d.lines || [];
+  if (!lines.length) return '<span class="muted">-</span>';
+  return '<details><summary>' + lines.length + ' 道菜</summary>' + lines.map((l) =>
+    (l.quantity || 1) + '× ' + (l.name || '') +
+    ((l.options && l.options.length) ? ' <span class="muted">(' + l.options.join(' / ') + ')</span>' : '') +
+    ((l.notes && l.notes.length) ? ' <span class="muted">· ' + l.notes.join(' · ') + '</span>' : '') +
+    ' <span class="muted">' + money(l.unitPrice) + '</span>').join('<br>') + '</details>';
+}
+
+function renderLive() {
+  const rows = orders.filter((o) => o.status === 'in_progress');
+  let html = '<tr><th>单号</th><th>桌 / 类型</th><th>设备</th><th>菜</th><th class="num">应收</th><th>最后更新</th></tr>';
+  if (!rows.length) html += '<tr><td colspan="6" class="muted">现在没有进行中的单</td></tr>';
+  for (const o of rows) {
+    html += '<tr>' +
+      '<td>' + o.id + '</td>' +
+      '<td>' + typePill(o.order_type) + ' ' + tableOf(o) + '</td>' +
+      '<td>' + (o.device_id || '-') + '</td>' +
+      '<td>' + linesHtml(o) + '</td>' +
+      '<td class="num">' + money(o.total) + '</td>' +
+      '<td class="muted">' + localTime(o.updated_at) + '</td>' +
+      '</tr>';
+  }
+  $('tblLive').innerHTML = html;
+}
+
+function doneFiltered() {
+  const date = $('doneDate').value;
+  return orders.filter((o) => o.status === 'completed' && (!date || dayKey(o.closed_at || o.updated_at) === date));
+}
+
+function renderDone() {
+  const rows = doneFiltered();
+  const sum = rows.reduce((s, o) => s + Number(o.total || 0), 0);
+  let html = '<tr><th>单号</th><th>桌 / 类型</th><th>支付</th><th>菜</th><th class="num">金额</th><th>结账时间</th></tr>';
+  if (!rows.length) html += '<tr><td colspan="6" class="muted">这天没有已结账的单</td></tr>';
+  for (const o of rows) {
+    const d = o.data || {};
+    const pay = (d.paymentMethod === 'card' ? '刷卡' : (d.paymentMethod === 'cash' ? '现金' : (d.paymentMethod || '-')));
+    html += '<tr>' +
+      '<td>' + o.id + '</td>' +
+      '<td>' + typePill(o.order_type) + ' ' + tableOf(o) + '</td>' +
+      '<td>' + pay + (d.receivedAmount != null ? ' <span class="muted">收' + Number(d.receivedAmount).toFixed(2) + ' 找' + Number(d.changeAmount || 0).toFixed(2) + '</span>' : '') + '</td>' +
+      '<td>' + linesHtml(o) + '</td>' +
+      '<td class="num">' + money(o.total) + '</td>' +
+      '<td class="muted">' + localTime(o.closed_at || o.updated_at) + '</td>' +
+      '</tr>';
+  }
+  $('tblDone').innerHTML = html;
+  $('doneSummary').textContent = rows.length + ' 单 · 合计 ' + money(sum);
+}
+
+function renderMenu() {
+  if (!menu) { $('menuInfo').textContent = '后台还没有菜单（App 里点一次「立即同步」就会上传）'; $('tblMenu').innerHTML = ''; return; }
+  const data = menu.data || {};
+  const items = data.items || [];
+  const cats = data.categories || [];
+  const byId = {}; cats.forEach((c) => byId[c.id] = c.name);
+  $('menuInfo').textContent = '版本 v' + menu.version + ' · ' + cats.length + ' 个种类 · ' + items.length + ' 道菜 · 更新于 ' + localTime(menu.updated_at);
+  let html = '<tr><th>种类</th><th>菜名</th><th class="num">基础价</th><th>定制项（选项 / 加价）</th><th>单位</th></tr>';
+  for (const it of items) {
+    const opts = (it.options || []).filter((g) => g && g.options && g.options.length).map((g) =>
+      g.name + ': ' + g.options.map((o, i) => o + ((g.prices && g.prices[i]) ? (' +' + g.prices[i]) : '')).join(' / ')
+    ).join('<br>');
+    html += '<tr>' +
+      '<td>' + (byId[it.categoryId] || it.categoryId || '-') + '</td>' +
+      '<td>' + (it.name || '') + '</td>' +
+      '<td class="num">' + Number(it.price || 0).toFixed(2) + '</td>' +
+      '<td class="muted">' + (opts || '-') + '</td>' +
+      '<td>' + (it.unit || '') + '</td>' +
+      '</tr>';
+  }
+  $('tblMenu').innerHTML = html;
+}
+
+// ---- 日结 ----
+function renderDay() {
+  const date = $('dayDate').value || dayKey(new Date().toISOString());
+  const rows = orders.filter((o) => o.status === 'completed' && dayKey(o.closed_at || o.updated_at) === date);
+  const sum = (f) => rows.filter(f).reduce((s, o) => s + Number(o.total || 0), 0);
+  const dineIn = sum((o) => o.order_type === 'dine_in');
+  const takeaway = sum((o) => o.order_type === 'takeaway');
+  const phone = sum((o) => o.order_type === 'phonecall_takeaway');
+  const cash = sum((o) => (o.data || {}).paymentMethod === 'cash');
+  const card = sum((o) => (o.data || {}).paymentMethod === 'card');
+  const total = sum(() => true);
+
+  $('dayKpi').innerHTML = [
+    ['单数', rows.length],
+    ['总营业额', money(total)],
+    ['堂食', money(dineIn)],
+    ['外卖', money(takeaway)],
+    ['电话外卖', money(phone)],
+    ['现金', money(cash)],
+    ['刷卡', money(card)],
+  ].map(([k, v]) => '<div class="muted">' + k + '<b>' + v + '</b></div>').join('');
+
+  // 按菜统计（卖了多少份）
+  const dish = {};
+  for (const o of rows) for (const l of ((o.data || {}).lines || [])) {
+    const key = l.name || '(无名)';
+    dish[key] = (dish[key] || 0) + (Number(l.quantity) || 0);
+  }
+  const list = Object.entries(dish).sort((a, b) => b[1] - a[1]);
+  let html = '<tr><th>菜</th><th class="num">卖出份数</th></tr>';
+  if (!list.length) html += '<tr><td colspan="2" class="muted">这天没有单</td></tr>';
+  for (const [name, qty] of list) html += '<tr><td>' + name + '</td><td class="num">' + qty + '</td></tr>';
+  $('tblDay').innerHTML = html;
+}
+
+// ---- 导出备份 ----
+function exportBackup() {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    // 注意：导出的是**这个页面已加载的**那些单（见「已加载最近 N 单」），
+    // 不是服务器上的全部；要整库备份请用 Supabase 的 Database → Backups。
+    ordersLoaded: orders.length,
+    orders: orders,
+    menu: menu,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'bossbro_backup_' + dayKey(new Date().toISOString()) + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function startAuto() {
+  if (autoTimer) clearInterval(autoTimer);
+  const ms = Number($('autoRefresh').value || 0);
+  // 自动刷新只拉增量（loadIncremental），不然每 20 秒重下几千单，流量白烧
+  if (ms > 0) autoTimer = setInterval(() => refreshAll(false), ms);
+}
+
+// ---- 事件 ----
+$('btnLogin').onclick = login;
+$('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
+// 手动「刷新」= 整份重拉（含翻页），所以这里传 true
+$('btnRefresh').onclick = () => refreshAll(true);
+$('btnExport').onclick = exportBackup;
+$('btnLogout').onclick = () => { token = null; refreshToken = null; location.reload(); };
+$('autoRefresh').onchange = startAuto;
+$('cur').onchange = () => { renderLive(); renderDone(); renderDay(); };
+$('doneDate').onchange = renderDone;
+$('btnToday').onclick = () => { $('doneDate').value = dayKey(new Date().toISOString()); renderDone(); };
+$('btnAllDays').onclick = () => { $('doneDate').value = ''; renderDone(); };
+$('btnDayGo').onclick = renderDay;
+
+document.querySelectorAll('.tab').forEach((btn) => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tab').forEach((b) => b.classList.remove('on'));
+    btn.classList.add('on');
+    for (const t of ['live', 'done', 'day', 'menu']) $('tab-' + t).hidden = (t !== btn.dataset.tab);
+    if (btn.dataset.tab === 'day') renderDay();
+  };
+});
+
+// ---- 启动：把上次填的地址/账号填回表单；今天 = 默认日期 ----
+(function init() {
+  $('url').value = cfg.url || '';
+  $('key').value = cfg.key || '';
+  $('email').value = cfg.email || '';
+  $('doneDate').value = dayKey(new Date().toISOString());
+  $('dayDate').value = dayKey(new Date().toISOString());
+  if (cfg.url && cfg.key && cfg.email) $('password').focus();
+})();
+</script>
+</body>
+</html>

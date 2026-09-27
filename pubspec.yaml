@@ -33,6 +33,10 @@ dependencies:
   # xlsx 本质是 zip，用它解压后读里面的 XML
   archive: ^3.6.0
 
+  # ---- 后台同步（Supabase）----
+  # 只用来发 HTTP 请求（登录 + 读写表）；测试里可以换成 MockClient
+  http: ^1.2.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

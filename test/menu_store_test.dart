@@ -12,9 +12,9 @@ void main() {
 
   test('MenuStore 保存后可读回（分类+菜品，含中文/价格）', () async {
     final store = MenuStore();
-    final data = MenuData(
-      categories: const [Category(id: 'c1', name: '热菜', emoji: '🍳')],
-      items: const [
+    const data = MenuData(
+      categories: [Category(id: 'c1', name: '热菜', emoji: '🍳')],
+      items: [
         MenuItem(
             id: 'i1', name: '牛肉炒饭', price: 28.0, emoji: '🍛', categoryId: 'c1'),
       ],
