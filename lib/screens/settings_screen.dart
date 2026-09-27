@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -764,8 +766,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 L10n.t('transport.bluetooth')),
             _transportChip(ctl, settings, PrintTransport.network,
                 L10n.t('transport.network')),
-            _transportChip(ctl, settings, PrintTransport.windows,
-                L10n.t('transport.windows')),
+            // 「Windows 系统打印机」只在 Windows 上有意义：
+            // 安卓上选了也只会得到「不支持」，所以干脆不显示（免得收银员选错）。
+            if (Platform.isWindows)
+              _transportChip(ctl, settings, PrintTransport.windows,
+                  L10n.t('transport.windows')),
           ],
         ),
         const SizedBox(height: 14),

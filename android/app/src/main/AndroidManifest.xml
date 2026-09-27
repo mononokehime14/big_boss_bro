@@ -1,6 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 联网：后台同步（Supabase）+ 网络打印机（TCP 9100）都要它。
+         ⚠️ 必须写在**这个** main manifest 里：
+         Flutter 只在 debug/profile 的 manifest 里自动加 INTERNET（给热重载用），
+         所以漏了它的话「debug 跑得好好的、release 包装到平板上就同步不了 / 打印不了」。
+         真实踩过这个坑。 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="big_boss_bro"
+        android:label="Big Boss Bro"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
