@@ -126,10 +126,58 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
--- 4) 权限（RLS）：登录用户可读写，匿名一律看不到
+-- 4) 员工考勤（打卡）
+--    attendance_staff    员工名单：**只有一行**（id='current'），整份名单 JSON + 版本号
+--                        （跟 menu 一个思路：改一次版本 +1，设备比版本号决定要不要拉）
+--    attendance_punches  打卡记录：一次打卡一行（上班 in / 下班 out），**只增不改**，
+--                        所以设备之间合并就是「按 id 并集」，不存在冲突
+-- ---------------------------------------------------------------------------
+create table if not exists public.attendance_staff (
+  id          text primary key default 'current',
+  version     bigint      not null default 1,     -- 每次保存 +1
+  updated_at  timestamptz not null default now(),
+  device_id   text        not null default '',    -- 哪台设备最后改的
+  data        jsonb       not null                -- {"staff":[{"id","name","pin"}, ...]}
+);
+
+create or replace function public.touch_staff() returns trigger
+language plpgsql as $$
+begin
+  new.updated_at := now();
+  if tg_op = 'INSERT' then
+    new.version := 1;
+  else
+    new.version := old.version + 1;
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists attendance_staff_touch on public.attendance_staff;
+create trigger attendance_staff_touch
+  before insert or update on public.attendance_staff
+  for each row execute function public.touch_staff();
+
+create table if not exists public.attendance_punches (
+  id          text primary key,                   -- App 生成的全局唯一 id（两台设备不会撞）
+  employee_id text        not null,               -- 对应 data.staff[].id
+  kind        text        not null default 'in',  -- in = 上班 / out = 下班
+  at          timestamptz not null,               -- 设备上打卡的时间
+  device_id   text        not null default '',    -- 哪台设备打的
+  created_at  timestamptz not null default now()  -- 服务器收到的顺序（增量同步就靠它）
+);
+
+create index if not exists attendance_punches_created_idx
+  on public.attendance_punches (created_at);
+create index if not exists attendance_punches_at_idx
+  on public.attendance_punches (at);
+
+-- ---------------------------------------------------------------------------
+-- 5) 权限（RLS）：登录用户可读写，匿名一律看不到
 -- ---------------------------------------------------------------------------
 alter table public.orders enable row level security;
 alter table public.menu   enable row level security;
+alter table public.attendance_staff   enable row level security;
+alter table public.attendance_punches enable row level security;
 
 drop policy if exists orders_authenticated_all on public.orders;
 create policy orders_authenticated_all on public.orders
@@ -139,12 +187,20 @@ drop policy if exists menu_authenticated_all on public.menu;
 create policy menu_authenticated_all on public.menu
   for all to authenticated using (true) with check (true);
 
+drop policy if exists attendance_staff_authenticated_all on public.attendance_staff;
+create policy attendance_staff_authenticated_all on public.attendance_staff
+  for all to authenticated using (true) with check (true);
+
+drop policy if exists attendance_punches_authenticated_all on public.attendance_punches;
+create policy attendance_punches_authenticated_all on public.attendance_punches
+  for all to authenticated using (true) with check (true);
+
 -- RPC 也要授权（默认 security definer 不给 anon 执行）
 revoke all on function public.close_order(text, jsonb, text) from public, anon;
 grant execute on function public.close_order(text, jsonb, text) to authenticated;
 
 -- ---------------------------------------------------------------------------
--- 5) 自检：跑完可以执行下面两句看看（应该有 2 张表 + 3 个函数）
+-- 6) 自检：跑完可以执行下面两句看看（应该有 4 张表 + 4 个函数）
 -- ---------------------------------------------------------------------------
 -- select table_name from information_schema.tables where table_schema = 'public';
 -- select routine_name from information_schema.routines where routine_schema = 'public';

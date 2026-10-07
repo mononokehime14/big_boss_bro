@@ -9,6 +9,7 @@ import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
 import 'services/receipt_print_service.dart';
 import 'services/sync_service.dart';
+import 'state/attendance_controller.dart';
 import 'state/auth_controller.dart';
 import 'state/pos_controller.dart';
 import 'state/settings_controller.dart';
@@ -48,16 +49,24 @@ class BigBossBroApp extends StatelessWidget {
 
   const BigBossBroApp({super.key, required this.printService});
 
-  /// 建同步服务，并把 PosController 的「本地变了」钩子接上。
+  /// 建同步服务，并把 PosController / AttendanceController 的「本地变了」钩子接上。
   ///
-  /// 注意：PosController / SettingsController 都是**惰性创建一次**（用 `create:`），
-  /// 不能写成在 `build()` 里 `new`（build 会跑很多次 → 状态会被清掉）。
+  /// 注意：PosController / SettingsController / AttendanceController 都是
+  /// **惰性创建一次**（用 `create:`），不能写成在 `build()` 里 `new`
+  /// （build 会跑很多次 → 状态会被清掉）。
   static SyncService _createSync(BuildContext ctx) {
     final pos = ctx.read<PosController>();
     final settingsCtl = ctx.read<SettingsController>();
-    final sync = SyncService(pos: pos, settingsCtl: settingsCtl);
+    final attendance = ctx.read<AttendanceController>();
+    final sync = SyncService(
+      pos: pos,
+      settingsCtl: settingsCtl,
+      attendance: attendance,
+    );
     pos.onOrdersChanged = sync.onLocalOrdersChanged;
     pos.onMenuChanged = sync.onLocalMenuChanged;
+    attendance.onStaffChanged = sync.onLocalStaffChanged;
+    attendance.onPunchesChanged = sync.onLocalPunchesChanged;
     return sync;
   }
 
@@ -69,13 +78,16 @@ class BigBossBroApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => SettingsController()..load()),
         // 账号：启动就读回；没登录的话下面会显示登录页
         ChangeNotifierProvider(create: (_) => AuthController()..load()),
+        // 员工签到（考勤）：自己一套存储，跟点单/结账互不影响
+        ChangeNotifierProvider(create: (_) => AttendanceController()..load()),
         Provider<ReceiptPrintService>.value(value: printService),
         // 后台同步（Supabase）：收银永远先写本机，它只在后台搬运
-        ChangeNotifierProxyProvider2<PosController, SettingsController,
-            SyncService>(
+        ChangeNotifierProxyProvider3<PosController, SettingsController,
+            AttendanceController, SyncService>(
           create: _createSync,
           // 依赖变了就沿用同一个实例（内部自己判断要不要同步）
-          update: (ctx, pos, settings, sync) => sync ?? _createSync(ctx),
+          update: (ctx, pos, settings, attendance, sync) =>
+              sync ?? _createSync(ctx),
         ),
       ],
       child: const _AppShell(),

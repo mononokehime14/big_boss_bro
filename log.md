@@ -321,4 +321,215 @@ bool get isPhoneTakeaway => orderType == OrderType.phonecallTakeaway;
 **一个现状**：电话外卖跟外卖一样**没有桌号、每单独立**（保存 / 厨房各开一张新单）。
 想让它像堂食那样「接着同一张单加菜」，说一声我加。
 
+---
+
+## 第 12 阶段：安卓版审计（功能是否有缺）+ 安卓测试指南
+
+你问「安卓版是不是所有功能都更新到了」。逐项对了一遍：
+
+**功能代码本身一条都不缺**（打印、点单、结账、菜单、Excel 导入、后台同步都是纯 Dart，
+平台无关）；但**安卓平台配置里有 2 个坑**，其中第 1 个是真会坏功能的：
+
+### ❌ 坑 1：`INTERNET` 权限只写在 debug 的 manifest 里（release 包会没网）
+
+`android/app/src/main/AndroidManifest.xml` 里**没有** `android.permission.INTERNET`；
+Flutter 只在 `src/debug/AndroidManifest.xml` 里加它（给热重载用）。后果很典型：
+
+- `flutter run`（debug）→ 同步、网络打印都正常；
+- `flutter build apk --release` 装到平板上 → **同步连不上、网络打印机连不上**
+  （报 `SocketException: Failed host lookup` 之类），而且看着像「功能没做」。
+
+**已修**：把 `INTERNET` 写进 main manifest，并在旁边写清楚为什么必须写在这里。
+（网络打印机走的是 TCP 9100，也要这个权限。）
+
+### ⚠️ 坑 2：「Windows 系统打印机（USB）」在安卓上也显示
+
+设置页原来三个选项都显示，安卓上选了只会得到 `PrintError.unsupported`。
+**已修**：只在 `Platform.isWindows` 时显示这一个选项。
+
+### ✅ 顺便核对没问题的部分
+
+| 项 | 结论 |
+| --- | --- |
+| 蓝牙权限（Android 12+） | `BLUETOOTH_SCAN` / `BLUETOOTH_CONNECT` 已声明，运行时也会请求 ✓ |
+| 蓝牙权限（Android ≤11） | 插件 `flutter_bluetooth_serial` 的 manifest 里已声明 `ACCESS_FINE_LOCATION` / `ACCESS_COARSE_LOCATION`，App 里也会请求「位置」✓ |
+| 平台判断 | 蓝牙/网络打印跨平台 ✓；Windows 打印在非 Windows 上直接返回「不支持」✓ |
+| Excel 导入 | 用系统文件选择器（SAF），安卓**不需要**存储权限 ✓ |
+| 应用名 | 桌面名原来叫 `big_boss_bro` → 改成 **`Big Boss Bro`**（想改成店名就改那一行 `android:label`） |
+| 构建环境 | SDK 37 + build-tools 36 + adb ✓、Android Studio 自带 JDK ✓、Gradle 9.3.1 / AGP 9.1 / Kotlin 2.4（Flutter 自动生成的那套）✓ |
+
+### 新增：`android_test.md`（怎么测安卓）
+
+一份 15 分钟的清单：准备（开发者模式 / USB 调试）→ debug 与 **release** 两种跑法 →
+25 条功能核对（打印 6 条 / 点单结账 4 条 / 菜单 2 条 / 后台同步 8 条 / 安卓专属 5 条）→
+安卓专属坑排查表；另外补了 **§0「插上线 Windows 没反应」**（线/模式/驱动三分支、
+Redmi/三星/一加的差别、无线调试、直接拷 APK 三条路）。
+
+### 主要改动文件
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `android/app/src/main/AndroidManifest.xml` | **加 `INTERNET` 权限**（+注释说明）、`android:label` 改成 `Big Boss Bro` |
+| `lib/screens/settings_screen.dart` | 「Windows 打印机」选项只在 Windows 上显示（补 `dart:io` 的 `Platform` 导入） |
+| `android_test.md`（新） | 安卓测试清单 + 排查表（含 §0 连不上电脑怎么办） |
+
+### 可选优化（没做，等你说要不要）
+
+- 平板**锁定横屏**（`SystemChrome.setPreferredOrientations`）；
+- 点单页**不息屏**（需要 `wakelock_plus` 之类的新依赖）；
+- 返回键二次确认（防手滑退出）；
+- 上 Google Play 需要：自己的 keystore + 把 `applicationId` 从 `com.example.*` 改掉。
+
+---
+
+## 新功能：员工签到（考勤）
+
+底部导航加了第 4 个标签「**签到**」（在「设置」前面；收银员也能用，不受管理员限制）。
+
+### 员工怎么用（这一半完全不挡人）
+
+进「签到」页 → 中间一个**又高又绿的大按钮**「签 到」→ 点一下 → 弹出**数字键盘** →
+输入自己的 **4 位 PIN** → 满 4 位**自动提交** → 大 ✓ +「签到成功」+ **姓名 + 时间**
+（1.8 秒后自己关掉，不耽误下一个人）。
+
+- **同一天再打一次**：不会重复记账，显示「今天已经签到过了 8:05」（把第一次的时间还给他）；
+- **PIN 不对**：就地红字「PIN 不对，再试一次」，**不用重新点一次大按钮**，接着输就行；
+- 按钮下面还有「**今天已签到 (N)**」列表（头像 + 姓名 + 时间），员工自己能确认打上了。
+
+### 管理员怎么用（点开才看得到）
+
+页面下半部分默认是一把「锁」：**「查看本周考勤 / 管理员工」** → 点它 →
+**输管理员密码（默认 8888）** → 解锁后出现两张卡片：
+
+1. **本周考勤**：一行一个员工，7 列是**周一到周日**（格子里是签到时间，绿色；没来是「—」），
+   最后一列是「出勤」天数；右上角 ‹ **今天** › 可以翻上一周/下一周；
+2. **员工管理**：列表显示「姓名 + PIN」（老板要告诉员工自己的 PIN），
+   右边**修改**（姓名和 PIN 一起改）/ **删除**（会问一句「已经打过的卡会留着」）+
+   「**添加员工**」。PIN 必须 **4 位数字**而且**不能跟别人重复**。
+
+右上角「锁上」可以随时把管理员区收回去。
+
+### 几个设计决定（都是有意这么做的）
+
+| 决定 | 为什么 |
+| --- | --- |
+| **员工 ≠ 登录账号** | 洗碗/端菜的同事不需要（也不该）有 App 账号；他们只要一个 4 位 PIN。登录账号那套（`models/account.dart`）管的是「谁能改菜单/设置」，跟考勤分开 |
+| 管理员用**现有账号的密码**验证（`requireAdmin`，默认 8888） | 不新造一套「管理密码」；而且已经是管理员的账号直接进，收银员才需要输 |
+| 一天一个人**只记一条**（只签到，不做签退） | 你要的就是「谁来了、几点来的」。等你说要签退，再加一步就行（数据结构已经是「一条条记录」，加签退不用改存储） |
+| 删员工**不删**他的历史打卡 | 不然上个月的考勤会凭空变少；记录留着，只是名单/表格里不再显示他 |
+| 数据**只存本机** | 跟订单/菜单一样先本地跑；多台设备共用一个考勤表要后台加张表再同步 —— **这条没做**，你要的话我按订单那套加 |
+| 日期用 `DateTime(y, m, d ± n)` 算，不用 `Duration` | 夏令时那天 ±24 小时会变成前一天 23:00，考勤就会记到隔壁那天去 |
+
+### 主要改动文件
+
+| 文件 | 说明 |
+| --- | --- |
+| `lib/models/employee.dart`（新） | `Employee`（id/姓名/PIN）、`AttendancePunch`（打卡记录）、`PunchOutcome`/`PunchResult`、`EmployeeError` |
+| `lib/data/employee_store.dart`（新） | 员工 + 打卡记录的本机存储（两个键、坏数据当空、打卡最多留 5000 条） |
+| `lib/state/attendance_controller.dart`（新） | `punch()`（认 PIN / 当天不重复）、`punchAt()`、`punchesOnDay()`、`daysPresent()`、`weekOf()`（周一到周日）、员工增删改 + PIN 唯一/4 位校验 |
+| `lib/widgets/clock_in_dialog.dart`（新） | 签到对话框：数字键盘（0-9 / 退格 / 确定）+ 4 个圆点 + 成功 ✓ 界面（自动关闭） |
+| `lib/screens/attendance_screen.dart`（新） | 签到页：大按钮 + 今天已签到 + 管理员区（本周考勤表 + 员工管理） |
+| `lib/utils/format.dart` | 加 `timeHm()`（09:05）和 `dayKey()`（2025-01-31） |
+| `lib/app.dart` | 加 `AttendanceController` 的 provider |
+| `lib/screens/home_shell.dart` | 底部导航加第 4 个标签「签到」；`_settingsTab` 改成常量 3（以后加标签不会再把权限门禁指错） |
+| `lib/l10n/app_strings.dart` | 三语各加 36 条 `attendance.*` / `nav.attendance` |
+| `test/attendance_test.dart`（新） | 17 组纯逻辑：打卡/重复打卡/错 PIN/删员工后失效/PIN 校验与唯一/改名改 PIN/周分组（跨月跨年）/一周格子数据/今天列表排序/重启后数据还在/坏数据不崩 |
+| `test/attendance_screen_test.dart`（新） | 2 组界面测试：点大按钮→输 PIN→「签到成功 + 姓名」→名单里出现；PIN 不对→就地报错→接着输对的能成功 |
+
+### 你要试的（Windows 上就能全试完，安卓同一套代码）
+
+1. `flutter test`；
+2. `flutter run -d windows` → 登录（admin / 8888）→ 底部点「**签到**」；
+3. 先点大按钮 → 会提示「还没有员工：请管理员在下面添加」（正常，还没加人）；
+4. 点「查看本周考勤 / 管理员工」→ 因为你已经是管理员，**直接进**（收银员账号才需要输 8888）→
+   「添加员工」加两个人：张三 1234、李四 5678（试试故意填 `123`、`abcd`、或跟别人重复的 PIN，
+   应该都被拦下来）；
+5. 点大按钮 → 输 **1234** → 应该出现大 ✓「签到成功 张三 时间」→ 1.8 秒后自动关掉 →
+   「今天已签到 (1)」里有张三；
+6. 再打一次 1234 → 应显示「今天已经签到过了」+ 第一次的时间（**不会记两次**）；
+7. 输 9999 → 红字「PIN 不对，再试一次」，接着输 5678 能成功；
+8. 回管理员区看**本周考勤**：今天的格子里有签到时间、出勤 = 1；点 ‹ 上一周 → 应该全是「—」；
+9. 「修改」把张三的 PIN 改成 4321 → 之后 1234 打不了、4321 能打；
+10. 「删除」李四 → 名单里没了，但他今天的打卡**还在数据里**（回头做「本月汇总」还能用）。
+
+---
+
+## 员工考勤（第 2 轮）：加「下班」打卡 + 考勤同步到 Supabase
+
+你说 Windows 上测过了、要两件事：① 考勤连到 Supabase；② 加一个「下班」大按钮。都做了。
+
+### 1. 「下 班」大按钮
+
+签到按钮**下面**多了一个蓝色大按钮「下 班」（和签到一样全宽，点完输同一个 4 位 PIN）：
+
+- **签到 → 下班**：两次都记上，成功提示里还会写「**今天工作了 10:25**」（上班→下班算出来的）；
+- **今天还没签到就点下班** → 橙字提示「今天还没签到：请先点上面的「签 到」」，**不记任何东西**
+  （避免表里出现「有下班没上班」的怪数据）；
+- **同一天下班打两次** → 「今天已经下班打卡过了 18:00」，不重复记账；
+- 「今天已签到」列表右边现在显示「**08:05 → 18:30**」；
+- 本周考勤表的格子里：**上面绿色 = 上班、下面蓝色 = 下班**（表底下有图例），
+  并多了一列「**工时**」（这一周的总小时数，按上班→下班累加；只打了上班没打下班的不算）。
+
+### 2. 考勤同步到 Supabase（两张新表）
+
+> ⚠️ **你要做的第一件事**：去 Supabase 的 SQL Editor 把 `supabase/schema.sql`
+> **整段粘进去重跑一次** —— 它会给现有项目补上两张新表（可重复执行、不删数据）。
+> 不跑的话：订单/菜单照常同步，只是设置页状态栏会提醒「考勤表还没建好」。
+
+| 表 | 形状 | 同步规则 |
+| --- | --- | --- |
+| `attendance_staff` | **只有一行**（`id='current'`），整份员工名单 JSON + `version` | 跟**菜单**一样：版本号大的赢；本地改过就先推本地（后改的赢） |
+| `attendance_punches` | **一次打卡一行**（id / employee_id / kind=in,out / at / device_id / created_at） | 跟**订单**一样：先拉后推，按 id **并集** —— 打卡只增不改，**不存在冲突**，两台设备各打各的卡不会互相覆盖 |
+
+- 拉取是**增量 + 翻页**的（打卡按服务器写的 `created_at` 推水位线，稳定状态下基本 0 行）；
+- 每条打卡自带 `device_id`，后台一眼能看出是哪台机器打的；
+- 本地每条打卡有「**已上传**」标记（跟订单的 `dirty` 一样），推成功后清掉；
+- **打完卡 2 秒内**就会推一趟（老板在后台很快能看到），不用等 25 秒那趟定时；
+- 设置页「待上传 N」现在**也把没上传的打卡算进去**；
+- 「重置同步状态」会把员工名单和所有打卡重新标成「要推」（走 upsert，不会重复记账）。
+
+**万一后台还没建那两张表**（404）：考勤那一步会**单独跳过**并提醒一句，
+**订单/菜单照常同步** —— 收银优先，不能因为没跑 SQL 把整个同步搞挂。
+
+### 3. 后台网页多了「考勤」页
+
+`supabase/admin.html` 多了一个标签「**考勤**」：
+本周表（员工 × 周一到周日，绿=上班 / 蓝=下班）+ 出勤天数 + 本周工时，
+底下有 ‹ 上一周 / **本周** / 下一周 › 可以翻周；再下面还有员工名单（姓名 + PIN）。
+「导出备份」也把员工名单和打卡一起导出去了。
+
+### 主要改动文件
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `supabase/schema.sql` | 新增 `attendance_staff`（+`touch_staff()` 触发器、RLS）、`attendance_punches`（+两个索引、RLS）；自检段改成「4 张表 + 4 个函数」 |
+| `lib/models/employee.dart` | 新增 `PunchKind`（in/out）；`AttendancePunch` 加 `id`/`kind`/`pushed`；新增 `PunchOutcome.needClockIn`、`PunchResult.worked`（老数据没 kind → 当「上班」；没 id → 用员工+时间推一个稳定 id，同步不会重复记账） |
+| `lib/state/attendance_controller.dart` | `punch(pin, kind:)` 支持下班；`clockInAt/clockOutAt/workedOn/weekWorked/daySummary`；`onStaffChanged/onPunchesChanged` 钩子；`staffSnapshot/replaceStaffFromServer/adoptServerPunches/unpushedPunches/markPunchesPushed/markAllPunchesUnpushed` |
+| `lib/services/attendance_sync.dart`（新） | 纯逻辑：`staffToRow/staffFromData`、`punchToRow/punchFromRow/punchCreatedAt`、`shouldPullStaff`、`RemoteStaff` |
+| `lib/services/sync_service.dart` | 注入 `AttendanceController`；新增 `_syncAttendance()`（名单按版本、打卡按 id 并集）；`_pullOrders` 抽成通用 `_pullRows`（订单/打卡共用、都翻页）；打卡水位线 `_punchSince`；两个新钩子；考勤失败**单独跳过**；`resetSyncState` 也重置考勤 |
+| `lib/data/settings_store.dart` | 加 `staffVersion` / `staffDirty`（读、写、键都加了） |
+| `lib/app.dart` | 改成 `ChangeNotifierProxyProvider3`（多接一个 AttendanceController）+ 接上考勤那两个钩子 |
+| `lib/widgets/clock_in_dialog.dart` | 支持上班/下班两种（标题颜色、文案、下班显示工时）；「还没签到」用橙色提示 |
+| `lib/screens/attendance_screen.dart` | 两个大按钮（签到 + 下班）；今天列表「上班 → 下班」；本周表格子上下两行（绿/蓝）+ 工时列 + 图例 |
+| `lib/utils/format.dart` | 加 `durationHm()`（9:25）和 `hoursDecimal()`（38.5） |
+| `lib/l10n/app_strings.dart` | 三语补 `attendance.clockOut/doneOut/alreadyOut/needClockIn/worked/hours/legendIn/legendOut` + `sync.attendanceTableMissing` |
+| `supabase/admin.html` | 新增「考勤」标签页（本周表 + 翻周 + 员工名单）；打卡按 `created_at` 增量拉；导出备份带上考勤 |
+| `setup_supabase.md` | §2 写清「老项目要重跑 SQL、会有 4 张表」；§5 加考勤页；排错表加两条 |
+| `test/attendance_test.dart` | 扩到 26 组：下班（没签到被拦、重复下班、工时、时间段反了算 0）、工时统计、`punchAt` 拆成 `clockInAt/clockOutAt`、同步小接口（标已上传 / 采纳服务器那份 / 整体替换名单） |
+| `test/attendance_sync_test.dart`（新） | 8 组纯逻辑：名单 JSON 往返与坏数据、打卡行不带 `created_at`、老数据兼容、稳定 id、`shouldPullStaff` 三种情况 |
+| `test/sync_service_test.dart` | 假服务器补上两张考勤表；新增 5 组：名单+打卡都会推、下班推上去（kind=out）、别人打的卡拉下来且不重推、服务器名单版本更高就替换、**404 时订单照常同步只提醒一句** |
+
+### 你要试的
+
+1. **先在 Supabase 里重跑 `supabase/schema.sql`**（Table Editor 里应该多出 `attendance_staff`、`attendance_punches` 两张空表）；
+2. `flutter test`；
+3. `flutter run -d windows` → 签到页加两个人（张三 1234、李四 5678）；
+4. 点**签到** → 输 1234 → 成功；点**下班** → 输 1234 → 成功，提示里应有「今天工作了 X:XX」；
+5. 直接点**下班** → 输 5678（今天没签到过）→ 应橙字提示「今天还没签到」；
+6. 设置 → 后台同步 → 打开开关填好 → **立即同步** → 应显示 `↑N ↓M · 待上传: 0`；
+7. 打开后台网页 → 「**考勤**」标签 → 应看到本周表（今天那格上下两个时间）+ 工时 + 员工名单；
+8. 换台设备（或点「重置同步状态」再同步）验证员工名单能拉到另一台；
+9. 断网打卡 → 设置页「待上传」+1 → 联网自动补推 → 后台能看到。
+
+
 

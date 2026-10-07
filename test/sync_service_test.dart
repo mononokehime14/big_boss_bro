@@ -6,8 +6,10 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:big_boss_bro/data/sample_menu.dart';
+import 'package:big_boss_bro/models/employee.dart';
 import 'package:big_boss_bro/models/order.dart';
 import 'package:big_boss_bro/services/sync_service.dart';
+import 'package:big_boss_bro/state/attendance_controller.dart';
 import 'package:big_boss_bro/state/pos_controller.dart';
 import 'package:big_boss_bro/state/settings_controller.dart';
 
@@ -15,6 +17,7 @@ import 'package:big_boss_bro/state/settings_controller.dart';
 typedef TestRig = ({
   SyncService sync,
   PosController pos,
+  AttendanceController attendance,
   SettingsController settings,
   List<http.Request> seen,
 });
@@ -40,6 +43,8 @@ void main() {
   }) async {
     final pos = PosController();
     pos.deviceId = '收银台A';
+    final attendance = AttendanceController();
+    await attendance.load();
     final settingsCtl = SettingsController();
     await settingsCtl.load();
     await settingsCtl.updateSync((s) {
@@ -55,13 +60,20 @@ void main() {
     final sync = SyncService(
       pos: pos,
       settingsCtl: settingsCtl,
+      attendance: attendance,
       httpClient: MockClient((req) async {
         seen.add(req);
         return handler(req);
       }),
       pageSize: pageSize,
     );
-    return (sync: sync, pos: pos, settings: settingsCtl, seen: seen);
+    return (
+      sync: sync,
+      pos: pos,
+      attendance: attendance,
+      settings: settingsCtl,
+      seen: seen,
+    );
   }
 
   http.Response json(Object? body, [int status = 200]) => http.Response.bytes(
@@ -70,7 +82,7 @@ void main() {
         headers: {'content-type': 'application/json'},
       );
 
-  /// 默认的假服务器：登录 OK、订单表空、菜单表空。
+  /// 默认的假服务器：登录 OK、订单表空、菜单表空、考勤两张表也空。
   Future<http.Response> defaultHandler(http.Request req) async {
     final path = req.url.path;
     if (path == '/auth/v1/token') {
@@ -93,8 +105,44 @@ void main() {
         {'id': 'current', 'version': 1}
       ]);
     }
+    // 考勤：员工名单（只有一行）+ 打卡记录
+    if (path == '/rest/v1/attendance_staff' && req.method == 'GET') return json([]);
+    if (path == '/rest/v1/attendance_staff' && req.method == 'POST') {
+      return json([
+        {
+          'id': 'current',
+          'version': 1,
+          'updated_at': '2026-09-20T12:00:00Z',
+          'data': (jsonDecode(req.body) as List).first['data'],
+        }
+      ]);
+    }
+    if (path == '/rest/v1/attendance_punches' && req.method == 'GET') {
+      return json([]);
+    }
+    if (path == '/rest/v1/attendance_punches' && req.method == 'POST') {
+      final rows = (jsonDecode(req.body) as List).cast<Map>();
+      return json(rows
+          .map((r) => {
+                ...r.cast<String, dynamic>(),
+                'created_at': '2026-09-20T12:00:00Z',
+              })
+          .toList());
+    }
     return json({'message': 'unexpected ${req.method} $path'}, 404);
   }
+
+  /// 假服务器「员工名单那一行」的返回（给考勤同步的测试用）。
+  http.Response staffRow(List<Map<String, dynamic>> staff, {int version = 5}) =>
+      json([
+        {
+          'id': 'current',
+          'version': version,
+          'updated_at': '2026-09-20T12:00:00Z',
+          'device_id': '另一台设备',
+          'data': {'staff': staff},
+        }
+      ]);
 
   Order localOrder({
     String id = 'n1',
@@ -664,5 +712,141 @@ void main() {
     });
     await s.sync.syncNow();
     expect(s.seen, isEmpty);
+  });
+
+  // ---------------- 员工考勤（上班/下班打卡）----------------
+
+  test('考勤：员工名单 + 打卡都会推上去，本地打卡标记成「已上传」', () async {
+    final s = await setup(defaultHandler);
+    await s.attendance.addEmployee(name: '张三', pin: '1234');
+    await s.attendance.punch('1234', now: DateTime(2026, 9, 21, 8, 5));
+    expect(s.attendance.unpushedPunches.length, 1);
+
+    await s.sync.syncNow();
+
+    expect(s.sync.status.error, isNull);
+    // ① 员工名单推上去了（第一次接入：服务器上没有 → 推本地那份）
+    final staffPost = s.seen
+        .where((r) =>
+            r.url.path == '/rest/v1/attendance_staff' && r.method == 'POST')
+        .toList();
+    expect(staffPost, isNotEmpty);
+    final staffBody = jsonDecode(staffPost.first.body) as List;
+    expect(staffBody.first['id'], 'current');
+    expect(staffBody.first['data']['staff'][0]['name'], '张三');
+    expect(staffBody.first['data']['staff'][0]['pin'], '1234');
+    expect(s.settings.settings.staffVersion, 1);
+    expect(s.settings.settings.staffDirty, isFalse);
+
+    // ② 打卡推上去了（字段对，而且不带本地那些字段）
+    final punchPost = s.seen.firstWhere((r) =>
+        r.url.path == '/rest/v1/attendance_punches' && r.method == 'POST');
+    final row = (jsonDecode(punchPost.body) as List).first as Map;
+    expect(row['employee_id'], s.attendance.employees.first.id);
+    expect(row['kind'], 'in');
+    expect(row['device_id'], '收银台A');
+    expect(row.containsKey('created_at'), isFalse);
+    expect(row.containsKey('pushed'), isFalse);
+
+    // ③ 本地不再有「待上传」的打卡
+    expect(s.attendance.unpushedPunches, isEmpty);
+    expect(s.sync.status.pendingOrders, 0);
+  });
+
+  test('考勤：下班打卡也会推上去（kind = out）', () async {
+    final s = await setup(defaultHandler);
+    await s.attendance.addEmployee(name: '张三', pin: '1234');
+    await s.attendance.punch('1234', now: DateTime(2026, 9, 21, 8));
+    await s.sync.syncNow(); // 先把上班那条推上去
+
+    await s.attendance.punch('1234',
+        kind: PunchKind.clockOut, now: DateTime(2026, 9, 21, 18, 30));
+    s.seen.clear();
+    await s.sync.syncNow();
+
+    final row = (jsonDecode(s.seen
+                .firstWhere((r) =>
+                    r.url.path == '/rest/v1/attendance_punches' &&
+                    r.method == 'POST')
+                .body) as List)
+        .first as Map;
+    expect(row['kind'], 'out');
+    expect(row['at'], startsWith('2026-09-21T18:30'));
+    expect(s.attendance.unpushedPunches, isEmpty);
+  });
+
+  test('考勤：别的设备打的卡会拉下来（按 id 合并，不会再推回去）', () async {
+    final s = await setup((req) async {
+      if (req.url.path == '/rest/v1/attendance_punches' &&
+          req.method == 'GET') {
+        return json([
+          {
+            'id': 'p-other',
+            'employee_id': 'e-other',
+            'kind': 'out',
+            'at': '2026-09-21T18:30:00Z',
+            'created_at': '2026-09-21T18:30:05Z',
+            'device_id': '平板B',
+          }
+        ]);
+      }
+      return defaultHandler(req);
+    });
+
+    await s.sync.syncNow();
+
+    expect(s.attendance.punches.length, 1);
+    expect(s.attendance.punches.first.id, 'p-other');
+    expect(s.attendance.punches.first.kind, PunchKind.clockOut);
+    expect(s.attendance.punches.first.pushed, isTrue,
+        reason: '服务器那份不用再推回去');
+    expect(s.attendance.unpushedPunches, isEmpty);
+    expect(
+      s.seen.any((r) =>
+          r.url.path == '/rest/v1/attendance_punches' && r.method == 'POST'),
+      isFalse,
+      reason: '没什么要推的就不该发 POST',
+    );
+  });
+
+  test('考勤：服务器上员工名单版本更高 → 拉下来整体替换本地', () async {
+    final s = await setup((req) async {
+      if (req.url.path == '/rest/v1/attendance_staff' && req.method == 'GET') {
+        return staffRow([
+          {'id': 'e1', 'name': '服务器上的张三', 'pin': '1111'},
+        ]);
+      }
+      return defaultHandler(req);
+    });
+    // 本地也有一份（本地版本 0 → 服务器 5 更高，而且本地不脏 → 听服务器的）
+    await s.attendance.addEmployee(name: '本地的小明', pin: '9999');
+
+    await s.sync.syncNow();
+
+    expect(s.attendance.employees.length, 1);
+    expect(s.attendance.employees.first.name, '服务器上的张三');
+    expect(s.attendance.employees.first.pin, '1111');
+    expect(s.settings.settings.staffVersion, 5);
+  });
+
+  test('后台还没建考勤表（404）→ 订单照常同步，状态里只提醒一句', () async {
+    final s = await setup((req) async {
+      if (req.url.path.startsWith('/rest/v1/attendance_')) {
+        return json({
+          'message': 'relation "public.attendance_staff" does not exist'
+        }, 404);
+      }
+      return defaultHandler(req);
+    });
+    s.pos.adoptServerOrders([localOrder()]);
+
+    await s.sync.syncNow();
+
+    expect(s.pos.findOrder('n1')!.dirty, isFalse,
+        reason: '订单照常推上去了（考勤表没建不能拖累收银）');
+    expect(s.sync.status.pushed, 1);
+    expect(s.sync.status.error, isNotNull);
+    expect(s.sync.status.error, contains('考勤'),
+        reason: '状态栏提醒去 Supabase 重跑 schema.sql');
   });
 }

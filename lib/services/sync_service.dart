@@ -9,8 +9,10 @@ import '../l10n/app_strings.dart';
 import '../models/category.dart';
 import '../models/menu_item.dart';
 import '../models/order.dart';
+import '../state/attendance_controller.dart';
 import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
+import 'attendance_sync.dart';
 import 'order_sync.dart';
 import 'supabase_rest.dart';
 
@@ -56,6 +58,10 @@ class SyncStatus {
 /// 6. **每趟对账一次「进行中」的单**：别人删掉的，本地跟着删（不然会一直挂在屏幕上）。
 class SyncService extends ChangeNotifier {
   final PosController pos;
+
+  /// 员工考勤（员工名单 + 打卡记录）。
+  final AttendanceController attendance;
+
   final SettingsController settingsCtl;
 
   /// 只有测试会传自己的 http client。
@@ -74,6 +80,9 @@ class SyncService extends ChangeNotifier {
   /// 之后就一直增量 —— 这样不用管「换过后台项目 / 本机时钟跳变」这些坑。
   String? _since;
 
+  /// 打卡记录的增量水位线（按服务器写的 `created_at` 走，跟订单同一个思路）。
+  String? _punchSince;
+
   /// 一次拉多少行（Supabase 的接口单次最多给 1000 行，所以必须翻页）。
   /// 测试里会调小来验证翻页逻辑。
   final int pageSize;
@@ -85,6 +94,13 @@ class SyncService extends ChangeNotifier {
   /// 这一趟跳过了几张「服务器上数据不完整」的单（正常 0）。
   /// 不为 0 时会在状态里提醒一句（不是失败：其它单照常同步）。
   int _skippedBadRows = 0;
+
+  /// 这一趟考勤同步的提醒（比如「后台还没建考勤表」）；正常为 null。
+  ///
+  /// 为什么单独一个字段而不是直接抛错：考勤表要用户自己去 Supabase 跑一遍 SQL
+  /// 才会存在（404）。没建好**不能**把订单/菜单的同步一起搞挂 ——
+  /// 收银照常，只是状态栏提醒一句。
+  String? _attendanceWarning;
 
   SyncStatus _status = const SyncStatus();
   SyncStatus get status => _status;
@@ -98,6 +114,7 @@ class SyncService extends ChangeNotifier {
   SyncService({
     required this.pos,
     required this.settingsCtl,
+    required this.attendance,
     this.httpClient,
     this.pageSize = 1000,
   });
@@ -208,6 +225,25 @@ class SyncService extends ChangeNotifier {
   /// 菜单有没有还没推上去的改动（设置页显示用）。
   bool get menuPending => _settings.menuDirty;
 
+  /// 本地**员工名单**改了（加/删/改名/改 PIN）→ 标脏 + 防抖推。
+  void onLocalStaffChanged() {
+    _settings.staffDirty = true;
+    unawaited(settingsCtl.persist());
+    notifyListeners();
+    _scheduleSync();
+  }
+
+  /// **有新打卡**（上班/下班）→ 防抖推一趟：老板在后台很快就能看到。
+  void onLocalPunchesChanged() {
+    _refreshPending();
+    notifyListeners();
+    _scheduleSync();
+  }
+
+  /// 考勤里还有几条没推上去（设置页状态行显示用）。
+  int get attendancePending => attendance.unpushedPunches.length +
+      (_settings.staffDirty ? 1 : 0);
+
   /// 要同步时**统一走它**：防抖 2 秒再推一次。
   ///
   /// 为什么防抖：改菜单（尤其 Excel 导入 / 一条条改菜）会连着触发很多次，
@@ -221,7 +257,9 @@ class SyncService extends ChangeNotifier {
 
   void _refreshPending() {
     final pending = pos.ordersSnapshot().where((o) => o.dirty).length +
-        pos.pendingDeletedIds.length;
+        pos.pendingDeletedIds.length +
+        // 还没推上去的打卡也算「待上传」（设置页那行显示的是总数）
+        attendance.unpushedPunches.length;
     _status = SyncStatus(
       busy: _status.busy,
       lastSyncAt: _status.lastSyncAt,
@@ -280,6 +318,7 @@ class SyncService extends ChangeNotifier {
 
     ({int pushed, int pulled}) result;
     _skippedBadRows = 0;
+    _attendanceWarning = null;
     try {
       result = await _syncAll(rest);
     } on SupabaseError catch (e, st) {
@@ -310,10 +349,11 @@ class SyncService extends ChangeNotifier {
       lastSyncAt: now,
       pushed: result.pushed,
       pulled: result.pulled,
-      // 有坏数据就提醒一句（不当作失败：其它单照样同步过去了）
-      error: _skippedBadRows == 0
-          ? null
-          : '${L10n.t('sync.badRows')} ($_skippedBadRows)',
+      // 有坏数据 / 考勤表没建好 → 提醒一句（不算失败：别的照常同步）
+      error: _attendanceWarning ??
+          (_skippedBadRows == 0
+              ? null
+              : '${L10n.t('sync.badRows')} ($_skippedBadRows)'),
     );
     _refreshPending(); // 重算「待上传」并保留上面的时间/pushed/pulled
     notifyListeners();
@@ -408,7 +448,96 @@ class SyncService extends ChangeNotifier {
     // ---- 3) 菜单（单向：谁版本高听谁的）----
     await _syncMenu(rest);
 
+    // ---- 4) 员工考勤（员工名单 + 打卡记录）----
+    // 这一步是「尽力而为」：后台要是还没建那两张表（404），记一句提醒就行，
+    // **不能**把订单/菜单的同步一起搞挂（收银优先）。
+    try {
+      await _syncAttendance(rest);
+    } on SupabaseError catch (e) {
+      _attendanceWarning = e.statusCode == 404
+          ? L10n.t('sync.attendanceTableMissing')
+          : '${L10n.t('sync.error')}: ${e.message}';
+      debugPrint('考勤同步跳过：${e.message}');
+    }
+
     return (pushed: pushed, pulled: incoming.length);
+  }
+
+  /// **考勤同步**：两条线，规则都很简单。
+  ///
+  /// 1. **员工名单**（`attendance_staff`，只有一行）：跟菜单一样按**版本号**走 ——
+  ///    本地改过就先推本地（后改的赢），否则服务器版本更高就拉下来整体替换；
+  /// 2. **打卡记录**（`attendance_punches`，一次打卡一行）：**只增不改**，
+  ///    所以先拉（增量）后推，按 id 并集 —— 两台设备各打各的卡不会互相覆盖。
+  ///
+  /// 两边都失败也不影响收银/点单：任何异常都会冒到 `syncNow()` 那里记成错误。
+  Future<void> _syncAttendance(SupabaseRest rest) async {
+    // ---- 4a) 员工名单 ----
+    final staffRows =
+        await rest.select('attendance_staff', filters: {'id': 'eq.current'});
+    if (staffRows.isEmpty) {
+      // 服务器上还没有这份名单 → 把本地的推上去（第一次接入时用）
+      await _pushStaff(rest);
+    } else {
+      final serverVersion = (staffRows.first['version'] as num?)?.toInt() ?? 0;
+      if (_settings.staffDirty) {
+        await _pushStaff(rest);
+      } else if (AttendanceSync.shouldPullStaff(
+        serverVersion: serverVersion,
+        localVersion: _settings.staffVersion,
+        localDirty: _settings.staffDirty,
+      )) {
+        final remote = RemoteStaff.fromRow(staffRows.first);
+        // 服务器上是空名单（比如别的设备刚清空）→ 也照拉（跟着清空）
+        await attendance.replaceStaffFromServer(remote.staff);
+        _settings.staffVersion = serverVersion;
+        _settings.staffDirty = false;
+        await settingsCtl.persist();
+      }
+    }
+
+    // ---- 4b) 打卡记录：先拉（增量），再推没上传的 ----
+    final pulled = await _pullRows(
+      rest,
+      table: 'attendance_punches',
+      select: 'id,employee_id,kind,at,created_at,device_id',
+      timeColumn: 'created_at',
+      since: _punchSince,
+    );
+    if (pulled.isNotEmpty) {
+      await attendance.adoptServerPunches(
+        pulled.map(AttendanceSync.punchFromRow).toList(),
+      );
+      // 水位线：按**服务器收到的时间**推进（跟订单共用那个纯函数）
+      final next = OrderSync.nextWatermark(
+        serverTime: rest.lastServerTime,
+        rowTimes: pulled.map(AttendanceSync.punchCreatedAt),
+      );
+      if (next != null) _punchSince = next.toIso8601String();
+    }
+
+    final unpushed = attendance.unpushedPunches;
+    if (unpushed.isNotEmpty) {
+      await rest.upsert(
+        'attendance_punches',
+        unpushed
+            .map((p) => AttendanceSync.punchToRow(p, deviceId: deviceName))
+            .toList(),
+      );
+      await attendance.markPunchesPushed(unpushed.map((p) => p.id).toList());
+    }
+  }
+
+  /// 把本地员工名单推上去（`attendance_staff` 只有一行，版本号由触发器维护）。
+  Future<void> _pushStaff(SupabaseRest rest) async {
+    final back = await rest.upsert('attendance_staff', [
+      AttendanceSync.staffToRow(attendance.staffSnapshot(), deviceId: deviceName),
+    ]);
+    final version =
+        back.isEmpty ? null : (back.first['version'] as num?)?.toInt();
+    _settings.staffVersion = version ?? _settings.staffVersion + 1;
+    _settings.staffDirty = false;
+    await settingsCtl.persist();
   }
 
   /// 拉订单（**增量 + 翻页**）。
@@ -424,16 +553,36 @@ class SyncService extends ChangeNotifier {
   Future<List<Map<String, dynamic>>> _pullOrders(
     SupabaseRest rest, {
     String? since,
+  }) =>
+      _pullRows(
+        rest,
+        table: 'orders',
+        select: 'id,status,rev,updated_at,data',
+        timeColumn: 'updated_at',
+        since: since,
+      );
+
+  /// 通用「增量 + 翻页」拉取：订单（`updated_at`）和打卡记录（`created_at`）都用它。
+  ///
+  /// [timeColumn] 既是「有没有变过」的判断依据，也是排序键 ——
+  /// 两者必须是同一列，否则翻页会漏行。
+  Future<List<Map<String, dynamic>>> _pullRows(
+    SupabaseRest rest, {
+    required String table,
+    required String select,
+    required String timeColumn,
+    String? since,
   }) async {
     final out = <Map<String, dynamic>>[];
     var offset = 0;
     while (true) {
       final rows = await rest.select(
-        'orders',
-        select: 'id,status,rev,updated_at,data',
-        filters:
-            since == null ? const {} : <String, String>{'updated_at': 'gt.$since'},
-        order: 'updated_at.asc,id.asc',
+        table,
+        select: select,
+        filters: since == null
+            ? const {}
+            : <String, String>{timeColumn: 'gt.$since'},
+        order: '$timeColumn.asc,id.asc',
         limit: pageSize,
         offset: offset,
       );
@@ -581,12 +730,17 @@ class SyncService extends ChangeNotifier {
     _settings.syncRefreshToken = '';
     _settings.menuVersion = 0;
     _settings.menuDirty = true;
+    _settings.staffVersion = 0;
+    _settings.staffDirty = true;
     _settings.lastSyncAt = '';
     await settingsCtl.persist();
     pos.markAllOrdersDirty();
+    // 考勤也一样：所有打卡重新标成「要推」（推上去是 upsert，不会重复记账）
+    await attendance.markAllPunchesUnpushed();
     _rest?.close();
     _rest = null;
     _since = null; // 水位线清掉 → 下一次重新全量拉一遍
+    _punchSince = null;
     notifyListeners();
     await syncNow();
   }

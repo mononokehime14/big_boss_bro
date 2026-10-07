@@ -95,6 +95,7 @@
     <button class="tab on" data-tab="live">进行中的单</button>
     <button class="tab" data-tab="done">已结账的单</button>
     <button class="tab" data-tab="day">日结</button>
+    <button class="tab" data-tab="attendance">考勤</button>
     <button class="tab" data-tab="menu">菜单</button>
   </div>
 
@@ -155,6 +156,34 @@
     <div class="scroll" style="margin-top:12px; max-height:none"><table id="tblDay"></table></div>
   </div>
 
+  <!-- 考勤 -->
+  <div id="tab-attendance" class="card" hidden>
+    <div class="row">
+      <div style="flex:0 0 auto">
+        <label>&nbsp;</label>
+        <button id="btnAttPrev">‹ 上一周</button>
+      </div>
+      <div style="flex:0 0 auto">
+        <label>&nbsp;</label>
+        <button id="btnAttThisWeek" class="primary">本周</button>
+      </div>
+      <div style="flex:0 0 auto">
+        <label>&nbsp;</label>
+        <button id="btnAttNext">下一周 ›</button>
+      </div>
+      <div>
+        <label>本周范围</label>
+        <div class="muted" id="attRange" style="padding-top:8px"></div>
+      </div>
+    </div>
+    <div class="muted" style="margin:10px 0 6px">
+      绿色 = 上班 · 蓝色 = 下班 · 最后一列是本周工时（小时）
+    </div>
+    <div class="scroll" style="max-height:none"><table id="tblAttendance"></table></div>
+    <div class="muted" style="margin:16px 0 6px" id="attStaffInfo"></div>
+    <div class="scroll" style="max-height:none"><table id="tblStaff"></table></div>
+  </div>
+
   <!-- 菜单 -->
   <div id="tab-menu" class="card" hidden>
     <div class="muted" id="menuInfo" style="margin-bottom:8px"></div>
@@ -177,6 +206,20 @@ let orders = [];
 // 增量游标：自动刷新时只拉 `updated_at > since` 的订单（跟 App 里一个思路）。
 let since = null;
 let menu = null;
+
+// 考勤：员工名单 + 打卡记录（同上，打卡按 created_at 增量）
+let staff = [];
+let staffVersion = 0;
+let punches = [];
+let punchSince = null;
+let attendanceError = null;       // 考勤表没建好时的提示（不影响订单那些页）
+let attWeekAnchor = new Date();   // 考勤页显示的那一周（用这一周里任意一天表示）
+
+const ORDER_COLS = 'id,status,order_type,table_no,total,item_count,cashier,device_id,rev,updated_at,closed_at,data';
+const PUNCH_COLS = 'id,employee_id,kind,at,created_at,device_id';
+// 考勤页只拉最近这么多天的打卡（够看周/月，也不会把页面拖慢）
+const ATT_DAYS = 120;
+const MAX_PUNCHES = 5000;
 
 // Supabase 的接口**一次最多给 1000 行**（「Max Rows」默认 1000），
 // 所以必须翻页 —— 不然单子一多，老日期的「已结账 / 日结」就会莫名其妙是空的。
@@ -245,7 +288,6 @@ async function api(path, opts = {}) {
 }
 
 // ---- 数据 ----
-const ORDER_COLS = 'id,status,order_type,table_no,total,item_count,cashier,device_id,rev,updated_at,closed_at,data';
 
 /// 拉订单：**翻页**拉（每页 1000），最多 MAX_ORDERS 单。
 /// 只在「登录 / 手动刷新」时调用（自动刷新走 loadIncremental，省流量）。
@@ -305,15 +347,70 @@ async function loadMenu() {
   menu = rows.length ? rows[0] : null;
 }
 
+// ---- 考勤（员工名单 + 打卡记录）----
+
+/// 拉员工名单：只有一行（id='current'），整份名单在 data.staff 里。
+async function loadStaff() {
+  const rows = await api('/attendance_staff?select=version,updated_at,device_id,data&id=eq.current');
+  staffVersion = rows.length ? (rows[0].version || 0) : 0;
+  const data = rows.length ? (rows[0].data || {}) : {};
+  staff = Array.isArray(data.staff) ? data.staff : [];
+}
+
+/// 拉打卡记录：只拉最近 [ATT_DAYS] 天（看周/月够了，也不会把页面拖慢）。
+async function loadPunches() {
+  const sinceIso = new Date(Date.now() - ATT_DAYS * 24 * 3600 * 1000).toISOString();
+  punches = await api('/attendance_punches?select=' + PUNCH_COLS +
+    '&at=gt.' + encodeURIComponent(sinceIso) + '&order=at.asc&limit=' + MAX_PUNCHES);
+  punchSince = maxCreatedAt(punches);
+}
+
+/// 自动刷新用：只拉「服务器刚收到」的打卡（按 created_at 增量）。
+async function loadPunchesIncremental() {
+  if (!punchSince) return loadPunches();
+  const rows = await api('/attendance_punches?select=' + PUNCH_COLS +
+    '&created_at=gt.' + encodeURIComponent(punchSince) +
+    '&order=created_at.asc&limit=' + PAGE);
+  if (!rows.length) return;
+  mergePunches(rows);
+  punchSince = maxCreatedAt(rows);
+}
+
+function mergePunches(rows) {
+  const byId = {};
+  for (const p of punches) byId[p.id] = p;
+  for (const p of rows) byId[p.id] = p;
+  punches = Object.values(byId).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+}
+
+function maxCreatedAt(rows) {
+  let best = punchSince;
+  for (const p of rows) {
+    const t = String(p.created_at || '');
+    if (t && (!best || t > best)) best = t;
+  }
+  return best;
+}
+
 /// [full] = true：整份重拉（登录 / 点「刷新」）；
 /// false：只拉增量（20 秒自动刷新用）。
 async function refreshAll(full) {
   try {
     if (full) { await loadOrders(); } else { await loadIncremental(); }
     await loadMenu();
+    // 考勤：员工名单每次都拉（就一行，很便宜）；打卡走增量
+    try {
+      await loadStaff();
+      if (full) { await loadPunches(); } else { await loadPunchesIncremental(); }
+    } catch (e) {
+      // 考勤表还没建（还没跑新版 schema.sql）→ 不影响订单/菜单那些页
+      staff = [];
+      attendanceError = e.message;
+    }
     renderLive();
     renderDone();
     renderMenu();
+    renderAttendance();
     setStatus('已连接 · ' + new Date().toLocaleTimeString());
   } catch (e) {
     setStatus('出错：' + e.message, true);
@@ -396,8 +493,106 @@ function renderDone() {
   $('doneSummary').textContent = rows.length + ' 单 · 合计 ' + money(sum);
 }
 
-function renderMenu() {
-  if (!menu) { $('menuInfo').textContent = '后台还没有菜单（App 里点一次「立即同步」就会上传）'; $('tblMenu').innerHTML = ''; return; }
+// ---- 考勤 ----
+
+/// 只要时分：`08:05`。
+function hm(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+/// `11-25` 这种短日期。
+function md(d) {
+  return String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+/// 包含 d 的那一周（周一到周日，7 个 Date）。
+/// 跟 App 里一样用「日期 ± n 天」重新构造，避开夏令时那天偏一小时。
+function weekOf(anyDay) {
+  const d = new Date(anyDay.getFullYear(), anyDay.getMonth(), anyDay.getDate());
+  const back = (d.getDay() + 6) % 7;   // 周一 = 0
+  const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - back);
+  const out = [];
+  for (let i = 0; i < 7; i++) {
+    out.push(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i));
+  }
+  return out;
+}
+
+function punchKey(employeeId, dayIso) { return employeeId + '|' + dayIso; }
+
+/// 把打卡整理成 `员工|日期 → {in, out}`（上班取最早、下班取最晚）。
+function punchMap() {
+  const map = {};
+  for (const p of punches) {
+    const k = punchKey(p.employee_id, dayKey(p.at));
+    const cur = map[k] || {};
+    if (p.kind === 'out') {
+      if (!cur.out || String(p.at) > String(cur.out)) cur.out = p.at;
+    } else {
+      if (!cur.in || String(p.at) < String(cur.in)) cur.in = p.at;
+    }
+    map[k] = cur;
+  }
+  return map;
+}
+
+function renderAttendance() {
+  const range = $('attRange');
+  const days = weekOf(attWeekAnchor);
+  range.textContent = md(days[0]) + ' ~ ' + md(days[6]);
+
+  if (attendanceError) {
+    $('tblAttendance').innerHTML =
+      '<tr><td class="muted">后台还没有考勤表（' + attendanceError +
+      '）—— 去 Supabase 把 supabase/schema.sql 整段重跑一次。</td></tr>';
+    $('tblStaff').innerHTML = '';
+    $('attStaffInfo').textContent = '';
+    return;
+  }
+
+  const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+  const map = punchMap();
+
+  let html = '<tr><th>员工</th>' +
+    days.map((d, i) => '<th>' + WEEKDAYS[i] + '<br><span class="muted">' + md(d) + '</span></th>').join('') +
+    '<th class="num">出勤</th><th class="num">工时</th></tr>';
+  if (!staff.length) {
+    html += '<tr><td colspan="10" class="muted">后台还没有员工名单 —— 在 App 的「签到 → 管理员 → 员工管理」里加人，同步上来就会显示</td></tr>';
+  }
+  for (const s of staff) {
+    let daysPresent = 0;
+    let minutes = 0;
+    let cells = '';
+    for (const d of days) {
+      const c = map[punchKey(s.id, dayKey(d))] || {};
+      if (c.in) daysPresent++;
+      if (c.in && c.out) {
+        const diff = (new Date(c.out) - new Date(c.in)) / 60000;
+        if (diff > 0) minutes += diff;
+      }
+      cells += '<td>' +
+        (c.in ? '<span style="color:#2e7d32;font-weight:600">' + hm(c.in) + '</span>' : '<span class="muted">—</span>') +
+        '<br>' +
+        (c.out ? '<span style="color:#1565c0">' + hm(c.out) + '</span>' : '<span class="muted">—</span>') +
+        '</td>';
+    }
+    html += '<tr><td>' + (s.name || s.id) + '</td>' + cells +
+      '<td class="num">' + daysPresent + '</td>' +
+      '<td class="num">' + (minutes / 60).toFixed(1) + '</td></tr>';
+  }
+  $('tblAttendance').innerHTML = html;
+
+  // 员工名单（PIN 也列出来，方便老板告诉员工）
+  $('attStaffInfo').textContent = '员工名单（版本 v' + staffVersion + ' · ' + staff.length + ' 人）';
+  let sh = '<tr><th>姓名</th><th>PIN</th></tr>';
+  if (!staff.length) sh += '<tr><td colspan="2" class="muted">（空）</td></tr>';
+  for (const s of staff) sh += '<tr><td>' + (s.name || '') + '</td><td>' + (s.pin || '') + '</td></tr>';
+  $('tblStaff').innerHTML = sh;
+}
+
+function renderMenu() {  if (!menu) { $('menuInfo').textContent = '后台还没有菜单（App 里点一次「立即同步」就会上传）'; $('tblMenu').innerHTML = ''; return; }
   const data = menu.data || {};
   const items = data.items || [];
   const cats = data.categories || [];
@@ -463,6 +658,9 @@ function exportBackup() {
     ordersLoaded: orders.length,
     orders: orders,
     menu: menu,
+    // 考勤也一起备份（员工名单 + 最近这些天的打卡）
+    staff: staff,
+    punches: punches,
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -492,13 +690,24 @@ $('doneDate').onchange = renderDone;
 $('btnToday').onclick = () => { $('doneDate').value = dayKey(new Date().toISOString()); renderDone(); };
 $('btnAllDays').onclick = () => { $('doneDate').value = ''; renderDone(); };
 $('btnDayGo').onclick = renderDay;
+// 考勤：翻周
+$('btnAttPrev').onclick = () => {
+  attWeekAnchor = new Date(attWeekAnchor.getFullYear(), attWeekAnchor.getMonth(), attWeekAnchor.getDate() - 7);
+  renderAttendance();
+};
+$('btnAttNext').onclick = () => {
+  attWeekAnchor = new Date(attWeekAnchor.getFullYear(), attWeekAnchor.getMonth(), attWeekAnchor.getDate() + 7);
+  renderAttendance();
+};
+$('btnAttThisWeek').onclick = () => { attWeekAnchor = new Date(); renderAttendance(); };
 
 document.querySelectorAll('.tab').forEach((btn) => {
   btn.onclick = () => {
     document.querySelectorAll('.tab').forEach((b) => b.classList.remove('on'));
     btn.classList.add('on');
-    for (const t of ['live', 'done', 'day', 'menu']) $('tab-' + t).hidden = (t !== btn.dataset.tab);
+    for (const t of ['live', 'done', 'day', 'attendance', 'menu']) $('tab-' + t).hidden = (t !== btn.dataset.tab);
     if (btn.dataset.tab === 'day') renderDay();
+    if (btn.dataset.tab === 'attendance') renderAttendance();
   };
 });
 

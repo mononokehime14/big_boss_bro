@@ -130,6 +130,12 @@ class Settings {
   /// 本地菜单有没有改过、要推给后台。
   bool menuDirty;
 
+  /// 本地**员工名单**的版本号（跟服务器上的比大小，决定要不要拉新版）。
+  int staffVersion;
+
+  /// 本地员工名单有没有改过、要推给后台。
+  bool staffDirty;
+
   Settings({
     this.storeName = '我的餐厅',
     this.storeHeader = '',
@@ -155,6 +161,8 @@ class Settings {
     this.syncRefreshToken = '',
     this.menuVersion = 0,
     this.menuDirty = false,
+    this.staffVersion = 0,
+    this.staffDirty = false,
     List<String>? tables,
     Map<String, List<String>>? notesByCategory,
     this.menuPassword = kDefaultMenuPassword,
@@ -261,6 +269,8 @@ class SettingsStore {
   static const _kSyncRefreshToken = 'sync_refresh_token';
   static const _kMenuVersion = 'menu_version';
   static const _kMenuDirty = 'menu_dirty';
+  static const _kStaffVersion = 'staff_version';
+  static const _kStaffDirty = 'staff_dirty';
 
   static List<String> _decodeList(String? raw, List<String> fallback) {
     if (raw == null) return List.of(fallback);
@@ -349,6 +359,8 @@ class SettingsStore {
       syncRefreshToken: prefs.getString(_kSyncRefreshToken) ?? '',
       menuVersion: prefs.getInt(_kMenuVersion) ?? 0,
       menuDirty: prefs.getBool(_kMenuDirty) ?? false,
+      staffVersion: prefs.getInt(_kStaffVersion) ?? 0,
+      staffDirty: prefs.getBool(_kStaffDirty) ?? false,
     );
   }
 
@@ -388,5 +400,7 @@ class SettingsStore {
     await prefs.setString(_kSyncRefreshToken, settings.syncRefreshToken);
     await prefs.setInt(_kMenuVersion, settings.menuVersion);
     await prefs.setBool(_kMenuDirty, settings.menuDirty);
+    await prefs.setInt(_kStaffVersion, settings.staffVersion);
+    await prefs.setBool(_kStaffDirty, settings.staffDirty);
   }
 }
