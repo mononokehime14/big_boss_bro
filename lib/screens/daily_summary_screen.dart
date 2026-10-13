@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../l10n/app_strings.dart';
+// 现金按币种分列时要查 `kCurrencySymbols`（币种符号表就在这个文件里）
 import '../models/order.dart';
 import '../services/receipt_layout.dart';
 import '../services/receipt_print_service.dart';
@@ -19,22 +20,30 @@ import '../widgets/account_menu.dart';
 /// 营业额按订单算，收款按**每一笔 payment** 算 —— AA 分开付的单
 /// 会分别落进各自的方式/币种里，所以各方式加起来永远等于总营业额。
 class DailySummaryScreen extends StatefulWidget {
-  const DailySummaryScreen({super.key});
+  /// 打开时先看**哪一天**（`yyyy-MM-dd`）；null = 今天（并且跨零点自动跟到今天）。
+  ///
+  /// 从「已结单」那一页进来时会带上**正在看的那一天**：两边的"某一天"是同一套算法，
+  /// 不然会出现"看着 10/3 的单子、点开日结却是今天的数字"。
+  final String? initialDayKey;
+
+  const DailySummaryScreen({super.key, this.initialDayKey});
 
   @override
   State<DailySummaryScreen> createState() => _DailySummaryScreenState();
 }
 
 class _DailySummaryScreenState extends State<DailySummaryScreen> {
-  late String _dateKey;
-  final _expenseCtl = TextEditingController();
-  bool _expenseLoaded = false;
+  /// 用户**手动挑过**的日期（`yyyy-MM-dd`）；null = 跟着「今天」走。
+  ///
+  /// 为什么不是 `initState` 里定死一个：收银台**开着过零点**的话，
+  /// 页面上的日期会一直停在昨天（你报的「今天没有结单却有一堆数字」，
+  /// 这一种就是这么来的）。现在没手动挑过就每次 build 重新算"今天"。
+  String? _pickedKey;
 
-  @override
-  void initState() {
-    super.initState();
-    _dateKey = PosController.dateKey(DateTime.now());
-  }
+  /// 支出输入框里装的是**哪一天**的支出（换一天要重新装一遍）。
+  String? _expenseFor;
+
+  final _expenseCtl = TextEditingController();
 
   @override
   void dispose() {
@@ -49,12 +58,15 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
     final settings = settingsCtl.settings;
     final symbol = settings.currencySymbol;
 
-    final orders = pos.completedOrdersOn(_dateKey);
+    final dateKey = _pickedKey ??
+        widget.initialDayKey ??
+        PosController.dateKey(DateTime.now());
+    final orders = pos.completedOrdersOn(dateKey);
     final totals = computeSalesTotals(orders);
-    final expense = settings.expenseFor(_dateKey);
-    if (!_expenseLoaded) {
+    final expense = settings.expenseFor(dateKey);
+    if (_expenseFor != dateKey) {
       _expenseCtl.text = expense == 0 ? '' : expense.toString();
-      _expenseLoaded = true;
+      _expenseFor = dateKey;
     }
 
     return Scaffold(
@@ -65,12 +77,12 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
           TextButton.icon(
             onPressed: _pickDate,
             icon: const Icon(Icons.calendar_today, size: 18),
-            label: Text(_dateKey),
+            label: Text(dateKey),
           ),
           // 打印日结
           IconButton(
             tooltip: L10n.t('summary.print'),
-            onPressed: () => _print(totals, expense),
+            onPressed: () => _print(totals, expense, dateKey),
             icon: const Icon(Icons.print),
           ),
           const AccountMenuButton(),
@@ -80,6 +92,7 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
+            // 上面两块卡（堂食/外卖 + 明细）占满
             Expanded(
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -135,7 +148,7 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
                                       fontSize: 16,
                                       fontWeight: FontWeight.w700)),
                               const SizedBox(height: 12),
-                              _smallRow(L10n.t('summary.date'), _dateKey),
+                              _smallRow(L10n.t('summary.date'), dateKey),
                               const Divider(height: 24),
                               if (totals.hasAdjustments) ...[
                                 _smallRow(L10n.t('receipt.labelSubtotal'),
@@ -185,7 +198,7 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
                                   prefixText: symbol,
                                 ),
                                 onChanged: (v) => settingsCtl.setDailyExpense(
-                                  _dateKey,
+                                  dateKey,
                                   double.tryParse(
                                           v.trim().replaceAll(',', '.')) ??
                                       0,
@@ -210,7 +223,7 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: () => _print(totals, expense),
+                onPressed: () => _print(totals, expense, dateKey),
                 icon: const Icon(Icons.print),
                 label: Text(L10n.t('summary.print')),
               ),
@@ -252,33 +265,38 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
       );
 
   Future<void> _pickDate() async {
-    final parts = _dateKey.split('-');
-    final current = DateTime(
+    // 选择器打开时定位在**现在看着的那一天**
+    final current = _pickedKey ??
+        widget.initialDayKey ??
+        PosController.dateKey(DateTime.now());
+    final parts = current.split('-');
+    final initial = DateTime(
       int.tryParse(parts[0]) ?? DateTime.now().year,
       int.tryParse(parts[1]) ?? 1,
       int.tryParse(parts[2]) ?? 1,
     );
     final picked = await showDatePicker(
       context: context,
-      initialDate: current,
+      initialDate: initial,
       firstDate: DateTime(2020),
       lastDate: DateTime(2100),
     );
     if (picked == null || !mounted) return;
-    setState(() {
-      _dateKey = PosController.dateKey(picked);
-      _expenseLoaded = false;
-    });
+    setState(() => _pickedKey = PosController.dateKey(picked));
   }
 
-  Future<void> _print(SalesTotals totals, double expense) async {
+  Future<void> _print(
+    SalesTotals totals,
+    double expense,
+    String dateKey,
+  ) async {
     final settingsCtl = context.read<SettingsController>();
     final service = context.read<ReceiptPrintService>();
     final settings = settingsCtl.settings;
 
     final data = SummaryData(
       storeName: settings.storeName,
-      dateLabel: _dateKey,
+      dateLabel: dateKey,
       paperWidth: settings.paperWidth,
       currency: settings.currencySymbol,
       dineInTotal: totals.dineIn,

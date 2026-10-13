@@ -36,6 +36,10 @@ class MenuArea extends StatelessWidget {
 }
 
 /// 排序条：默认 / 首字母 / 流行度。选哪个存在设置里，重启还记得。
+///
+/// **默认**这一档 = "本机记住的顺序"：一开始是菜单原本的顺序，用户在格子上
+/// **长按拖动**之后就按拖出来的顺序（只存本机，见 `Settings.menuOrder`）。
+/// 选了「默认」时右边写一句提示 —— 不然没人知道能拖。
 class MenuSortBar extends StatelessWidget {
   const MenuSortBar({super.key});
 
@@ -61,14 +65,10 @@ class MenuSortBar extends StatelessWidget {
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
-                  _chip(settingsCtl, current, MenuSort.natural,
-                      L10n.t('menu.sort.natural')),
-                  const SizedBox(width: 8),
-                  _chip(settingsCtl, current, MenuSort.name,
-                      L10n.t('menu.sort.name')),
-                  const SizedBox(width: 8),
-                  _chip(settingsCtl, current, MenuSort.popular,
-                      L10n.t('menu.sort.popular')),
+                  for (final mode in MenuSort.values) ...[
+                    _chip(settingsCtl, current, mode, _label(mode)),
+                    const SizedBox(width: 8),
+                  ],
                 ],
               ),
             ),
@@ -77,6 +77,13 @@ class MenuSortBar extends StatelessWidget {
       ),
     );
   }
+
+  /// 排序方式在界面上的名字。
+  String _label(MenuSort mode) => switch (mode) {
+        MenuSort.natural => L10n.t('menu.sort.natural'),
+        MenuSort.name => L10n.t('menu.sort.name'),
+        MenuSort.popular => L10n.t('menu.sort.popular'),
+      };
 
   Widget _chip(
     SettingsController ctl,

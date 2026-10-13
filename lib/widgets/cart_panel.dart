@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/custom_menu_entry.dart';
 import '../l10n/app_strings.dart';
 import '../models/cart_item.dart';
 import '../models/order.dart';
@@ -8,8 +9,11 @@ import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
 import '../utils/category_colors.dart';
 import '../utils/format.dart';
+import '../utils/menu_sort.dart';
 import '../utils/pricing.dart';
+import 'custom_item_dialog.dart';
 import 'item_customize_dialog.dart';
+import 'takeaway_name_dialog.dart';
 
 /// 购物车面板（宽屏常驻右侧，窄屏放进底部弹窗）。
 ///
@@ -104,7 +108,7 @@ class _CartPanelState extends State<CartPanel> {
             ),
           ],
           // ---- 目标桌号 / 外卖（下拉选择；有菜的桌子用颜色标出来）----
-          _targetSelector(pos, open, unsent),
+          _targetSelector(pos, open),
           const Divider(height: 1),
           Expanded(
             child: !hasAnything
@@ -113,13 +117,9 @@ class _CartPanelState extends State<CartPanel> {
                     padding: EdgeInsets.zero,
                     children: [
                       // ---- 已在单上：这张单现在的菜（下过厨房的标绿，也能改）----
+                      // （原来这里有个「已在单上 N 件」小标题，去掉了：下面的行自己带
+                      //   「已下厨 / 未下厨」标签，一眼就分得清）
                       if (placed.isNotEmpty) ...[
-                        _sectionHeader(
-                          icon: Icons.receipt_long_outlined,
-                          title: L10n.t('cart.onOrder'),
-                          trailing:
-                              '${open?.itemCount ?? 0} ${L10n.t('cart.items')}',
-                        ),
                         for (var i = 0; i < placed.length; i++)
                           _PlacedLine(
                             line: placed[i],
@@ -178,13 +178,13 @@ class _CartPanelState extends State<CartPanel> {
                           ? L10n.t('cart.total')
                           : L10n.t('cart.totalTable'),
                       style: const TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.w600),
+                          fontSize: 18, fontWeight: FontWeight.w600),
                     ),
                     const Spacer(),
                     Text(
                       money(price.total, settings.currencySymbol),
                       style: const TextStyle(
-                        fontSize: 22,
+                        fontSize: 26,
                         fontWeight: FontWeight.w700,
                         color: Color(0xFF1FA85A),
                       ),
@@ -217,14 +217,8 @@ class _CartPanelState extends State<CartPanel> {
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: Text(
-              L10n.t('cart.buttonsHint'),
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-            ),
-          ),
+          // （原来这里有一行「保存/厨房 分别是干嘛的」说明文字，去掉了：按钮名字够清楚）
+          const SizedBox(height: 14),
         ],
       ),
     );
@@ -235,12 +229,35 @@ class _CartPanelState extends State<CartPanel> {
   // 改动都**只改账单**（你选的方案）：不给厨房补打变动单；
   // 被改过的行会自动变回「未下厨」，下次点「厨房」会重新打给它。
 
+  /// 改外卖单的**名字 / 等待时间**（电话外卖那个「等 N 分钟」就是这里改的）。
+  ///
+  /// 入口：桌号下拉下面的那个小 chip（只有电话外卖的当前单才显示）。
+  Future<void> _editTakeawaySave(Order o) async {
+    final pos = context.read<PosController>();
+    final r = await showTakeawayNameDialog(context, o);
+    if (r == null || !mounted) return;
+    pos.setOrderLabel(o.id, r.label, waitMinutes: r.waitMinutes);
+  }
+
   /// 点「已在单上」的某一行 → 回到点菜编辑框（选项 / 特别备注 / 份数）。
   Future<void> _editPlacedLine(String orderId, int index) async {
     final pos = context.read<PosController>();
     final order = pos.findOrder(orderId);
     if (order == null || index >= order.lines.length) return;
     final line = order.lines[index];
+
+    // 「自定义」行：回它自己的框（金额 + 备注 —— 备注就是菜名）
+    if (line.itemId == kCustomItemId) {
+      final r = await showCustomItemDialog(
+        context,
+        initialNote: line.name,
+        initialAmount: line.unitPrice,
+      );
+      if (r == null || !mounted) return;
+      pos.updateCustomOrderLine(orderId, index, note: r.note, amount: r.amount);
+      return;
+    }
+
     final item = pos.menuItemForLine(line);
 
     final result = await showItemCustomizeDialog(
@@ -299,6 +316,19 @@ class _CartPanelState extends State<CartPanel> {
   /// 点「本次新增」的某一行 → 回到点菜编辑框，保存后替换这一行。
   Future<void> _editCartLine(CartItem item) async {
     final pos = context.read<PosController>();
+
+    // 「自定义」行：回它自己的框（金额 + 备注 —— 备注就是菜名）
+    if (item.menuItem.id == kCustomItemId) {
+      final r = await showCustomItemDialog(
+        context,
+        initialNote: item.menuItem.name,
+        initialAmount: item.menuItem.price,
+      );
+      if (r == null || !mounted) return;
+      pos.updateCustomCartItem(item.key, note: r.note, amount: r.amount);
+      return;
+    }
+
     final result = await showItemCustomizeDialog(
       context,
       item.menuItem,
@@ -355,41 +385,51 @@ class _CartPanelState extends State<CartPanel> {
 
   /// 顶部：**桌号 / 外卖下拉**（堂食外卖出这里选）。
   ///
-  /// 下拉里每张桌带一个状态：**有菜的桌子橙色 +「已有 N」**，空桌绿色；
-  /// 下面一行是当前目标的状态：`已有 3 件 · 未下厨 1`（说明还有几个菜没送厨房）。
-  Widget _targetSelector(PosController pos, Order? open, int unsent) {
+  /// 下拉里每张桌带一个状态：**有菜的桌子橙色 +「已有 N」**，空桌绿色。
+  ///
+  /// **已保存的外卖单**（点「保存」时起过名的）也会列在这里 ——
+  /// 点它们就是"回到那张外卖单接着改"，结账之后自动不再出现。
+  Widget _targetSelector(PosController pos, Order? open) {
     final settings = context.watch<SettingsController>().settings;
-    final tables = settings.tables;
-    final value = pos.isPhoneTakeaway
-        ? _kPhoneTakeaway
-        : pos.isTakeaway
-            ? _kTakeaway
-            : (tables.contains(pos.selectedTable) ? pos.selectedTable : null);
+    // 桌号按**自然顺序**排：数字在前（1,2,…,9,10），然后字母（A,B,C…SA,SB）
+    // —— 设置里存的是什么顺序都不影响，这里只按名字排（见 utils/menu_sort.dart）
+    final tables = sortedTables(settings.tables);
+    // 已保存（起过名）的外卖单
+    final savedTakeaways = pos.openTakeawayOrders();
+    Order? selectedSaved;
+    for (final o in savedTakeaways) {
+      if (o.label.trim() == pos.selectedTakeawayLabel) {
+        selectedSaved = o;
+        break;
+      }
+    }
+    final value = selectedSaved != null
+        ? '$_kSavedPrefix${selectedSaved.id}'
+        : pos.isPhoneTakeaway
+            ? _kPhoneTakeaway
+            : pos.isTakeaway
+                ? _kTakeaway
+                : (tables.contains(pos.selectedTable) ? pos.selectedTable : null);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            L10n.t('order.table'),
-            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
-          ),
-          const SizedBox(height: 4),
+          // （原来这里有一行「桌号」小标题，去掉了：下拉里每一项自己就写着「桌号 5 / 外卖」）
           DropdownButton<String>(
             value: value,
             isExpanded: true,
             hint: Text(L10n.t('table.pickShort')),
             items: [
-              // 外卖
+              // 外卖（= 开一张新单；后面的 #N 是它将要拿到的号）
               DropdownMenuItem(
                 value: _kTakeaway,
                 child: _targetRow(
                   L10n.t('order.takeaway'),
                   color: const Color(0xFF37474F),
-                  note: pos.openTakeawayCount > 0
-                      ? '${pos.openTakeawayCount} ${L10n.t('table.openOrders')}'
-                      : null,
+                  note: '#${pos.nextTakeawayNo}'
+                      '${pos.openTakeawayCount > 0 ? ' · ${pos.openTakeawayCount} ${L10n.t('table.openOrders')}' : ''}',
                 ),
               ),
               // 电话外卖（打电话点的，也单独统计）
@@ -403,6 +443,19 @@ class _CartPanelState extends State<CartPanel> {
                       : null,
                 ),
               ),
+              // **已保存的外卖单**：点它回到那张单接着改
+              for (final o in savedTakeaways)
+                DropdownMenuItem<String>(
+                  value: '$_kSavedPrefix${o.id}',
+                  child: _targetRow(
+                    o.isPhoneTakeaway
+                        ? L10n.t('order.phonecallTakeaway')
+                        : L10n.t('order.takeaway'),
+                    color: const Color(0xFF00838F),
+                    name: '${o.label}${o.dailyNo > 0 ? ' #${o.dailyNo}' : ''}',
+                    note: '${o.itemCount} ${L10n.t('cart.items')}',
+                  ),
+                ),
               // 各桌（有菜 = 橙色，空桌 = 绿色）
               for (final t in tables)
                 DropdownMenuItem<String>(
@@ -420,6 +473,17 @@ class _CartPanelState extends State<CartPanel> {
             ],
             onChanged: (v) {
               if (v == null) return;
+              if (v.startsWith(_kSavedPrefix)) {
+                // 已保存的外卖单：选中它 → 之后「保存 / 厨房」都加到这张单上
+                final id = v.substring(_kSavedPrefix.length);
+                for (final o in savedTakeaways) {
+                  if (o.id == id) {
+                    pos.selectTakeawayOrder(o);
+                    return;
+                  }
+                }
+                return;
+              }
               if (v == _kTakeaway) {
                 pos.selectTable('', takeaway: true);
               } else if (v == _kPhoneTakeaway) {
@@ -431,22 +495,21 @@ class _CartPanelState extends State<CartPanel> {
               }
             },
           ),
-          // 当前目标的状态说明（已有几个菜 / 其中几个还没下厨 / 空桌）
-          Text(
-            open != null
-                ? '${L10n.t('table.already')} ${open.itemCount} ${L10n.t('cart.items')}'
-                    '${unsent > 0 ? ' · ${L10n.t('cart.unsent')} $unsent' : ''}'
-                : (pos.isTakeaway
-                    ? L10n.t('cart.takeawayHint')
-                    : L10n.t('table.empty')),
-            style: TextStyle(
-              fontSize: 12,
-              color: open != null
-                  ? const Color(0xFFEF6C00)
-                  : Colors.grey.shade600,
-              fontWeight: FontWeight.w600,
+          // 电话外卖：**等待时间**（点一下就能改；填了会打在厨房单上）
+          if (open != null && open.isPhoneTakeaway) ...[
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: ActionChip(
+                avatar: const Icon(Icons.timer_outlined, size: 16),
+                label: Text(open.waitMinutes > 0
+                    ? '${L10n.t('kitchen.wait')} ${open.waitMinutes} '
+                        '${L10n.t('kitchen.minutes')}'
+                    : L10n.t('takeaway.wait')),
+                onPressed: () => _editTakeawaySave(open),
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -469,8 +532,12 @@ class _CartPanelState extends State<CartPanel> {
         ),
       );
 
-  /// 下拉里的一行：颜色圆点 + 名称 (+ 备注)。
-  Widget _targetRow(String label, {required Color color, String? note}) {
+  /// 下拉里的一行：颜色圆点 + 名称 (+ 名字) (+ 备注)。
+  ///
+  /// [name] 是给"已保存的外卖单"用的：类型写「外卖」，名字写在后面强调一下
+  /// （例：`外卖  张三 #3   2 件`）。
+  Widget _targetRow(String label,
+      {required Color color, String? note, String? name}) {
     return Row(
       children: [
         Container(
@@ -479,9 +546,18 @@ class _CartPanelState extends State<CartPanel> {
           decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         const SizedBox(width: 8),
-        Expanded(
-          child: Text(label, overflow: TextOverflow.ellipsis),
-        ),
+        Flexible(child: Text(label, overflow: TextOverflow.ellipsis)),
+        if (name != null) ...[
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              name,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ] else
+          const Spacer(),
         if (note != null)
           Text(
             note,
@@ -501,6 +577,9 @@ const String _kTakeaway = '__takeaway__';
 
 /// 下拉里代表「**电话外卖**」的伪桌号（打电话来点的外卖）。
 const String _kPhoneTakeaway = '__phone_takeaway__';
+
+/// 下拉里「已保存的外卖单」的前缀（后面接订单 id，见 `_targetSelector`）。
+const String _kSavedPrefix = '__saved_takeaway__:';
 
 class _CartLine extends StatelessWidget {
   /// 购物车行的唯一键（菜 + 选项 + 备注），见 `CartItem.key`。
@@ -542,9 +621,11 @@ class _CartLine extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    item.menuItem.name,
+                    // 有昵称就显示昵称（见 `MenuItem.displayName`）——收银员看着顺口
+                    item.menuItem.displayName,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w600),
                   ),
                   // 选项 / 备注（有才显示）
                   if (item.detail.isNotEmpty)
@@ -552,7 +633,7 @@ class _CartLine extends StatelessWidget {
                       item.detail,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 12,
+                        fontSize: 14,
                         color: Color(0xFF1FA85A),
                         fontWeight: FontWeight.w600,
                       ),
@@ -561,7 +642,7 @@ class _CartLine extends StatelessWidget {
                     // 单价（+ 单位，例如「¥140.00 / 份」）· 点这一行可以改
                     '${item.menuItem.hasUnit ? '${money(item.unitPrice, settings.currencySymbol)} / ${item.menuItem.unit}' : money(item.unitPrice, settings.currencySymbol)}'
                     ' · ${L10n.t('cart.tapToEdit')}',
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
                   ),
                 ],
               ),
@@ -572,11 +653,12 @@ class _CartLine extends StatelessWidget {
               onPlus: () => pos.increment(cartKey),
             ),
             SizedBox(
-              width: 70,
+              width: 84,
               child: Text(
                 money(item.lineTotal, settings.currencySymbol),
                 textAlign: TextAlign.right,
-                style: const TextStyle(fontWeight: FontWeight.w600),
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
               ),
             ),
             IconButton(
@@ -664,9 +746,11 @@ class _PlacedLine extends StatelessWidget {
                       children: [
                         Flexible(
                           child: Text(
-                            line.name,
+                            // 昵称（有的话）——点单页和厨师单都用它
+                            line.displayName,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
+                              fontSize: 18,
                               fontWeight: FontWeight.w600,
                               color: sent
                                   ? Colors.grey.shade700
@@ -690,7 +774,7 @@ class _PlacedLine extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       maxLines: 3,
                       style:
-                          TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                          TextStyle(fontSize: 14, color: Colors.grey.shade600),
                     ),
                   ],
                 ),
@@ -701,11 +785,12 @@ class _PlacedLine extends StatelessWidget {
                 onPlus: onPlus,
               ),
               SizedBox(
-                width: 70,
+                width: 84,
                 child: Text(
                   money(line.subtotal, symbol),
                   textAlign: TextAlign.right,
                   style: TextStyle(
+                    fontSize: 18,
                     fontWeight: FontWeight.w600,
                     color:
                         sent ? Colors.grey.shade700 : const Color(0xFF232829),

@@ -1,3 +1,5 @@
+import 'dart:convert'; // ascii（行距探测那几行是纯 ASCII，直接编字节最省事）
+
 import '../data/settings_store.dart';
 import '../l10n/app_strings.dart';
 import '../models/order.dart';
@@ -102,7 +104,10 @@ class TicketBuilder {
         labelPay: _t(settings, 'receipt.labelPay'),
       ),
     );
-    return buildReceiptLines(data).map((l) => TicketLine(l)).toList();
+    // 小票也是「一行一个字号」：**合计那一行加大加粗**（见 buildReceiptRows）
+    return buildReceiptRows(data)
+        .map((row) => TicketLine(row.text, scale: row.scale, bold: row.bold))
+        .toList();
   }
 
   /// 去掉多余小数（16 → "16"，18.5 → "18.50"）。
@@ -138,15 +143,24 @@ class TicketBuilder {
     return rows;
   }
 
-  /// 厨房单（下单/追单时打）：只有菜名+数量+桌号（+堂食/外卖）。
+  /// 厨房单（下单/追单时打）：**顶部标「厨师单 1 / 2」+ 桌号/外卖 + 时间，下面全是菜**。
   ///
-  /// 字号由设置 `Settings.kitchenFontSize` 决定（1 正常 / 2 大 / 3 特大）：
-  /// 每一行都带上 [TicketScale]，`escpos.dart` 会包上 `GS ! n` 指令；
-  /// 双倍宽时排版列数也同步减半（见 `receipt_layout.dart` 的 `kitchenColumns`）。
+  /// **外卖 / 电话外卖**在标题下面多打一行**特大字**：外卖单的**名字**
+  /// （没起名字就打系统给的号 `#3`）；**电话外卖**再打一行**特大字**的等待时间。
+  /// 堂食没有这两行（有桌号就够了）。
+  ///
+  /// 每行带**自己的字号**（见 `receipt_layout.dart` 的 `buildKitchenRows`）：
+  /// 「地点 / 外卖 + 时间」、外卖的名字 / 号、电话外卖的等待时间都是**特大**，
+  /// 标题「厨师单 N」是**大**，**菜品行也是特大**（`kKitchenItemScale`，写死的，没有设置项）。
+  ///
+  /// [copyIndex] / [copyTotal]：这是第几张 / 一共几张。
+  /// 默认打两张（一张厨师、一张出餐服务员），份数见 `Settings.kitchenCopies`。
   static List<TicketLine> kitchenLines(
     Order order,
     Settings settings, {
     bool isAppend = false,
+    int copyIndex = 1,
+    int copyTotal = 1,
   }) {
     final data = KitchenData(
       table: order.table,
@@ -155,18 +169,28 @@ class TicketBuilder {
       lines: order.lines,
       paperWidth: settings.paperWidth,
       isAppend: isAppend,
-      fontSize: settings.kitchenFontSize,
+      copyIndex: copyIndex,
+      copyTotal: copyTotal,
+      // 电话外卖填了「等待 N 分钟」→ 厨房单上单独打一行（见 buildKitchenRows）
+      waitMinutes: order.waitMinutes,
       typeLabel: _typeLabel(settings, order.orderType),
+      // 外卖 / 电话外卖：厨房单顶部要打**名字**（没名字就打系统给的号）——见 ③
+      isTakeaway: order.isTakeaway,
+      orderLabel: order.label,
+      dailyNo: order.dailyNo,
       labels: KitchenLabels(
         title: _t(settings, 'kitchen.title'),
         labelTable: _t(settings, 'order.table'),
         colName: _t(settings, 'kitchen.colName'),
         colQty: _t(settings, 'kitchen.colQty'),
         append: _t(settings, 'kitchen.append'),
+        wait: _t(settings, 'kitchen.wait'),
+        minutes: _t(settings, 'kitchen.minutes'),
       ),
     );
-    final scale = TicketScale.fromKitchenFontSize(settings.kitchenFontSize);
-    return buildKitchenLines(data).map((l) => TicketLine(l, scale: scale)).toList();
+    return buildKitchenRows(data)
+        .map((r) => TicketLine(r.text, scale: r.scale, bold: r.bold))
+        .toList();
   }
 
   /// 日结小票。
@@ -182,8 +206,8 @@ class TicketBuilder {
   ///   哪一行正常就说明打印机支持中文、且用哪种方式进中文模式。
   /// - `[BIG]`：双倍大小的字。**变大 = ESC/POS 指令真的生效了**（RAW 通道正常）；
   ///   和普通字一样大 = 中间那层（多半是 Windows 驱动）没把指令透传 → 乱码的根源在它。
-  /// - `KitchenFont 1/2/3`：**厨师单的三档字号预览**（`GS ! n`）。
-  ///   厨房单选「大 / 特大」时打出来就是这样；哪一行特别大 = 这台机器认得那一档。
+  /// - `1 normal size` / `2 LARGE` / `3 XLARGE`：**三档字号预览**（`GS ! n`）。
+  ///   厨师单的菜品行用的是 **XLARGE（特大）**；哪一行特别大 = 这台机器认得那一档。
   static List<TicketLine> testLines(Settings settings) {
     final cols = receiptColumns(settings.paperWidth);
     final ruler = '-' * cols;
@@ -193,7 +217,9 @@ class TicketBuilder {
       TicketLine('Paper ${settings.paperWidth}mm  Cols $cols'),
       TicketLine(
           'Codec ${settings.receiptCodec}  FontA ${settings.useFontA ? 'on' : 'off'}'),
-      TicketLine('KitchenFont set to ${settings.kitchenFontSize}'),
+      // 厨师单菜品行固定特大（没有设置项），这里顺便把列数打出来核对排版
+      TicketLine('Kitchen items: XLARGE '
+          '(${kitchenItemColumns(settings.paperWidth)} cols)'),
       TicketLine(ruler),
       const TicketLine('ASCII  : 0123456789 ABCDEFG'),
       const TicketLine('Espanol: Gracias'),
@@ -202,13 +228,48 @@ class TicketBuilder {
       TicketLine('中文B(ESCt): 恭喜您，打印成功！',
           raw: gbkProbeEscT('中文B(ESCt): 恭喜您，打印成功！')),
       TicketLine('', raw: doubleSizeBytes('[BIG] ESC/POS CHECK')),
-      // 厨师单字号预览（文字故意短，双倍宽也不会超出纸宽）
+      // 三档字号预览（文字故意短，双倍宽也不会超出纸宽）—— 菜品行用的是 XLARGE
       const TicketLine('1 normal size'),
       const TicketLine('2 LARGE', scale: TicketScale.large),
       const TicketLine('3 XLARGE', scale: TicketScale.xlarge),
+      // 行距探测：三种方式各打两行，比一比哪种真的把空隙撑开了
+      ..._lineSpacingProbe(),
       TicketLine(ruler),
       const TicketLine('ruler should touch both edges'),
     ];
+  }
+
+  /// **行距探测**（打在测试页上）：三种方式各打两行，看哪种真的撑开了。
+  ///
+  /// 怎么看：纸上有「A1 / A2」「B1 / B2」「C1 / C2」三组，
+  /// **哪一组两行之间的空隙更大，就说明这台机器认哪种指令**：
+  /// - **A** = 什么都不发（打印机默认行距）—— 基准；
+  /// - **B** = `ESC J 16`（打印后**直接走纸** 16 点）→ **厨师单用的就是这种**；
+  /// - **C** = `ESC 3 48`（设置行距）→ 很多机器在放大字行（`GS !`）上会忽略它
+  ///   （你这台就是：所以以前改行距看不出变化）。
+  ///
+  /// 如果 **B 组**比 A 组明显松 → 厨师单的行距旋钮
+  /// （`escpos.dart` 的 `kKitchenExtraFeedDots`）就是有效的，直接调那个数。
+  /// 如果 A / B / C 三组一模一样 → 这台机器不吃这两个指令，那就改用"空行"来撑
+  /// （把 `kKitchenExtraFeedDots` 设 0，告诉我要用空行方案）。
+  static List<TicketLine> _lineSpacingProbe() {
+    final out = <TicketLine>[
+      const TicketLine('--- LINE SPACING PROBE ---'),
+      const TicketLine('A1 default spacing'),
+      const TicketLine('A2 default spacing'),
+    ];
+    // B：先打这一行，再直接走纸 16 点
+    for (final label in const ['B1 ESC J 16', 'B2 ESC J 16']) {
+      out.add(TicketLine('',
+          raw: <int>[...ascii.encode(label), 0x0A, ...feedDots(16)]));
+    }
+    // C：先设置行距 48 点，再打这一行
+    for (final label in const ['C1 ESC 3 48', 'C2 ESC 3 48']) {
+      out.add(TicketLine('',
+          raw: <int>[...setLineSpacing(48), ...ascii.encode(label), 0x0A]));
+    }
+    out.add(const TicketLine('', raw: <int>[0x1B, 0x32])); // ESC 2：行距复位
+    return out;
   }
 
   static String _methodLabel(Settings s, PaymentMethod? m) {

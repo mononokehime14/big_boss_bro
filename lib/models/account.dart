@@ -44,7 +44,12 @@ class Account {
 
   bool get isAdmin => role == AccountRole.admin;
 
-  Account copyWith({String? name, String? pin, AccountRole? role}) => Account(
+  Account copyWith({
+    String? name,
+    String? pin,
+    AccountRole? role,
+  }) =>
+      Account(
         id: id,
         name: name ?? this.name,
         pin: pin ?? this.pin,
@@ -70,6 +75,23 @@ class Account {
 const String kDefaultAdminId = 'admin';
 const String kDefaultAdminPin = '8888';
 
+/// 默认**普通店员**账号（首次启动自动创建；老装机在升级后会补上，只补一次）。
+///
+/// 它就是**普通收银员**：点单、下单、加单、结账、折扣，**签到页和 admin 一样能进**
+/// （能打卡、能看今日打卡的人）。
+/// 区别只在"管理员那一半"：**每周考勤**和**员工管理**要点开时需要**管理员密码**
+/// （`requireAdmin`，和收银员完全一样的门禁），所以他进不去。
+const String kDefaultUserId = 'user';
+const String kDefaultUserPin = '1234';
+
+/// 内置的普通店员账号（= 收银员角色）。
+const Account kDefaultUserAccount = Account(
+  id: kDefaultUserId,
+  name: kDefaultUserId,
+  pin: kDefaultUserPin,
+  role: AccountRole.cashier,
+);
+
 /// 首次启动的默认账号列表。
 List<Account> defaultAccounts() => [
       const Account(
@@ -78,4 +100,5 @@ List<Account> defaultAccounts() => [
         pin: kDefaultAdminPin,
         role: AccountRole.admin,
       ),
+      kDefaultUserAccount,
     ];

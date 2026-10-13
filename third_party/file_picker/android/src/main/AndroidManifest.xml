@@ -1,0 +1,14 @@
+<!--
+  file_picker 11.0.3 —— 本地补丁副本（third_party/）
+  相对上游只删了根标签上的 package="com.mr.flutter.plugin.filepicker"：
+  AGP 8 起模块名必须写在 build.gradle 的 namespace 里，manifest 里再写 package 会被判为不支持。
+  <queries> 里的 GET_CONTENT 声明保持原样（Android 11+ 的包可见性，选文件需要）。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <queries>
+    <intent>
+      <action android:name="android.intent.action.GET_CONTENT" />
+      <data android:mimeType="*/*" />
+    </intent>
+  </queries>
+</manifest>

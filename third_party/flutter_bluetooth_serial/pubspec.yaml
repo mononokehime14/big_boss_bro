@@ -1,0 +1,24 @@
+name: flutter_bluetooth_serial
+version: 0.4.0
+description: A basic Flutter Bluetooth Serial library (local patched copy, see release.md §8)
+homepage: https://github.com/edufolly/flutter_bluetooth_serial
+repository: https://github.com/edufolly/flutter_bluetooth_serial
+issue_tracker: https://github.com/edufolly/flutter_bluetooth_serial/issues
+
+# 相对上游改动：把 sdk 上限从 <3.0.0 放宽到 <4.0.0。
+# 本项目用的是 Dart 3.14，上游那个 <3.0.0 的约束在**本地路径依赖**下会让 pub 直接拒绝解析。
+# 源码（lib/）是 2021 年的 Dart 2 代码，在 Dart 3 下能正常编译（本项目一直在用）。
+environment:
+  sdk: '>=2.12.0 <4.0.0'
+  flutter: ">=1.17.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: io.github.edufolly.flutterbluetoothserial
+        pluginClass: FlutterBluetoothSerialPlugin

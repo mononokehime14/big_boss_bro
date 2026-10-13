@@ -43,13 +43,15 @@ void main() {
     expect(kDefaultMenuPassword, '8888');
   });
 
-  group('本轮新增的两个设置', () {
+  group('打印相关的默认值', () {
     test('店头信息默认空（老用户的小票排版不变）', () {
       expect(Settings().storeHeader, '');
     });
 
-    test('厨师单字体大小默认 1 = 正常（老用户打出来跟以前一模一样）', () {
-      expect(Settings().kitchenFontSize, 1);
+    // 厨师单菜品字号**不再是设置项**：写死在 `receipt_layout.dart` 的
+    // `kKitchenItemScale`（特大 = 双倍宽 + 双倍高），设置页里已经没有这一项了。
+    test('厨师单默认打 2 张（厨师 1 张 + 出餐服务员 1 张）', () {
+      expect(Settings().kitchenCopies, 2);
     });
   });
 }

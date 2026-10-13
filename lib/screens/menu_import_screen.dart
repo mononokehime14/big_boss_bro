@@ -59,7 +59,7 @@ class _MenuImportScreenState extends State<MenuImportScreen> {
                           fontSize: 13, color: Colors.grey.shade700)),
                   const SizedBox(height: 6),
                   Text(
-                    '例： 分类 | 菜名 | 价格 | Size | Mediano/Grande',
+                    '例： 分类 | 菜名 | 菜品昵称 | 基础价格 | 基础数量 | 定制项1 | 选项 | 选项价格 | …（昵称可留空）',
                     style: TextStyle(
                         fontSize: 12,
                         fontFamily: 'monospace',
@@ -206,7 +206,9 @@ class _MenuImportScreenState extends State<MenuImportScreen> {
       _error = null;
     });
     try {
-      final res = await FilePicker.platform.pickFiles(
+      // 注意：file_picker 11.0.0 起 FilePicker 改成【静态方法】，
+      // 老写法 FilePicker.platform.pickFiles(...) 已经不存在了。
+      final res = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['xlsx'],
         withData: true,

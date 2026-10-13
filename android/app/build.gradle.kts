@@ -6,7 +6,12 @@ plugins {
 
 android {
     namespace = "com.example.big_boss_bro"
-    compileSdk = flutter.compileSdkVersion
+    // 37 而不是 flutter.compileSdkVersion（36）的原因：
+    // AGP 的 AAR metadata 检查要求「消费者（本 app）的 compileSdk ≥ 依赖模块编译时用的 compileSdk」，
+    // 而 permission_handler_android 14.1.0（permission_handler 13.x 的安卓实现）是按 37 编译的。
+    // compileSdk 只决定「能调用哪些 API」，向后兼容；不影响 minSdk / targetSdk（装机范围与运行行为不变）。
+    // 详见 release.md 第 9 节。
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

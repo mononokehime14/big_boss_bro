@@ -11,6 +11,7 @@ import '../state/settings_controller.dart';
 import '../utils/format.dart';
 import '../utils/pricing.dart';
 import 'bank_card_anim.dart';
+import 'takeaway_name_dialog.dart';
 
 /// 收款框点「确认收款」后的结果。
 ///
@@ -45,23 +46,25 @@ class CheckoutResult {
   });
 }
 
-/// 结账窗口（**屏幕中间，左右两栏**）——两步走：
+/// 结账窗口（**屏幕中间，左右两栏，一个页面搞定**）：
 ///
-/// **① 核对明细**：左边 30% 是这张单的菜（**每道菜都能删**），右边 70% 是
-/// 金额明细 + 折扣 + **应收（总和）**，右下角一个「确认并打印」。
-/// 点它 → **先把单子打出去**（明细 + 合计，含刚打的折扣）→ 进入第 ②步。
-/// **② 收款**：显示应收、收款币种、现金/刷卡。现金有实收输入框、
-/// 「正好」和邻近整数快捷标签、大字找零；刷卡显示银行卡动画。
-/// 点「确认收款」→ 窗口关闭、订单落账（不再重复打纸，单子已经在第 ① 步打过了）。
+/// **左边 30%** = 这张单的菜（明细）+ **底部的金额明细（小计 / 折扣 / 税 / 合计）**；
+/// **右边 70%** = 全部操作，从上到下：
+/// **应收（跟着收款币种变的大字）→ 折扣 → 收款币种 → 支付方式 →
+/// 现金（实收 + 右边一排快捷金额 + 大字找零）/ 刷卡（银行卡动画）**。
+///
+/// 右下角两个按钮：**`打印单子`**（打完留在本界面，可以再打，标一行「已打印 HH:MM」）
+/// 和 **`确认收款`**（点它落账、关窗）。**没有「取消」按钮**：退出点标题栏的 ✕。
 ///
 /// 其它取舍：
 /// - **没有 AA 分开付**：一单一次收清，界面和账都简单；
-/// - 三个币种**直接显示换算后的应收**，汇率在「菜品管理 → 汇率」里改；
-/// - 折扣在第 ① 步给（它会影响打出去的金额），收款币种在第 ② 步选；
+/// - **应收直接按收款币种显示**（`应收 $40.00 USD`），不再另写一行换算；
+/// - 币种按钮只有「币种码 + 汇率」，没设汇率的那个点不动；
+/// - 折扣在窗口里给（它会计进左边的小计/合计，也会打进纸里）；
 /// - 没有扫码。
 ///
 /// [printBill] 由调用方（`settleOrderFlow`）提供：把当前这张单打成「单子」，
-/// 返回 null 表示成功。打不出来会弹「重试 / 跳过」，跟以前一样。
+/// 返回 null 表示成功。打不出来会弹「重试 / 跳过」。
 Future<CheckoutResult?> showCheckoutDialog(
   BuildContext context, {
   required Order order,
@@ -85,7 +88,7 @@ class _CheckoutDialog extends StatefulWidget {
   final Settings settings;
   final String cashier;
 
-  /// 打「单子」：结账窗口第一步点「确认并打印」时调用（进行中的单：明细+合计）。
+  /// 打「单子」：结账窗口里点「打印单子 / 再打一张」时调用（明细+合计）。
   final Future<PrintError?> Function(Order) printBill;
 
   const _CheckoutDialog({
@@ -100,11 +103,15 @@ class _CheckoutDialog extends StatefulWidget {
 }
 
 class _CheckoutDialogState extends State<_CheckoutDialog> {
-  /// 0 = ① 核对明细（还没打单）；1 = ② 收款（单子已经打出去了）。
-  int _step = 0;
-
   /// 正在打单（防止连点两次打出两张）。
   bool _printing = false;
+
+  /// 本界面上**已经成功打过单子**的时刻（null = 还没打过）。
+  ///
+  /// 只用来给收银员一个「这单已经出过纸了」的提示（按钮变「再打一张」+
+  /// 右下角一行「已打印 HH:MM」），**不参与任何判断** ——
+  /// 没打过也照样能点「确认」去收款。
+  DateTime? _printedAt;
 
   /// 本帧要显示的那张单。
   ///
@@ -249,7 +256,6 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     final baseSymbol = widget.settings.currencySymbol;
     final isCash = _method == PaymentMethod.cash;
     final price = _price;
-    final isForeign = _currency != widget.settings.baseCurrency;
     final change = _change;
 
     return Dialog(
@@ -266,10 +272,10 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // ---------------- 左边 30%：单子明细（每道菜都能删）----------------
-                  Expanded(flex: 3, child: _linesPane(baseSymbol)),
+                  // ------- 左边 30%：单子明细 + **底部的金额明细（小计/合计）** -------
+                  Expanded(flex: 3, child: _linesPane(baseSymbol, price)),
                   const VerticalDivider(width: 1),
-                  // ---------------- 右边 70%：总和 + 确认按钮 / 收款 ----------------
+                  // ------- 右边 70%：应收 + 折扣 + 收款币种 + 支付方式 + 收款 -------
                   Expanded(
                     flex: 7,
                     child: Column(
@@ -281,262 +287,221 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                // ======== ① 核对明细：总和 + 折扣 ========
-                                if (_step == 0) ...[
-                                  _stepTitle(L10n.t('checkout.step1')),
-                                  _dueBig(baseSymbol, isForeign),
-                                  const SizedBox(height: 12),
-                                  _breakdown(price, baseSymbol),
-                                  const SizedBox(height: 12),
+                                // ---------------- 应收（跟着收款币种变）----------------
+                                _dueBig(),
+                                const SizedBox(height: 12),
 
-                                  // ---------------- 折扣 ----------------
-                                  _label(L10n.t('checkout.discount')),
-                                  Wrap(
-                                    spacing: 8,
-                                    children: [
-                                      _chip(
-                                        L10n.t('checkout.discount.none'),
-                                        _discountType == DiscountType.none,
-                                        () => _setDiscountType(DiscountType.none),
-                                      ),
-                                      _chip(
-                                        L10n.t('checkout.discount.percent'),
-                                        _discountType == DiscountType.percent,
-                                        () => _setDiscountType(DiscountType.percent),
-                                      ),
-                                      _chip(
-                                        L10n.t('checkout.discount.amount'),
-                                        _discountType == DiscountType.amount,
-                                        () => _setDiscountType(DiscountType.amount),
-                                      ),
-                                    ],
-                                  ),
-                                  if (_discountType != DiscountType.none) ...[
-                                    const SizedBox(height: 8),
-                                    TextField(
-                                      controller: _discountCtl,
-                                      keyboardType: const TextInputType
-                                          .numberWithOptions(decimal: true),
-                                      decoration: InputDecoration(
-                                        labelText:
-                                            _discountType == DiscountType.percent
-                                                ? L10n.t(
-                                                    'checkout.discount.percentHint')
-                                                : L10n.t(
-                                                    'checkout.discount.amountHint'),
-                                        border: const OutlineInputBorder(),
-                                        isDense: true,
-                                        prefixText: _discountType ==
-                                                DiscountType.percent
-                                            ? null
-                                            : baseSymbol,
-                                        suffixText:
-                                            _discountType == DiscountType.percent
-                                                ? '%'
-                                                : null,
-                                      ),
-                                      onChanged: _onDiscountChanged,
+                                // ---------------- 折扣 ----------------
+                                _label(L10n.t('checkout.discount')),
+                                Wrap(
+                                  spacing: 8,
+                                  children: [
+                                    _chip(
+                                      L10n.t('checkout.discount.none'),
+                                      _discountType == DiscountType.none,
+                                      () => _setDiscountType(DiscountType.none),
                                     ),
-                                    if (_discountType == DiscountType.percent) ...[
-                                      const SizedBox(height: 6),
-                                      Wrap(
-                                        spacing: 8,
-                                        children: [
-                                          for (final pct in const [
-                                            5.0,
-                                            10.0,
-                                            15.0,
-                                            20.0
-                                          ])
-                                            OutlinedButton(
-                                              onPressed: () =>
-                                                  _applyQuickDiscount(pct),
-                                              child: Text(
-                                                  '${pct.toStringAsFixed(0)}%'),
-                                            ),
-                                        ],
-                                      ),
-                                    ],
+                                    _chip(
+                                      L10n.t('checkout.discount.percent'),
+                                      _discountType == DiscountType.percent,
+                                      () => _setDiscountType(DiscountType.percent),
+                                    ),
+                                    _chip(
+                                      L10n.t('checkout.discount.amount'),
+                                      _discountType == DiscountType.amount,
+                                      () => _setDiscountType(DiscountType.amount),
+                                    ),
                                   ],
-                                ] else ...[
-                                  // ======== ② 收款：应收 + 币种 + 现金/刷卡 ========
-                                  _stepTitle(L10n.t('checkout.step2')),
-                                  _dueBig(baseSymbol, isForeign),
-                                  const SizedBox(height: 12),
+                                ),
+                                if (_discountType != DiscountType.none) ...[
+                                  const SizedBox(height: 8),
+                                  TextField(
+                                    controller: _discountCtl,
+                                    keyboardType: const TextInputType
+                                        .numberWithOptions(decimal: true),
+                                    decoration: InputDecoration(
+                                      labelText:
+                                          _discountType == DiscountType.percent
+                                              ? L10n.t(
+                                                  'checkout.discount.percentHint')
+                                              : L10n.t(
+                                                  'checkout.discount.amountHint'),
+                                      border: const OutlineInputBorder(),
+                                      isDense: true,
+                                      prefixText:
+                                          _discountType == DiscountType.percent
+                                              ? null
+                                              : baseSymbol,
+                                      suffixText:
+                                          _discountType == DiscountType.percent
+                                              ? '%'
+                                              : null,
+                                    ),
+                                    onChanged: _onDiscountChanged,
+                                  ),
+                                  if (_discountType == DiscountType.percent) ...[
+                                    const SizedBox(height: 6),
+                                    Wrap(
+                                      spacing: 8,
+                                      children: [
+                                        for (final pct in const [
+                                          5.0,
+                                          10.0,
+                                          15.0,
+                                          20.0
+                                        ])
+                                          OutlinedButton(
+                                            onPressed: () =>
+                                                _applyQuickDiscount(pct),
+                                            child: Text(
+                                                '${pct.toStringAsFixed(0)}%'),
+                                          ),
+                                      ],
+                                    ),
+                                  ],
+                                ],
 
-                                  // ---------------- 收款币种 ----------------
-                                  _label(L10n.t('checkout.currency')),
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
+                                // ---------------- 收款币种（只有币种码 + 汇率）------------
+                                const SizedBox(height: 14),
+                                _label(L10n.t('checkout.currency')),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    for (final code in kCashCurrencies)
+                                      _currencyChip(code),
+                                  ],
+                                ),
+
+                                // ---------------- 支付方式 ----------------
+                                const SizedBox(height: 14),
+                                _label(L10n.t('checkout.payMethod')),
+                                Wrap(
+                                  spacing: 8,
+                                  children: [
+                                    _chip(L10n.t('payment.cash'), isCash,
+                                        () => _setMethod(PaymentMethod.cash)),
+                                    _chip(
+                                        L10n.t('payment.card'),
+                                        _method == PaymentMethod.card,
+                                        () => _setMethod(PaymentMethod.card)),
+                                  ],
+                                ),
+
+                                // ---------------- 现金：实收（右边跟快捷金额）+ 大字找零 ----
+                                if (isCash) ...[
+                                  const SizedBox(height: 12),
+                                  Row(
                                     children: [
-                                      for (final code in kCashCurrencies)
-                                        _currencyChip(code),
+                                      Expanded(
+                                        child: TextField(
+                                          controller: _receivedCtl,
+                                          keyboardType: const TextInputType
+                                              .numberWithOptions(decimal: true),
+                                          decoration: InputDecoration(
+                                            labelText:
+                                                '${L10n.t('pay.received')} ($_currency)',
+                                            border: const OutlineInputBorder(),
+                                            isDense: true,
+                                            prefixText: '$_symbol ',
+                                          ),
+                                          onChanged: (_) => setState(
+                                              () => _receivedTouched = true),
+                                        ),
+                                      ),
+                                      // 快捷金额（正好 + 两个邻近整数）**就在实收框右边**
+                                      for (var i = 0;
+                                          i < _quickReceived.length;
+                                          i++) ...[
+                                        const SizedBox(width: 6),
+                                        ActionChip(
+                                          onPressed: () =>
+                                              _applyReceived(_quickReceived[i]),
+                                          label: Text(
+                                            i == 0
+                                                ? L10n.t('pay.exact')
+                                                : _fmt(_quickReceived[i]),
+                                            style: TextStyle(
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w700,
+                                              color: i == 0
+                                                  ? const Color(0xFF1FA85A)
+                                                  : const Color(0xFF232829),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
                                     ],
                                   ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _rateHint(baseSymbol),
-                      style:
-                          TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                    ),
+                                  const SizedBox(height: 10),
+                                  // 找零：**大字**（要一眼看清，找错钱就麻烦了）
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 14, vertical: 10),
+                                    decoration: BoxDecoration(
+                                      color: change < 0
+                                          ? const Color(0xFFFFEBEE)
+                                          : const Color(0xFFE8F5E9),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          change < 0
+                                              ? L10n.t('pay.short')
+                                              : L10n.t('pay.change'),
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w700,
+                                            color: change < 0
+                                                ? Colors.red.shade700
+                                                : const Color(0xFF2E7D32),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          money(change.abs(), _symbol),
+                                          style: TextStyle(
+                                            fontSize: 44,
+                                            height: 1.1,
+                                            fontWeight: FontWeight.w800,
+                                            color: change < 0
+                                                ? Colors.red.shade700
+                                                : const Color(0xFF1FA85A),
+                                          ),
+                                        ),
+                                        Text(
+                                          '${L10n.t('pay.received')}: '
+                                          '${money(_received ?? _dueForeign, _symbol)}'
+                                          '   ·   ${L10n.t('pay.due')}: '
+                                          '${money(_dueForeign, _symbol)}',
+                                          style: TextStyle(
+                                              fontSize: 13,
+                                              color: Colors.grey.shade700),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
 
-                    // ---------------- 支付方式 ----------------
-                    const SizedBox(height: 14),
-                    _label(L10n.t('checkout.payMethod')),
-                    Wrap(
-                      spacing: 8,
-                      children: [
-                        _chip(L10n.t('payment.cash'), isCash,
-                            () => _setMethod(PaymentMethod.cash)),
-                        _chip(
-                            L10n.t('payment.card'),
-                            _method == PaymentMethod.card,
-                            () => _setMethod(PaymentMethod.card)),
-                      ],
-                    ),
-
-                    // ---------------- 现金：实收 + 大字找零 ----------------
-                    if (isCash) ...[
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _receivedCtl,
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(
-                                      decimal: true),
-                              decoration: InputDecoration(
-                                labelText:
-                                    '${L10n.t('pay.received')} ($_currency)',
-                                border: const OutlineInputBorder(),
-                                isDense: true,
-                                prefixText: '$_symbol ',
-                              ),
-                              onChanged: (_) =>
-                                  setState(() => _receivedTouched = true),
+                                // ---------------- 刷卡：银行卡动画 ----------------
+                                if (!isCash) ...[
+                                  const SizedBox(height: 10),
+                                  Center(
+                                    child: BankCardAnim(
+                                      width: 220,
+                                      hint: L10n.t('checkout.cardHint'),
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          OutlinedButton(
-                            onPressed: () => _applyReceived(_dueForeign),
-                            child: Text(L10n.t('pay.exact')),
-                          ),
-                        ],
-                      ),
-                      // ---- 快捷金额（在实收框下方）：正好 + 两个邻近整数 ----
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          for (var i = 0; i < _quickReceived.length; i++)
-                            ActionChip(
-                              onPressed: () => _applyReceived(_quickReceived[i]),
-                              label: Text(
-                                i == 0
-                                    ? L10n.t('pay.exact')
-                                    : _fmt(_quickReceived[i]),
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w700,
-                                  color: i == 0
-                                      ? const Color(0xFF1FA85A)
-                                      : const Color(0xFF232829),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      // 找零：**大字**（要一眼看清，找错钱就麻烦了）
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: change < 0
-                              ? const Color(0xFFFFEBEE)
-                              : const Color(0xFFE8F5E9),
-                          borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              change < 0
-                                  ? L10n.t('pay.short')
-                                  : L10n.t('pay.change'),
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700,
-                                color: change < 0
-                                    ? Colors.red.shade700
-                                    : const Color(0xFF2E7D32),
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              money(change.abs(), _symbol),
-                              style: TextStyle(
-                                fontSize: 40,
-                                height: 1.1,
-                                fontWeight: FontWeight.w800,
-                                color: change < 0
-                                    ? Colors.red.shade700
-                                    : const Color(0xFF1FA85A),
-                              ),
-                            ),
-                            Text(
-                              '${L10n.t('pay.received')}: '
-                              '${money(_received ?? _dueForeign, _symbol)}'
-                              '   ·   ${L10n.t('pay.due')}: '
-                              '${money(_dueForeign, _symbol)}',
-                              style: TextStyle(
-                                  fontSize: 12, color: Colors.grey.shade700),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-
-                    // ---------------- 刷卡：应收 + 银行卡动画 ----------------
-                    if (!isCash) ...[
-                      const SizedBox(height: 10),
-                      Center(
-                        child: Column(
-                          children: [
-                            Text(
-                              '${L10n.t('pay.due')}  '
-                              '${money(_dueForeign, _symbol)} $_currency',
-                              style: const TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.w700,
-                                color: Color(0xFF1FA85A),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            BankCardAnim(
-                              width: 220,
-                              hint: L10n.t('checkout.cardHint'),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              L10n.t('checkout.cardNote'),
-                              style: TextStyle(
-                                  fontSize: 11, color: Colors.grey.shade600),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                                  ], // 关掉「② 收款」这个分支
-                                ], // 关掉内层 Column 的 children
-                              ), // 关掉内层 Column
-                            ), // 关掉 SingleChildScrollView
-                          ), // 关掉 Expanded（右边这 70%）
-                        // 右下角的按钮：①「确认并打印」/ ②「确认收款」
+                        // 右下角：`打印单子` + `确认收款`（一个页面搞定，不用再翻页）
                         const Divider(height: 1),
                         _actionRow(context, isCash: isCash, change: change),
                       ],
@@ -551,12 +516,22 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     );
   }
 
-  /// 标题栏：结账 + 桌号/外卖 + 收银员 + 关闭。
+  /// 标题栏：结账 + 桌号 / 外卖（**外卖把名字 / 号也写上，电话外卖再加等待时间**）
+  /// + 收银员 + 关闭。
+  ///
+  /// 为什么外卖要写名字：外卖没有桌号，收银员核对的就是"名字 / 号"；
+  /// 电话外卖还带着客人说好的等待时间（跟厨房单上打的一致）。
   Widget _titleBar() {
+    final tag = _order.takeawayTag; // `名字 #号` / `名字` / `#号` / ''（老数据没有）
+    final wait = (_order.isPhoneTakeaway && _order.waitMinutes > 0)
+        ? '   ·   ${L10n.t('kitchen.wait')} ${_order.waitMinutes} '
+            '${L10n.t('kitchen.minutes')}'
+        : '';
     final typeText = _order.isPhoneTakeaway
-        ? L10n.t('order.phonecallTakeaway')
+        ? '${L10n.t('order.phonecallTakeaway')}'
+            '${tag.isEmpty ? '' : ' $tag'}$wait'
         : _order.isTakeaway
-            ? L10n.t('order.takeaway')
+            ? '${L10n.t('order.takeaway')}${tag.isEmpty ? '' : ' $tag'}$wait'
             : (_order.table.isEmpty
                 ? ''
                 : '${L10n.t('order.table')} ${_order.table}');
@@ -571,7 +546,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
           if (typeText.isNotEmpty) ...[
             const SizedBox(width: 10),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               decoration: BoxDecoration(
                 color: const Color(0xFFE8F5E9),
                 borderRadius: BorderRadius.circular(20),
@@ -579,7 +554,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
               child: Text(
                 typeText,
                 style: const TextStyle(
-                  fontSize: 12,
+                  fontSize: 15,
                   fontWeight: FontWeight.w700,
                   color: Color(0xFF2E7D32),
                 ),
@@ -602,44 +577,26 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     );
   }
 
-  /// 步骤标题（① 核对明细 / ② 收款）。
-  Widget _stepTitle(String text) => Padding(
-        padding: const EdgeInsets.only(bottom: 6),
-        child: Text(
-          text,
-          style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w800,
-            color: Color(0xFF1FA85A),
-          ),
+  /// 应收大字：**按选中的收款币种显示** —— `应收 $660.00 MXN` / `应收 $40.00 USD`。
+  ///
+  /// 大小和颜色跟以前一样；换币种时**这个数字直接跟着变**
+  /// （以前是"本位币应收 + 下面一行换算"，现在只有这一行）。
+  Widget _dueBig() => Text(
+        '${L10n.t('pay.due')}  ${money(_dueForeign, _symbol)} $_currency',
+        style: const TextStyle(
+          fontSize: 34,
+          fontWeight: FontWeight.w800,
+          color: Color(0xFF1FA85A),
         ),
       );
 
-  /// 应收（总和）大字；外币时下面补一行换算。
-  Widget _dueBig(String baseSymbol, bool isForeign) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '${L10n.t('pay.due')}  ${money(_price.total, baseSymbol)}',
-            style: const TextStyle(
-              fontSize: 30,
-              fontWeight: FontWeight.w800,
-              color: Color(0xFF1FA85A),
-            ),
-          ),
-          if (isForeign)
-            Text(
-              '= ${money(_dueForeign, _symbol)} $_currency'
-              '   (1 $_currency = ${money(_rate, baseSymbol)})',
-              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
-            ),
-        ],
-      );
-
-  /// 左边 30%：这张单的明细（**只显示**）。
+  /// 左边 30%：这张单的明细（**只显示**）+ **底部的金额明细（小计/折扣/税/合计）**。
+  ///
+  /// 金额明细放在这里（而不是右边）是为了把右边的空间让给"折扣 / 收款币种 /
+  /// 支付方式 / 实收找零"这些**要动手的地方**；它照样跟着右边的操作实时变。
   ///
   /// 要删菜 / 改份数 / 改备注，都去**点单界面**的购物车里改（你说的：所有改动都在点单界面完成）。
-  Widget _linesPane(String baseSymbol) {
+  Widget _linesPane(String baseSymbol, PriceBreakdown price) {
     return Container(
       color: const Color(0xFFF7F9F8),
       child: Column(
@@ -665,6 +622,12 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
               itemBuilder: (_, i) => _lineTile(i, baseSymbol),
             ),
           ),
+          // ---- 金额明细（小计 / 折扣 / 税 / 合计）**在清单底部** ----
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+            child: _breakdown(price, baseSymbol),
+          ),
         ],
       ),
     );
@@ -681,7 +644,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     ].join(' · ');
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+      padding: const EdgeInsets.fromLTRB(8, 10, 8, 10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -690,18 +653,20 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  l.name,
+                  // 结账窗口是**给收银员看的**：跟点单页一样显示昵称
+                  // （纸上的顾客小票用的是全名，见 `receipt_layout.dart`）
+                  l.displayName,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
+                      fontSize: 15, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   detail,
                   maxLines: 3,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                 ),
               ],
             ),
@@ -709,116 +674,131 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
           const SizedBox(width: 6),
           Text(
             money(l.subtotal, symbol),
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
           ),
         ],
       ),
     );
   }
 
-  /// 右下角的按钮行 —— **确认按钮就在右侧**。
+  /// 右下角的按钮行（**一个页面，就这两个按钮**）：
   ///
-  /// - 第 ① 步：取消 / **确认并打印**（先打单子，再进第 ② 步收款）；
-  /// - 第 ② 步：返回上一步 / **确认收款**（结账完成，窗口关闭）。
+  /// - 左：**`打印单子`**（打完留在本界面，可以再打；打成功了标一行「已打印 HH:MM」）；
+  /// - 右：**`确认收款`**（现金还差钱时是灰的）—— 点它就落账、关窗。
+  ///
+  /// **没有「取消」按钮**：要退出就点标题栏右上角的 ✕。
   Widget _actionRow(
     BuildContext context, {
     required bool isCash,
     required double change,
   }) {
-    if (_step == 0) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-        child: Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed:
-                    _printing ? null : () => Navigator.pop(context),
-                child: Text(L10n.t('common.cancel')),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              flex: 2,
-              child: FilledButton.icon(
-                onPressed: _printing ? null : () => _confirmAndPrint(context),
-                icon: _printing
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.print_outlined),
-                label: Text(L10n.t('dialog.confirm.ok')),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
+    final printed = _printedAt;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            child: OutlinedButton(
-              onPressed: () => setState(() {
-                _step = 0;
-                if (_scrollCtl.hasClients) _scrollCtl.jumpTo(0);
-              }),
-              child: Text(L10n.t('checkout.back')),
+          // 打过纸了：标一行时间，收银员回来一眼就知道不用再打（**纯粹是提示**）
+          if (printed != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle,
+                      size: 16, color: Color(0xFF1FA85A)),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${L10n.t('checkout.printed')} ${timeHm(printed)}',
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF2E7D32),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            flex: 2,
-            child: FilledButton(
-              onPressed: change < 0 ? null : () => _finish(context, isCash, change),
-              child: Text(isCash
-                  ? L10n.t('checkout.collect')
-                  : L10n.t('checkout.cardDone')),
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _printing ? null : () => _printBill(context),
+                  icon: _printing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.print_outlined),
+                  label: Text(printed == null
+                      ? L10n.t('checkout.printBill')
+                      : L10n.t('checkout.printAgain')),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton(
+                  // 现金还差钱才禁用；**刷卡**时不看实收框（免得先输过现金再切刷卡就点不动了）
+                  onPressed: (isCash && change < 0)
+                      ? null
+                      : () => _finish(context, isCash, change),
+                  child: Text(isCash
+                      ? L10n.t('checkout.collect')
+                      : L10n.t('checkout.cardDone')),
+                ),
+              ),
+            ],
           ),
         ],
       ),
     );
   }
 
-  /// ① 的确认：**先把单子打出去**（明细 + 合计，含刚设的折扣），再切到第 ② 步收款。
+  /// 要打出去的那张单：**把屏幕上刚设的折扣临时贴上去**。
   ///
   /// 折扣这时还没写进订单（要等收款成功才落账），所以临时造一张「带折扣的单」去打印，
   /// 这样纸上的合计 = 屏幕上显示的合计 = 最后记账的金额。
-  Future<void> _confirmAndPrint(BuildContext context) async {
+  Order _billToPrint() => _order.copyWith(
+        discountType: _discountType,
+        discountValue: _discountValue,
+        total: _price.total,
+      );
+
+  /// ① 的「打印单子 / 再打一张」：打纸，**留在本界面**。
+  ///
+  /// 这是这次改动的重点：打完**不切界面、也不锁任何东西** ——
+  /// 收银员打完单子可以先去忙别的，回来直接点「确认」进收款，不用再打一遍。
+  /// 打成功了标一个「已打印 HH:MM」（只是提示，不参与判断）。
+  Future<void> _printBill(BuildContext context) async {
     if (_printing) return;
     setState(() => _printing = true);
 
-    final bill = _order.copyWith(
-      discountType: _discountType,
-      discountValue: _discountValue,
-      total: _price.total,
-    );
+    final bill = _billToPrint();
     final err = await widget.printBill(bill);
     // 两个都查一下：mounted 是 State 的（下面要 setState），context.mounted 是因为
     // 后面还要拿这个 context 弹窗 —— 分析器只认「跟用到的 context 对得上」的那个检查。
     if (!mounted || !context.mounted) return;
-    setState(() => _printing = false);
+    setState(() {
+      _printing = false;
+      if (err == null) _printedAt = DateTime.now();
+    });
 
     if (err != null) {
-      // 打不出来：让收银员「重试打印」或「跳过并收款」（跟以前一样）
-      await showPrintFailureSheet(context, err, () => widget.printBill(bill));
-      if (!mounted) return;
+      // 打不出来：让收银员「重试打印」或「跳过」（跳过也**留在本界面**，可以点「确认」收款）
+      await showPrintFailureSheet(context, err, () async {
+        final retryErr = await widget.printBill(bill);
+        // 重试成功也算打过（弹窗内部自己关掉了，结果不回传给这里）
+        if (retryErr == null && mounted) {
+          setState(() => _printedAt = DateTime.now());
+        }
+        return retryErr;
+      });
     }
-
-    setState(() {
-      _step = 1;
-      _receivedTouched = false;
-      _receivedCtl.text = _fmt(_dueForeign); // 按应收重新预填「正好」
-      if (_scrollCtl.hasClients) _scrollCtl.jumpTo(0);
-    });
   }
 
-  /// ② 的确认：收款完成 —— 把结果交回给 `settleOrderFlow` 落账，窗口关闭。
-  /// （单子已经在第 ① 步打过了，这里**不再重复打印**。）
+  /// 收款完成 —— 把结果交回给 `settleOrderFlow` 落账，窗口关闭。
+  /// （「单子」想打就点左边那个按钮打过了，收款这里**不打纸**。）
   void _finish(BuildContext context, bool isCash, double change) {
     Navigator.pop(
       context,
@@ -836,7 +816,10 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     );
   }
 
-  /// 小计 / 折扣 / 税 / 合计。
+  /// 小计 / 折扣 / 税 / 合计（显示在**左边清单的底部**）。
+  ///
+  /// 折扣那一行的说明文字用**窗口里当前选的折扣**（`_discountType/_discountValue`），
+  /// 不能读订单上存的那个：订单要等收款成功才落账，这会儿它还是"没折扣"。
   Widget _breakdown(PriceBreakdown price, String symbol) {
     return Container(
       padding: const EdgeInsets.all(12),
@@ -849,8 +832,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
           _row(L10n.t('receipt.labelSubtotal'), money(price.subtotal, symbol)),
           if (price.discount != 0)
             _row(
-              '${L10n.t('receipt.labelDiscount')} '
-              '${_order.discountLabel(symbol)}',
+              '${L10n.t('receipt.labelDiscount')}${_discountText(symbol)}',
               '-${money(price.discount, symbol)}',
               color: const Color(0xFFEF6C00),
             ),
@@ -869,25 +851,42 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     );
   }
 
-  /// 一个币种的按钮：币种 + **换算后的应收** + 汇率。
+  /// 折扣的括号说明：` 10%` / ` -¥20.00`；没折扣返回空串。
+  String _discountText(String symbol) {
+    switch (_discountType) {
+      case DiscountType.none:
+        return '';
+      case DiscountType.percent:
+        return ' ${_fmt(_discountValue)}%';
+      case DiscountType.amount:
+        return ' -${money(_discountValue, symbol)}';
+    }
+  }
+
+  /// 一个币种的按钮：**只有币种码 + 汇率**，别的什么都不显示。
+  ///
+  /// - 本位币 → `MXN  本位币`；
+  /// - 设过汇率 → `USD  16.5`（1 个 USD = 16.5 本位币）；
+  /// - 没设汇率 → `RMB  未设汇率`（这一项点不动）。
+  ///
+  /// **换算后的应收不在这里** —— 上面那行「应收」大字会跟着切换
+  /// （`应收 $40.00 USD`），这样币种按钮能瘦下来，一眼看的就是那一个数字。
   Widget _currencyChip(String code) {
     final rate = widget.settings.rateFor(code);
     final usable = rate > 0;
     final selected = _currency == code;
-    final sym = code == widget.settings.baseCurrency
-        ? widget.settings.currencySymbol
-        : (kCurrencySymbols[code] ?? '');
-    final due = toForeign(_price.total, rate);
     final isBase = code == widget.settings.baseCurrency;
+    final sub = isBase
+        ? L10n.t('checkout.base')
+        : (usable ? _fmt(rate) : L10n.t('checkout.noRate'));
 
     return ChoiceChip(
       selected: selected,
       onSelected: usable ? (_) => _pickCurrency(code) : null,
       showCheckmark: false,
       selectedColor: const Color(0xFF1FA85A),
-      label: Column(
+      label: Row(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             code,
@@ -899,23 +898,12 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                   : (usable ? const Color(0xFF232829) : Colors.grey),
             ),
           ),
+          const SizedBox(width: 6),
           Text(
-            usable ? money(due, sym) : L10n.t('checkout.noRate'),
+            sub,
             style: TextStyle(
-              fontSize: 12,
-              color: selected ? Colors.white : Colors.grey.shade700,
-            ),
-          ),
-          Text(
-            // 本位币不写汇率（恒为 1）
-            isBase
-                ? L10n.t('checkout.base')
-                : (usable
-                    ? '1 = ${money(rate, widget.settings.currencySymbol)}'
-                    : ''),
-            style: TextStyle(
-              fontSize: 10,
-              color: selected ? Colors.white70 : Colors.grey.shade500,
+              fontSize: 11,
+              color: selected ? Colors.white70 : Colors.grey.shade600,
             ),
           ),
         ],
@@ -923,31 +911,16 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     );
   }
 
-  /// 汇率提示行：把本位币和另外两个币种的汇率都列出来（收银员要能核对）。
-  String _rateHint(String baseSymbol) {
-    final parts = <String>[
-      '${L10n.t('checkout.base')}: ${widget.settings.baseCurrency} $baseSymbol',
-    ];
-    for (final code in kCashCurrencies) {
-      if (code == widget.settings.baseCurrency) continue;
-      final r = widget.settings.rateFor(code);
-      parts.add(r > 0
-          ? '1 $code = ${money(r, baseSymbol)}'
-          : '$code ${L10n.t('checkout.noRate')}');
-    }
-    return '${parts.join('  ·  ')}   （${L10n.t('checkout.rateWhere')}）';
-  }
-
   Widget _row(String label, String value, {bool bold = false, Color? color}) =>
       Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
+        padding: const EdgeInsets.symmetric(vertical: 3),
         child: Row(
           children: [
             Expanded(
               child: Text(
                 label,
                 style: TextStyle(
-                  fontSize: bold ? 15 : 13,
+                  fontSize: bold ? 17 : 15,
                   fontWeight: bold ? FontWeight.w700 : FontWeight.w400,
                 ),
               ),
@@ -955,7 +928,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
             Text(
               value,
               style: TextStyle(
-                fontSize: bold ? 16 : 13,
+                fontSize: bold ? 19 : 15,
                 fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
                 color: color,
               ),
@@ -969,7 +942,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
         child: Text(
           text,
           style: TextStyle(
-            fontSize: 12,
+            fontSize: 13,
             fontWeight: FontWeight.w700,
             color: Colors.grey.shade600,
           ),
@@ -1035,8 +1008,21 @@ Future<void> _submitOrder(
             cashier: cashier,
           );
     if (saved == null) return;
-    // 「保存」到此为止：只记单，不打印
-    if (!toKitchen) return;
+    // 「保存」到此为止：只记单，不打印。
+    //
+    // 外卖单顺手问一句"要不要起个名字"：**起名 = 把这张外卖单存进下拉列表**，
+    // 之后随时能选回来接着加菜/改单（结账后自动从列表消失）。
+    // 点「不用名字」也没关系 —— 那就是一张点完厨房直接结账的普通外卖单。
+    if (!toKitchen) {
+      if (saved.isTakeaway && saved.label.trim().isEmpty && context.mounted) {
+        // 外卖 / 电话外卖：「保存这张外卖单」= 起名（可不填）+ 电话外卖的等待时间
+        final r = await showTakeawayNameDialog(context, saved);
+        if (r != null) {
+          pos.setOrderLabel(saved.id, r.label, waitMinutes: r.waitMinutes);
+        }
+      }
+      return;
+    }
     order = saved;
   } else {
     // ---- 1') 购物车是空的 ----
@@ -1059,6 +1045,11 @@ Future<void> _submitOrder(
     total: 0,
     table: order.table,
     orderType: order.orderType,
+    // 外卖那三样要**跟着票走**，否则厨房单顶部打不出「名字 / 号 / 等待时间」
+    // （见 `receipt_layout.dart` 的 buildKitchenRows ①b / ②b）
+    label: order.label,
+    dailyNo: order.dailyNo,
+    waitMinutes: order.waitMinutes,
     status: OrderStatus.inProgress,
   );
   // 这张单之前已经下过厨房 → 票上标「（追加）」
@@ -1084,11 +1075,11 @@ Future<void> _submitOrder(
   });
 }
 
-/// 结账流程：结账窗口（① 核对明细 → 打单子 → ② 收款）→ 记成已结单。
+/// 结账流程：一个结账窗口（明细 + 折扣 + 收款都在一页）→ 记成已结单。
 ///
-/// **打纸只打一次**：单子在第 ① 步点「确认并打印」时就打出去了（明细 + 合计），
-/// 第 ② 步收完钱只把账记下来、窗口关闭，**不再重复打印**（省纸；这也是你选的方案）。
-/// 打印失败的处理（重试 / 跳过）在窗口内部（见 `_confirmAndPrint`）。
+/// **打纸跟收款解开**：想打就点「打印单子」（明细 + 合计，含刚设的折扣），
+/// 打完留在原界面（可以再打、也可以走开一会儿）；点「确认收款」才落账、关窗，
+/// **点确认的时候不再出纸**。打印失败的处理（重试 / 跳过）在窗口内部（见 `_printBill`）。
 Future<void> settleOrderFlow(BuildContext context, Order order) async {
   final pos = context.read<PosController>();
   final settingsCtl = context.read<SettingsController>();

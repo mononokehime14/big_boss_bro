@@ -7,16 +7,16 @@ import 'package:provider/provider.dart';
 import '../l10n/app_strings.dart';
 import '../models/category.dart';
 import '../models/menu_item.dart';
-import '../models/order.dart' show kCashCurrencies;
 import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
 import '../utils/category_colors.dart';
 import '../utils/format.dart';
+import '../widgets/menu_item_edit_dialog.dart';
 
-/// 菜品/分类管理：增删改菜单、**设币种与汇率**、改菜价单位，改动自动持久化。
+/// 菜品/分类管理：增删改菜单 —— **名称 / 基础价格 / 单位 / 基础数量 / 定制项**
+/// （定制项可以改组名，也能一条条改选项名和加价）；改动自动持久化。
 ///
-/// 为什么汇率放这儿：汇率是「菜价换算成外币」的参数，老板改菜单时顺手就能改，
-/// 不用再翻到设置页去找（你要求放这里）。收款框里三个币种的金额就是按它算的。
+/// 币种与汇率**不在这里**了（按你的要求搬到设置页，和税率挨着）。
 class MenuManageScreen extends StatefulWidget {
   const MenuManageScreen({super.key});
 
@@ -26,24 +26,6 @@ class MenuManageScreen extends StatefulWidget {
 
 class _MenuManageScreenState extends State<MenuManageScreen> {
   String _selectedCatId = '';
-
-  /// 汇率输入框（按币种各一个；第一次 build 时懒创建）。
-  final Map<String, TextEditingController> _rateCtls = {};
-
-  @override
-  void dispose() {
-    for (final c in _rateCtls.values) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
-  static String _fmtRate(double v) => v <= 0
-      ? ''
-      : (v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2));
-
-  TextEditingController _rateCtl(String code, double rate) => _rateCtls
-      .putIfAbsent(code, () => TextEditingController(text: _fmtRate(rate)));
 
   @override
   Widget build(BuildContext context) {
@@ -62,52 +44,6 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // ---- 币种与汇率（收款框里的三个币种按它换算）----
-          _sectionTitle(L10n.t('menu.rates')),
-          Card(
-            color: Colors.white,
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    L10n.t('menu.rates.hint'),
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-                  ),
-                  const SizedBox(height: 10),
-                  // 本位币 = 店里收钱的货币
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          L10n.t('menu.baseCurrency'),
-                          style: const TextStyle(
-                              fontSize: 14, fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                      DropdownButton<String>(
-                        value: settings.baseCurrency,
-                        items: [
-                          for (final c in kCashCurrencies)
-                            DropdownMenuItem(value: c, child: Text(c)),
-                        ],
-                        onChanged: (v) {
-                          if (v != null) settingsCtl.setBaseCurrency(v);
-                        },
-                      ),
-                    ],
-                  ),
-                  const Divider(height: 18),
-                  for (final code in kCashCurrencies)
-                    if (code != settings.baseCurrency)
-                      _rateRow(
-                          settingsCtl, code, settings.rateFor(code), currency),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
           _sectionTitle(L10n.t('menu.categories')),
           Card(
             color: Colors.white,
@@ -150,48 +86,7 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
     );
   }
 
-  /// 一行汇率：`1 USD = [ 18.50 ]`。
-  ///
-  /// **改完立刻保存**（不用点按钮）；清空 = 没设汇率 → 收款时那个币种是灰的。
-  Widget _rateRow(
-    SettingsController ctl,
-    String code,
-    double rate,
-    String baseSymbol,
-  ) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 90,
-            child: Text(
-              '1 $code =',
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-            ),
-          ),
-          Expanded(
-            child: TextField(
-              controller: _rateCtl(code, rate),
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(
-                border: const OutlineInputBorder(),
-                isDense: true,
-                prefixText: '$baseSymbol ',
-                hintText: '0',
-              ),
-              onChanged: (v) => ctl.setExchangeRate(
-                code,
-                double.tryParse(v.trim().replaceAll(',', '.')) ?? 0,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
+  /// 恢复默认菜单（改乱后一键还原）。
   Future<void> _resetMenu(PosController pos) async {
     final ok = await _confirm(L10n.t('menu.resetConfirm'));
     if (ok) {
@@ -278,10 +173,19 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
       leading: _colorDot(colorValue),
       title: Text(m.name),
       subtitle: Text(
-        // 有单位就显示成「¥140.00 / 份」
-        m.hasUnit
-            ? '${money(m.price, currency)} / ${m.unit}'
-            : money(m.price, currency),
+        [
+          // 「¥140.00 / 份」；再带上「2 份起」和「定制项 2 组」，一眼看出这道菜配了什么
+          m.hasUnit
+              ? '${money(m.price, currency)} / ${m.unit}'
+              : money(m.price, currency),
+          if (m.hasMinQuantity)
+            '${m.minQuantity} ${L10n.t('custom.qty.min')}',
+          if (m.hasOptions)
+            '${L10n.t('menu.itemOptions')} ${m.options.where((g) => !g.isEmpty).length}',
+          // 有昵称就把昵称也写出来（点单页 / 厨师单上显示的是它）
+          if (m.nickName.trim().isNotEmpty)
+            '${L10n.t('menu.itemNick')}: ${m.nickName.trim()}',
+        ].join(' · '),
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -420,92 +324,27 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
       }
       catId = pos.categories.first.id;
     }
-    final item = await _showItemDialog(context, categoryId: catId);
+    final item = await showMenuItemEditDialog(
+      context,
+      categoryId: catId,
+      nextId: pos.nextId,
+    );
     if (item != null) pos.addMenuItem(item);
   }
 
   Future<void> _editItem(PosController pos, MenuItem m) async {
-    final item = await _showItemDialog(context, categoryId: m.categoryId, existing: m);
+    final item = await showMenuItemEditDialog(
+      context,
+      categoryId: m.categoryId,
+      existing: m,
+      nextId: pos.nextId,
+    );
     if (item != null) pos.updateMenuItem(item);
   }
 
   Future<void> _deleteItem(PosController pos, MenuItem m) async {
     final ok = await _confirm(L10n.t('menu.deleteItem'));
     if (ok) pos.deleteMenuItem(m.id);
-  }
-
-  Future<MenuItem?> _showItemDialog(BuildContext context,
-      {required String categoryId, MenuItem? existing}) {
-    final nameCtl = TextEditingController(text: existing?.name ?? '');
-    final priceCtl =
-        TextEditingController(text: existing?.price.toString() ?? '');
-    // 菜价的单位（Excel 里的「单位」列，例如 份 / 杯 / 公斤）
-    final unitCtl = TextEditingController(text: existing?.unit ?? '');
-    return showDialog<MenuItem>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(existing == null
-            ? L10n.t('menu.addItem')
-            : L10n.t('menu.editItem')),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameCtl,
-              autofocus: true,
-              decoration: InputDecoration(
-                labelText: L10n.t('menu.itemName'),
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: priceCtl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(
-                labelText: L10n.t('menu.itemPrice'),
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: unitCtl,
-              decoration: InputDecoration(
-                labelText: L10n.t('menu.itemUnit'),
-                helperText: L10n.t('menu.itemUnitHint'),
-                border: const OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(L10n.t('common.cancel')),
-          ),
-          FilledButton(
-            onPressed: () {
-              final pos = context.read<PosController>();
-              final name = nameCtl.text.trim();
-              final price = double.tryParse(priceCtl.text.trim());
-              if (name.isEmpty || price == null || price < 0) return;
-              final item = MenuItem(
-                id: existing?.id ?? pos.nextId(),
-                name: name,
-                price: price,
-                emoji: existing?.emoji ?? '',
-                categoryId: categoryId,
-                // 保留原来的「定制项」（Excel 导入的），编辑时不要弄丢
-                options: existing?.options ?? const [],
-                unit: unitCtl.text.trim(),
-              );
-              Navigator.pop(dialogContext, item);
-            },
-            child: Text(L10n.t('menu.confirmItem')),
-          ),
-        ],
-      ),
-    );
   }
 
   Future<bool> _confirm(String message) async {

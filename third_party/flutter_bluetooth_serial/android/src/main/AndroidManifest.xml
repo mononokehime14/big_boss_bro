@@ -1,0 +1,14 @@
+<!--
+  flutter_bluetooth_serial 0.4.0 —— 本地补丁副本（third_party/）
+  相对上游只删了一行：根标签上的 package="io.github.edufolly.flutterbluetoothserial"。
+  AGP 8 起，模块名要写在 build.gradle 的 namespace 里，manifest 里再写 package 会直接报错：
+    "package=... found in source AndroidManifest.xml. Setting the namespace via the
+     package attribute in the source AndroidManifest.xml is no longer supported."
+  权限声明保持原样（app 自己的 AndroidManifest.xml 里还有更精确的版本，合并时以 app 为准）。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+</manifest>

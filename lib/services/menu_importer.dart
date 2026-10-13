@@ -46,6 +46,19 @@ class _Layout {
   final int? priceCol;
   final int? unitCol;
   final int? iconCol;
+
+  /// 「**菜品昵称**」列（可选）。
+  ///
+  /// **必须认出来并"占住"这一列**：它的表头叫「菜品昵称」，里面带「菜品」两个字，
+  /// 会被「菜名」规则认走；而且它右边紧跟着定制项 —— 不占住的话，这一列会被当成
+  /// 一组定制项的**名字列**，把「定制1选项」当成它的选项（真实踩过：整张菜单全歪）。
+  final int? nickCol;
+
+  /// 「基础数量」列（最少点几份）。**必须认出来并"占住"这一列**，
+  /// 否则它会被当成下一组定制项的开始（真实踩过：
+  /// 加了「基础数量」列之后，Verdura Cantones 莫名多出一组定制项）。
+  final int? quantityCol;
+
   final List<_GroupCols> groups;
 
   const _Layout({
@@ -54,6 +67,8 @@ class _Layout {
     this.priceCol,
     this.unitCol,
     this.iconCol,
+    this.nickCol,
+    this.quantityCol,
     this.groups = const [],
   });
 }
@@ -64,14 +79,24 @@ class _Layout {
 /// - 分类列：`种类` / `类别` / `分类` / `category` / `categoria`；
 /// - 菜名列：`菜品名字` / `菜名` / `名称` / `name` / `nombre` / `producto`；
 /// - **基础价格**列：`基础价格` / `价格` / `单价` / `price` / `precio`；
+/// - **菜品昵称**列（可选）：`菜品昵称` / `昵称` / `简称` / `nickname` / `apodo`
+///   → 写进 `MenuItem.nickName`：**点单界面 / 厨师单显示昵称，顾客小票打全名**；
+///   空 = 昵称即全名；
+/// - **基础数量**列（可选）：`基础数量` / `起订数量` / `最少` / `minqty` / `cantidad`…
+///   → 写进 `MenuItem.minQuantity`：点菜弹窗里**数量从它开始**（例：套餐 2 份起）；
 /// - 单位列（可选）：`单位` / `unit` / `unidad`；
 /// - 图标列（可选）：`图标` / `emoji` / `icon`；
-/// - **定制项**列：`个性化定制项1`、`定制项2`、`Size`、`JARRA`…（有几个算几个，**不定数量**）。
-///   每个定制项右边**紧跟着它的「选项」和「选项价格」**两列：
+/// - **定制项**列：`个性化定制项1`、`定制项2`、`定制项3`、`Size`、`JARRA`…（**有几个算几个**，
+///   不限于 2 个 —— 现在样例表里就有 3 组）。每个定制项右边**紧跟着它的「选项」和
+///   「选项价格」**两列：
 ///   ```
-///   | 种类 | 菜品名字 | 基础价格 | 个性化定制项1 | 定制1选项 | 定制1选项价格 | 个性化定制项2 | 定制2选项 | 定制2选项价格 |
+///   | 种类 | 菜品名字 | 菜品昵称 | 基础价格 | 基础数量 | 个性化定制项1 | 定制1选项 | 定制1选项价格 | 定制项2 | 定制2选项 | 定制2选项价格 | … |
 ///   ```
 ///   选项用 `/` 分隔，价格也按 `/` 一一对应（`Mediano/Grande` + `150/200`）。
+///
+/// ⚠️ 关键列（分类 / 菜名 / **昵称** / 价格 / 数量 / 单位 / 图标）认出来之后会
+/// **标记为已占用**，剩下的列才按"三列一组"切分定制项 —— 所以**新加一列关键字段
+/// 不会把定制项搞乱**（昵称列踩过这个坑：它右边就是定制项）。
 ///
 /// 容错：
 /// - **定制项名字那格留空**（同一段里只写一次）→ 沿用**上面最近一次**写过的名字；
@@ -181,6 +206,10 @@ class MenuImporter {
         options: groups,
         // 单位（Excel 的「单位」列）：例如 份 / 杯 / 公斤；没这列就是空
         unit: cell(layout.unitCol),
+        // 菜品昵称（Excel 的「菜品昵称」列）：点单界面 / 厨师单显示它；空 = 用全名
+        nickName: cell(layout.nickCol),
+        // 基础数量（Excel 的「基础数量」列）：最少点几份；没这列就是 1
+        minQuantity: _parseQuantity(cell(layout.quantityCol)),
       ));
     }
 
@@ -221,7 +250,9 @@ class MenuImporter {
             _isNameHeader(h) ||
             _isPriceLike(h) ||
             _isUnitHeader(h) ||
-            _isIconHeader(h)) {
+            _isIconHeader(h) ||
+            _isNickHeader(h) ||
+            _isQuantityHeader(h)) {
           score++;
         }
       }
@@ -251,13 +282,20 @@ class MenuImporter {
         (i >= 0 && i < width) ? header[i].trim().toLowerCase() : '';
 
     final claimed = <int>{};
-    int? catCol, nameCol, priceCol, unitCol, iconCol;
+    int? catCol, nameCol, priceCol, unitCol, iconCol, quantityCol, nickCol;
 
     for (var c = 0; c < width; c++) {
       final x = h(c);
       if (x.isEmpty) continue;
       if (catCol == null && _isCategoryHeader(x)) {
         catCol = c;
+        claimed.add(c);
+        continue;
+      }
+      // ⚠️ 昵称要在「菜名」**之前**认：`菜品昵称` 里也有「菜品」两个字，
+      //    否则会被菜名规则认走（菜名已经认过第一列就没关系，但顺序不能反）
+      if (nickCol == null && _isNickHeader(x)) {
+        nickCol = c;
         claimed.add(c);
         continue;
       }
@@ -273,6 +311,13 @@ class MenuImporter {
       }
       if (iconCol == null && _isIconHeader(x)) {
         iconCol = c;
+        claimed.add(c);
+        continue;
+      }
+      // 基础数量必须在「定制项分组」之前认掉 —— 否则这一列会被当成
+      // 下一组定制项的名字列，把后面的选项全带歪（真实踩过）
+      if (quantityCol == null && _isQuantityHeader(x)) {
+        quantityCol = c;
         claimed.add(c);
         continue;
       }
@@ -349,6 +394,8 @@ class MenuImporter {
       priceCol: priceCol,
       unitCol: unitCol,
       iconCol: iconCol,
+      nickCol: nickCol,
+      quantityCol: quantityCol,
       groups: groups,
     );
   }
@@ -416,6 +463,19 @@ class MenuImporter {
   static bool _isIconHeader(String h) =>
       h.contains('图标') || h.contains('图片') || h.contains('emoji') || h.contains('icon');
 
+  /// 「**菜品昵称**」列（可选）：`菜品昵称` / `昵称` / `简称` / `别名` / `nickname` / `apodo`。
+  ///
+  /// ⚠️ 认它的顺序要在「菜名」**之前** —— 「菜品昵称」里也含「菜品」，
+  /// 而且它右边紧跟着定制项，认漏了整张菜单的定制项都会歪。
+  static bool _isNickHeader(String h) =>
+      h.contains('昵称') ||
+      h.contains('简称') ||
+      h.contains('别名') ||
+      h.contains('nick') ||
+      h.contains('apodo') ||
+      h.contains('alias') ||
+      h.contains('sobrenombre');
+
   /// 「单位」列：`单位` / `计量单位` / `unit` / `unidad`。
   /// 例：份、杯、碟、公斤 —— 会显示在菜单格子和厨房单的数量后面。
   static bool _isUnitHeader(String h) =>
@@ -424,6 +484,31 @@ class MenuImporter {
       h == 'unit' ||
       h.contains('unidad') ||
       h.contains('medida');
+
+  /// 「**基础数量**」列（最少点几份）：`基础数量` / `起订` / `最少` / `minqty` / `cantidad`…
+  ///
+  /// 注意**不能**把「定制1选项」之类的列误认成数量列 → 先排掉选项/价格类表头。
+  static bool _isQuantityHeader(String h) {
+    if (_isOptionsHeader(h) || _isPriceLike(h)) return false;
+    return h.contains('基础数量') ||
+        h.contains('起订') ||
+        h.contains('最少') ||
+        h.contains('基数') ||
+        h.contains('数量') ||
+        h.contains('qty') ||
+        h.contains('quantity') ||
+        h.contains('cantidad');
+  }
+
+  /// 解析「基础数量」：`2` → 2；`2.0` / `2 份` / 空 → 数字部分。
+  /// **至少 1**，最大 99（防止表里写了奇怪的东西把数量顶到天上）。
+  static int _parseQuantity(String raw) {
+    final digits = raw.trim().replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.isEmpty) return 1;
+    final n = int.tryParse(digits) ?? 1;
+    if (n < 1) return 1;
+    return n > 99 ? 99 : n;
+  }
 
   /// 解析「每个选项的价格」：`140/185` → [140, 185]。
   /// 长度按 [count]（选项个数）对齐，缺的补 0。

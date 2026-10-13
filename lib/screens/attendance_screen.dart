@@ -129,12 +129,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 ),
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              L10n.t('attendance.clockInHint'),
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-            ),
           ],
         ),
       ),
@@ -228,10 +222,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           contentPadding: const EdgeInsets.symmetric(horizontal: 16),
           leading: const Icon(Icons.lock_outline, color: Color(0xFF1FA85A)),
           title: Text(L10n.t('attendance.adminOpen')),
-          subtitle: Text(
-            L10n.t('attendance.adminHint'),
-            style: const TextStyle(fontSize: 12),
-          ),
           trailing: const Icon(Icons.chevron_right),
           onTap: _openAdmin,
         ),

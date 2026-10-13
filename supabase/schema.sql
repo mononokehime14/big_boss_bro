@@ -4,18 +4,23 @@
 -- 怎么用：Supabase 控制台 → 左侧「SQL Editor」→ New query → 把这一整份粘进去 → Run。
 -- 可以**重复执行**（都是 if not exists / create or replace / drop policy if exists）。
 --
--- 两张表：
---   orders  一张单一行：状态 + 整张单的 JSON（App 里 `Order.toJson()` 原样存进 data）
---   menu    只有一行（id='current'）：整份菜单 JSON + 版本号
+-- 五张表：
+--   orders            一张单一行：状态 + 整张单的 JSON（App 里 `Order.toJson()` 原样存进 data）
+--   menu              只有一行（id='current'）：整份菜单 JSON + 版本号
+--   attendance_staff  只有一行（id='current'）：员工名单 JSON + 版本号
+--   attendance_punches 一次打卡一行（只增不改）
+--   store_settings    只有一行（id='current'）：**店级配置** JSON + 版本号
+--                     （店名 / 店头地址 / 税率 / 货币与汇率 / 桌号 / 各分类备注 / 日结支出）
+--                     —— 换新设备时靠它自动把"这家店怎么配置"拿回来
 --
 -- 三条约定（重要）：
---   1) **服务器是权威**：`updated_at` / `rev` 由触发器维护，App 只管推 data；
---      App 推成功后，把服务器返回的 rev/updated_at 存回本地（本地 rev=0 表示「还没推上去」）。
+--   1) **服务器是权威**：`updated_at` / `rev` / `version` 由触发器维护，App 只管推 data；
+--      App 推成功后，把服务器返回的 rev/updated_at/version 存回本地（本地 rev=0 表示「还没推上去」）。
 --   2) **结账只允许成功一次**：用 close_order() 做一次 CAS（in_progress → completed），
 --      三台设备同时点结账也不会算两次钱。
 --   3) **只有登录用户能读写**（RLS 对 authenticated 放开、对 anon 全关）：
 --      所以备份之外，外人拿到 anon key 也看不到数据。
--- ===========================================================================
+-- =========================================== ================================
 
 -- 生成 uuid 用（结账 RPC 里没用到，但留着方便以后扩展）
 create extension if not exists pgcrypto;
@@ -172,12 +177,53 @@ create index if not exists attendance_punches_at_idx
   on public.attendance_punches (at);
 
 -- ---------------------------------------------------------------------------
--- 5) 权限（RLS）：登录用户可读写，匿名一律看不到
+-- 5) 店级配置（store_settings）
+--    **只有一行**（id='current'）：整份配置 JSON + 版本号（跟 menu / attendance_staff 一个套路）。
+--
+--    放的是「整个店共用」的东西：
+--      店名、店头（地址/电话/RFC）、税率与含税方式、货币符号与汇率、
+--      桌号清单、各分类的常用备注、日结支出、菜品管理密码。
+--
+--    ⚠️ **打印机相关的故意不放这里**（蓝牙 MAC / IP / Windows 打印机名 / 纸宽 /
+--       小票编码 / 厨师单字号）：那是每台设备自己的硬件配置，
+--       同步过去只会把另一台设备的打印机搞坏。
+--
+--    为什么需要它：以前换一台新设备（新平板）要把店名、税率、货币、桌号、
+--    备注全部重填一遍。现在新设备登录后台后会自动把这一行拉下来。
+-- ---------------------------------------------------------------------------
+create table if not exists public.store_settings (
+  id          text primary key default 'current',
+  version     bigint      not null default 1,     -- 每次保存 +1，设备比它决定要不要拉新版
+  updated_at  timestamptz not null default now(),
+  device_id   text        not null default '',    -- 哪台设备最后改的
+  data        jsonb       not null                -- 店级配置 JSON（见上面那份清单）
+);
+
+create or replace function public.touch_store_settings() returns trigger
+language plpgsql as $$
+begin
+  new.updated_at := now();
+  if tg_op = 'INSERT' then
+    new.version := 1;
+  else
+    new.version := old.version + 1;
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists store_settings_touch on public.store_settings;
+create trigger store_settings_touch
+  before insert or update on public.store_settings
+  for each row execute function public.touch_store_settings();
+
+-- ---------------------------------------------------------------------------
+-- 6) 权限（RLS）：登录用户可读写，匿名一律看不到
 -- ---------------------------------------------------------------------------
 alter table public.orders enable row level security;
 alter table public.menu   enable row level security;
 alter table public.attendance_staff   enable row level security;
 alter table public.attendance_punches enable row level security;
+alter table public.store_settings     enable row level security;
 
 drop policy if exists orders_authenticated_all on public.orders;
 create policy orders_authenticated_all on public.orders
@@ -195,12 +241,18 @@ drop policy if exists attendance_punches_authenticated_all on public.attendance_
 create policy attendance_punches_authenticated_all on public.attendance_punches
   for all to authenticated using (true) with check (true);
 
+drop policy if exists store_settings_authenticated_all on public.store_settings;
+create policy store_settings_authenticated_all on public.store_settings
+  for all to authenticated using (true) with check (true);
+
 -- RPC 也要授权（默认 security definer 不给 anon 执行）
 revoke all on function public.close_order(text, jsonb, text) from public, anon;
 grant execute on function public.close_order(text, jsonb, text) to authenticated;
 
 -- ---------------------------------------------------------------------------
--- 6) 自检：跑完可以执行下面两句看看（应该有 4 张表 + 4 个函数）
+-- 7) 自检：跑完可以执行下面两句看看（应该有 5 张表 + 5 个函数）
+--    表：orders / menu / attendance_staff / attendance_punches / store_settings
+--    函数：touch_order / touch_menu / touch_staff / touch_store_settings / close_order
 -- ---------------------------------------------------------------------------
 -- select table_name from information_schema.tables where table_schema = 'public';
 -- select routine_name from information_schema.routines where routine_schema = 'public';

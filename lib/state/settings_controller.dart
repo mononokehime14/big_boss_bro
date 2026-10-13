@@ -62,9 +62,9 @@ class SettingsController extends ChangeNotifier {
     _store.save(_settings);
   }
 
-  /// 厨师单字体大小：1 = 正常，2 = 大（双倍高），3 = 特大（双倍宽 + 双倍高）。
-  void setKitchenFontSize(int v) {
-    _settings.kitchenFontSize = (v < 1 || v > 3) ? 1 : v;
+  /// 厨师单打印份数：1~3，**默认 2**（一张厨师、一张出餐服务员）。
+  void setKitchenCopies(int v) {
+    _settings.kitchenCopies = (v < 1 || v > 3) ? 2 : v;
     notifyListeners();
     _store.save(_settings);
   }
@@ -76,10 +76,36 @@ class SettingsController extends ChangeNotifier {
     _store.save(_settings);
   }
 
-  /// 点单区的排序方式：'default' / 'name'（首字母）/ 'popular'（流行度）。
+  /// 点单区的排序方式：'default'（本机拖出来的顺序）/ 'name'（首字母）/ 'popular'（流行度）。
   /// 见 `utils/menu_sort.dart` 的 `MenuSort`。
   void setMenuSort(String id) {
     _settings.menuSort = id;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  /// **「进行中」订单列表的排法**：'position'（默认：外卖 → 电话外卖 → 桌子）/
+  /// 'time'（最近保存 / 下厨房的在最上面）。见 `utils/order_sort.dart` 的 `OrderSort`。
+  void setOrderSort(String id) {
+    _settings.orderSort = id;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  /// **「已结单」订单列表的排法**：'time'（默认：按结账确认时间由近到远）/
+  /// 'amount'（按金额由大到小）。见 `utils/order_sort.dart` 的 `ClosedSort`。
+  void setClosedSort(String id) {
+    _settings.closedSort = id;
+    notifyListeners();
+    _store.save(_settings);
+  }
+
+  /// 自定义排序：存下**这一组拖过之后的新顺序**（种类或某个种类下的菜）。
+  ///
+  /// 传进来的是整张顺序表（调用方用 `menu_sort.dart` 的 `applyVisibleOrder()` 合好的），
+  /// 这里只负责存 + 通知界面重排。
+  void setMenuOrder(List<String> order) {
+    _settings.menuOrder = List.of(order);
     notifyListeners();
     _store.save(_settings);
   }

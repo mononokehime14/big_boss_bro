@@ -1,0 +1,52 @@
+// ---------------------------------------------------------------------------
+// flutter_bluetooth_serial 0.4.0 —— **本地补丁副本**（third_party/）
+//
+// 上游作者自 2021 年起就没有再维护这个包了，它自带的 android/build.gradle 是
+// 当年 Gradle 6 / AGP 4 时代的写法，和本项目现在的 Gradle 9 + AGP 9 完全不兼容：
+//
+//   1) jcenter()                                → Gradle 9 **已删除**这个方法（报的错就是它）
+//   2) buildscript { AGP 4.1.0 }                → 会和项目的 AGP 9.1.0 打架
+//   3) compileSdkVersion 30 / buildTools 30.0.3 → 本机没装这两个版本
+//   4) 没有 namespace                            → AGP 8 起**必需**（不写直接构建失败）
+//   5) lintOptions { }                           → AGP 9 已移除（改成 lint { }）
+//
+// 所以这里把构建脚本重写成 AGP 9 能认的写法。
+// ⚠️ **只改构建脚本，Dart（lib/）和 Java（src/main/java/）源码一行都没动。**
+// 说明文档：项目根目录 `release.md` 第 8 节。
+// ---------------------------------------------------------------------------
+
+group 'io.github.edufolly.flutterbluetoothserial'
+version '1.0-SNAPSHOT'
+
+// 注意：这里**不再**用 buildscript{} 引入 AGP。
+// AGP 由项目根目录的 android/settings.gradle.kts（pluginManagement）统一提供。
+apply plugin: 'com.android.library'
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+android {
+    // AGP 8+ 必需：代替原来 AndroidManifest.xml 里的 package="..."
+    namespace 'io.github.edufolly.flutterbluetoothserial'
+
+    // 与 app 模块保持一致（app 用的是 flutter.compileSdkVersion = 36）
+    compileSdk 36
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        // 与 app 模块保持一致（flutter.minSdkVersion = 24）
+        minSdk 24
+    }
+}
+
+dependencies {
+    // 插件源码用到 androidx.core.app.ActivityCompat / ContextCompat、androidx.annotation.NonNull
+    implementation 'androidx.core:core:1.13.1'
+    implementation 'androidx.annotation:annotation:1.9.1'
+}

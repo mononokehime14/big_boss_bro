@@ -19,9 +19,16 @@ dependencies:
 
   # ---- 打印 ----
   # 蓝牙 SPP 传输（安卓）
+  # ⚠️ 注意：pub.dev 上这个包**最新就是 0.4.0**（没有 0.5.0），而且 2021 年后就停更了。
+  # 它自带的 Android 构建脚本用的是 Gradle 9 已删除的 jcenter()，直接跑会构建失败；
+  # 所以这里用文件末尾的 dependency_overrides 换成本仓库打好补丁的副本（third_party/）。
   flutter_bluetooth_serial: ^0.4.0
   # Android 12+ 运行时蓝牙权限（BLUETOOTH_SCAN / BLUETOOTH_CONNECT）
-  permission_handler: ^11.3.0
+  # ⚠️ 必须 ≥13：11.x 配的是 permission_handler_android 12.1.0，那个模块把 compileSdk 写死成 34，
+  #    会被 AGP 的 AAR metadata 检查拦下（报 "requires ... compile against version 36 or later"）。
+  #    13.0.2 配 permission_handler_android 14.1.0，用 AGP 9 + compileSdk 37，已经跟上时代。
+  #    代码不用改：Permission.bluetoothScan/Connect/location 都来自 platform_interface（版本没变）。
+  permission_handler: ^13.0.2
   # 中文小票编码：热敏打印机多数用 GBK，不是 UTF-8，避免乱码
   gbk_codec: ^0.4.0
   # Windows 系统打印机（USB）走 spooler RAW 通道，需要 dart:ffi 辅助库
@@ -29,7 +36,13 @@ dependencies:
 
   # ---- 菜单 Excel 导入 ----
   # 选文件（Windows / 安卓都支持）
-  file_picker: ^8.0.0
+  # ⚠️ 必须 ≥11：10.x 及以前把 compileSdk 写死成 34，而且 buildscript 里钉着 AGP 8.5.1（Gradle 9 下会炸）；
+  #    11.0.0 起改用 flutter.compileSdkVersion 且修好了 AGP 9 兼容。
+  #    注意 11.0.0 的 API 变化（已同步改代码）：FilePicker.pickFiles(...)，
+  #    不再有 FilePicker.platform.pickFiles(...)（12.0.0 才彻底换成联邦包 + readAsBytes，那个先不要跳）。
+  #    另外 11.x 那句"条件式应用 Kotlin 插件"在 AGP 9 下是坏的（Kotlin 源码不编译 →
+  #    cannot find symbol: class FilePickerPlugin），已收编到 third_party/file_picker（见文件末尾）。
+  file_picker: ^11.0.3
   # xlsx 本质是 zip，用它解压后读里面的 XML
   archive: ^3.6.0
 
@@ -41,6 +54,31 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+
+# ---- 依赖覆盖：两个插件的 Android 构建脚本改不动（一个停更、一个脚本自己写坏了），
+#      所以把包收编进 third_party/ 打补丁，只改构建脚本 / manifest，源码一行未动。
+#
+# ① flutter_bluetooth_serial 0.4.0（2021 年停更）
+#    * jcenter()                        —— Gradle 9 已删除该方法 → "Could not find method jcenter()"
+#    * buildscript 里拉 AGP 4.1.0        —— 与项目的 AGP 9.1.0 打架
+#    * compileSdkVersion 30 + buildToolsVersion 30.0.3 —— 本机没装，且 AGP 9 不认这种写法
+#    * 没有 namespace                    —— AGP 8 起必需
+#    * lintOptions { }                   —— AGP 9 已移除
+#    见 release.md 第 8 节。
+#
+# ② file_picker 11.0.3（支持 AGP 9，但脚本有个条件判断把 Kotlin 插件应用给"跳"掉了）
+#    * if (!isAgp9OrAbove) { apply plugin: 'org.jetbrains.kotlin.android' }
+#      → Flutter 靠**扫文本**判断"插件自己会应用 KGP"，于是不再帮它应用；AGP 9 下它自己又跳过
+#      → Kotlin 源码（android/src/main/kotlin/）根本没编译
+#      → :app:compileDebugJavaWithJavac 报 cannot find symbol: class FilePickerPlugin
+#    * 而且 buildscript 里还钉着 AGP 8.5.1 + Kotlin 1.8.22（Gradle 9 下不能用）
+#    改法：删掉 buildscript 那两块、KGP 改成**无条件**应用、jvmTarget 固定 17。
+#    见 release.md 第 9 节。
+dependency_overrides:
+  flutter_bluetooth_serial:
+    path: third_party/flutter_bluetooth_serial
+  file_picker:
+    path: third_party/file_picker
 
 flutter:
   uses-material-design: true

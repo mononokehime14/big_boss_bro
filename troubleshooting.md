@@ -420,6 +420,295 @@
 
 ---
 
-## 问题 11：（预留）下一个报错
+## 问题 11：Android 构建失败 `Could not find method jcenter()`（停更插件的古董 Gradle 脚本）
+
+- **现象 / 报错原文**（`flutter run -d R9WR201TRKJ`，NDK 装好之后紧接着报的）：
+
+  ```
+  FAILURE: Build completed with 2 failures.
+
+  1: Task failed with an exception.
+  * Where:
+  Build file 'C:\Users\renha\AppData\Local\Pub\Cache\hosted\pub.dev\flutter_bluetooth_serial-0.4.0\android\build.gradle' line: 6
+  * What went wrong:
+  A problem occurred evaluating project ':flutter_bluetooth_serial'.
+  > Could not find method jcenter() for arguments [] on repository container of type
+    org.gradle.api.internal.artifacts.dsl.DefaultRepositoryHandler.
+
+  2: Task failed with an exception.
+  * What went wrong:
+  A problem occurred configuring project ':flutter_bluetooth_serial'.
+  > Failed to notify project evaluation listener.
+     > The Android plugin must be applied before accessing the Android extension.
+     > 'kotlin-android' plugin requires one of the Android Gradle plugins.
+  ```
+
+- **原因**：`flutter_bluetooth_serial` 停在 **0.4.0（2021-08-17，pub.dev 上至今仍是最新版，没有 0.5.0）**，
+  它的 `android/build.gradle` 是 Gradle 6 / AGP 4 时代的写法，和本项目的 **Gradle 9.3.1 + AGP 9.1.0** 完全不兼容：
+
+  | 上游写法 | 现在的问题 |
+  | --- | --- |
+  | `jcenter()` | **Gradle 9 已删除该方法** → 就是这次报的错（第 1 条） |
+  | `buildscript { classpath 'com.android.tools.build:gradle:4.1.0' }` | 硬拉 AGP 4.1.0，和项目的 AGP 9.1.0 打架 |
+  | `compileSdkVersion 30` / `buildToolsVersion '30.0.3'` | AGP 9 不认这种旧 DSL，且本机没装这两个版本 |
+  | 没有 `namespace`（模块名写在 manifest 的 `package=` 属性里） | AGP 8 起 `namespace` 是**必需**的 |
+  | `lintOptions { }` | AGP 9 已移除该块 |
+
+  第 2 条错误是**连带**的：脚本在第 6 行就中断了，`com.android.library` 没应用成功，
+  所以后面报"Android 插件必须先于 Android extension 应用"。
+
+- **处理**：**不去改 pub 缓存**（`flutter pub cache repair` 一跑就没了），改成把包**收进本仓库**再打补丁：
+
+  1. 把包拷贝到 `third_party/flutter_bluetooth_serial/`（只拷 `lib/ android/ ios/ pubspec.yaml LICENSE README.md CHANGELOG.md`）；
+  2. `third_party/flutter_bluetooth_serial/android/build.gradle` **整个重写**成 AGP 9 能认的写法
+     （`namespace`、`compileSdk 36`、`minSdk 24`、Java 17、`androidx.core`/`androidx.annotation` 依赖，
+     删掉 `buildscript`/`jcenter()`/`buildToolsVersion`/`lintOptions`）；
+  3. `third_party/flutter_bluetooth_serial/android/src/main/AndroidManifest.xml` 删掉根标签上的 `package="..."`；
+  4. `third_party/flutter_bluetooth_serial/pubspec.yaml` 把 `sdk: '>=2.12.0 <3.0.0'` 放宽到 `'>=2.12.0 <4.0.0'`
+     （本地路径依赖会用这个文件，`<3.0.0` 会让 pub 直接拒绝解析）；
+  5. 项目 `pubspec.yaml` 末尾加 `dependency_overrides: flutter_bluetooth_serial: path: third_party/flutter_bluetooth_serial`。
+
+  ⚠️ **Dart（`lib/`）和 Java（`src/main/java/`）源码一行都没动**，App 侧代码（`lib/services/bluetooth_print_service.dart` 等）也不用改。
+
+- **涉及文件**：`third_party/flutter_bluetooth_serial/{pubspec.yaml, android/build.gradle, android/src/main/AndroidManifest.xml}`、
+  `pubspec.yaml`（新增 `dependency_overrides`）。说明见 `release.md` 第 8 节。
+
+- **状态**：已修复 ✅（`flutter pub get` 通过；Gradle 已越过插件配置阶段，开始安装缺失的
+  `platforms/android-36` 与 `build-tools/36.0.0` —— 待你本地跑 `flutter run -d R9WR201TRKJ` 最终确认）
+
+- **以后注意**：
+  1. **别用 `flutter pub upgrade` 去"升"这个包**：pub.dev 上就停在 0.4.0，升不动；它已经停更，只能自己维护这份 `third_party/` 副本。
+  2. 如果哪天要换蓝牙库，优先看维护中的经典蓝牙（SPP）方案（BLE-only 的库连不上大多数小票机）；
+     换库要同步改 `lib/services/bluetooth_print_service.dart` 的扫描/连接/发送三处。
+  3. 遇到"某插件构建脚本报错"，先判断是**插件的脚本过时**还是**项目配置错**：
+     插件脚本过时就用 `third_party/` + `dependency_overrides` 收编打补丁，**别改 pub 缓存**。
+
+---
+
+## 问题 12：`AAR metadata` —— 两个插件还编译在 android-34 上（file_picker / permission_handler）
+
+- **现象 / 报错原文**（`flutter run -d R9WR201TRKJ`，NDK 和 jcenter 都过了之后）：
+
+  ```
+  FAILURE: Build failed with an exception.
+
+  * What went wrong:
+  Execution failed for task ':file_picker:checkDebugAarMetadata'.
+  > A failure occurred while executing com.android.build.gradle.internal.tasks.CheckAarMetadataWorkAction
+     > An issue was found when checking AAR metadata:
+
+         1.  Dependency ':flutter_plugin_android_lifecycle' requires libraries and applications that
+             depend on it to compile against version 36 or later of the Android APIs.
+
+             :file_picker is currently compiled against android-34.
+
+             Recommended action: Update this project to use a newer compileSdk
+             of at least 36, for example 36.
+  ```
+
+- **原因**：要把三件事分开看，否则很容易改错地方。
+
+  1. **AGP 的 AAR metadata 检查**规则是：**消费者（本 App）的 compileSdk ≥ 被依赖模块编译时用的 compileSdk**。
+  2. 本项目里 **有两个插件的 Android 模块把 compileSdk 写死成 34**（不是"跟着项目走"）：
+
+     | 包 | 版本 | 它自己写的 compileSdk |
+     | --- | --- | --- |
+     | `file_picker` | 8.3.7 | `compileSdk 34` ❌ |
+     | `permission_handler_android`（`permission_handler` 11.x 的安卓实现） | 12.1.0 | `compileSdk 34` ❌ |
+     | `flutter_plugin_android_lifecycle`（传递依赖） | 2.0.35 | `compileSdk = flutter.compileSdkVersion`（=36） |
+     | `shared_preferences_android` | 2.4.28 | `compileSdk = flutter.compileSdkVersion`（=36）✅ |
+
+  3. 于是 `file_picker`（34）依赖了 `flutter_plugin_android_lifecycle`（36）→ 冲突，
+     报错原文里那句 **"Update this project to use a newer compileSdk"** 指的是**那个插件工程**，
+     **不是**本 App 的 `android/app/build.gradle.kts`。
+     （所以"把 App 的 compileSdk 调大"在这一步是**没用**的。）
+
+  > 另一个容易踩的点：`permission_handler` 13.x 的安卓实现 `permission_handler_android 14.1.0`
+  > 自己是按 **compileSdk 37** 编译的 → 反过来要求**本 App 的 compileSdk ≥ 37**。所以最后两边都得往上抬。
+
+- **处理**（三处，一起改才自洽）：
+
+  | 改哪里 | 原来 | 改成 | 为什么 |
+  | --- | --- | --- | --- |
+  | `pubspec.yaml` | `file_picker: ^8.0.0` | `file_picker: ^11.0.3` | 10.x 起才用 `compileSdk = flutter.compileSdkVersion`；但 **10.x 的 buildscript 还钉着 AGP 8.5.1 + Kotlin 1.8.22**（Gradle 9 下会炸），**11.0.0 的 changelog 才写 "Updated Android package to support AGP 9"** |
+  | `pubspec.yaml` | `permission_handler: ^11.3.0` | `permission_handler: ^13.0.2` | 13.x 的安卓实现是 AGP 9 + compileSdk 37，已跟上时代 |
+  | `android/app/build.gradle.kts` | `compileSdk = flutter.compileSdkVersion`（36） | `compileSdk = 37` | 因为 permission_handler_android 14.1.0 是按 37 编译的（见上面第 3 点）。compileSdk 只影响"能调用哪些 API"，**不影响 minSdk/targetSdk，也不影响装机范围** |
+  | `lib/screens/menu_import_screen.dart` | `FilePicker.platform.pickFiles(...)` | `FilePicker.pickFiles(...)` | **file_picker 11.0.0 起改成静态方法**（`FilePickerResult` / `withData` / `PlatformFile.bytes` / `.path` 都还在，只有调用方式变了） |
+
+  - **为什么不用 file_picker 12/13**：12.0.0 把它拆成联邦包并**删掉 `FilePickerResult`**、废弃 `withData`，
+    13.0.0 直接把 `withData` / `allowMultiple` 删了，要用 `pickFile()` + `PlatformFile.readAsBytes()`。
+    11.0.3 是"支持 AGP 9 且代码改动最小（一行）"的版本。
+  - **为什么 permission_handler 代码一行没改**：`Permission.bluetoothScan / bluetoothConnect / location`
+    来自 `permission_handler_platform_interface`，13.0.2 要求的还是 `^4.4.0`（跟现在一样），枚举没变。
+
+- **涉及文件**：`pubspec.yaml`、`android/app/build.gradle.kts`、`lib/screens/menu_import_screen.dart`
+
+- **状态**：待验证 ⏳（等你再跑一次 `flutter run -d R9WR201TRKJ`；首次可能还会自动下载
+  Build-Tools/Platform 之类，看到 `Preparing "Install ..."` 是正常的，别关窗口）
+
+- **以后注意**：
+  1. 看到 `:某个插件:checkDebugAarMetadata` + `is currently compiled against android-XX`，
+     要升级的是**那个插件**（或改插件的 `compileSdk`），不是本 App 的 `compileSdk`。
+  2. 反过来，如果插件自己按很高的 compileSdk 编译（如 37），**本 App 就必须 ≥ 37**，
+     否则同样报 AAR metadata。
+  3. 判断"某个包的安卓模块编译在哪个 compileSdk"：直接看 pub 缓存里它的 `android/build.gradle(.kts)`，
+     或去 pub.dev 下载对应版本的 tar.gz 看。**别猜**（这次就是靠看脚本才选对版本的）。
+  4. 升级插件前先看它的 CHANGELOG 里 **BREAKING CHANGE**，这次 file_picker 就是靠这个避开了 12/13。
+
+---
+
+## 问题 13：`cannot find symbol: class FilePickerPlugin` —— Kotlin 源码根本没被编译
+
+- **现象 / 报错原文**（`flutter run -d R9WR201TRKJ`，AAR metadata 修好之后）：
+
+  ```
+  WARNING: Your app uses the following plugins that apply Kotlin Gradle Plugin (KGP): file_picker
+  Future versions of Flutter will fail to build if your app uses plugins that apply KGP.
+  ...
+  C:\...\android\app\src\main\java\io\flutter\plugins\GeneratedPluginRegistrant.java:19: error: cannot find symbol
+        flutterEngine.getPlugins().add(new com.mr.flutter.plugin.filepicker.FilePickerPlugin());
+                                                                           ^
+    symbol:   class FilePickerPlugin
+    location: package com.mr.flutter.plugin.filepicker
+
+  * What went wrong:
+  Execution failed for task ':app:compileDebugJavaWithJavac'.
+  > Compilation failed; see the compiler output below.
+  ```
+
+- **原因**（三层套在一起，最后表现成"类不存在"）：
+
+  1. **file_picker 11.0.3 把 Kotlin 插件的应用写成了"条件式"**（`android/build.gradle`）：
+     ```groovy
+     def isAgp9OrAbove = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.tokenize('.')[0].toInteger() >= 9
+     apply plugin: 'com.android.library'
+     if (!isAgp9OrAbove) {                     // ← AGP ≥ 9 时【不】应用 Kotlin 插件
+         apply plugin: 'org.jetbrains.kotlin.android'
+     }
+     ```
+     （它的想法是"AGP 9 自带内置 Kotlin，所以不用再应用 KGP"。）
+  2. **Flutter 判断"这个插件是否自己应用了 KGP"靠的是【扫 build.gradle 文本】的正则**
+     （`FlutterPluginUtils.getSubprojectPluginState`）。它在文本里看到 `apply plugin: 'org.jetbrains.kotlin.android'`
+     这句 → 就认为"插件自己会处理" → **Flutter 于是不再帮它应用 KGP**。
+  3. 于是 AGP 9 下：它自己跳过、Flutter 又不帮忙 → **谁都没应用 KGP** →
+     `android/src/main/kotlin/` 里的 5 个 `.kt`（`FilePickerPlugin.kt` 等）**一个都没编译** →
+     模块 jar 里没有 `FilePickerPlugin` 类 → `GeneratedPluginRegistrant.java` 引用它时找不到 → Java 编译失败。
+
+  - 关键背景：本项目的 `android/gradle.properties` 里是 **`android.builtInKotlin=false`**（Flutter 模板的默认值），
+    也就是说 **Kotlin 必须由 KGP 编译**，不能指望 AGP 的"内置 Kotlin"——而 file_picker 恰好按"内置 Kotlin 开着"来假设。
+  - 顶部那句 `WARNING: ... plugins that apply Kotlin Gradle Plugin (KGP): file_picker` 是**同一个正则判定的产物**，
+    它是"结果/提示"，不是原因（真正原因是第 3 步：没人编译 Kotlin）。
+
+- **处理**：把 file_picker **收编进本仓库**再改构建脚本（和 `flutter_bluetooth_serial` 同一套路）：
+
+  | 改动 | 内容 |
+  | --- | --- |
+  | 新增 | `third_party/file_picker/`（从 pub 缓存拷 `lib/ android/ ios/ macos/ pubspec.yaml LICENSE CHANGELOG README`，共 ~230 KB） |
+  | `third_party/file_picker/android/build.gradle` | ① 删掉 `buildscript{}`（里面钉着 **AGP 8.5.1 + Kotlin 1.8.22**，Gradle 9 下不能用）② **无条件** `apply plugin: 'org.jetbrains.kotlin.android'` ③ `jvmTarget` 用 KGP 2.x 新 DSL 固定 17 ④ 删掉 AGP 9 已移除的 `lintOptions{}` |
+  | `third_party/file_picker/android/src/main/AndroidManifest.xml` | 删掉根标签的 `package="..."`（AGP 8 起模块名写在 `namespace` 里） |
+  | `pubspec.yaml` | `dependency_overrides` 里加 `file_picker: path: third_party/file_picker` |
+
+  ⚠️ **Dart（`lib/`）与 Kotlin/Java 源码一行未动**；`lib/screens/menu_import_screen.dart` 那处 `FilePicker.pickFiles(...)`
+  是上一步（问题 12）为了 11.x 的 API 改的，与本次无关。
+
+  > **为什么不用"一行 `android.builtInKotlin=true`"**：那会把整个项目的 Kotlin 编译模式换掉
+  > （app 的 `build.gradle.kts` 里 `kotlin { compilerOptions { ... } }`、以及另外几个插件都按 KGP 模式在跑），
+  > 牵动面比"只修一个坏模块"大得多，且我没有实测环境去验证；而收编打补丁只影响 file_picker 一个模块，
+  > 其余模块维持"已经跑通"的现状。等以后真要全面迁到 built-in Kotlin，再单独做一次。
+
+- **涉及文件**：`third_party/file_picker/**`（新增）、`pubspec.yaml`
+
+- **状态**：待验证 ⏳（再跑 `flutter run -d R9WR201TRKJ`；顶上那句 KGP 的 WARNING 仍会出现，**属于提示、不影响构建**）
+
+- **以后注意**：
+  1. 看到 `cannot find symbol: class XxxPlugin`，先判断"那个插件的源码到底编译了没有"：
+     看它的 `android/src/main/` 下是 Java 还是 Kotlin，再确认**谁负责应用 Kotlin 插件**。
+  2. **插件里写"条件式 apply 插件"很容易两头落空**：Flutter 的判定是文本正则、不是运行时状态。
+     给插件作者报 issue 时可以直接引用 `FlutterPluginUtils.getSubprojectPluginState` 是"regex 扫文件"这一点。
+  3. `android.builtInKotlin=false`（模板默认）下，插件如果不自己 apply KGP，就得靠 Flutter 帮忙 apply；
+     一旦脚本里出现那句文本，Flutter 就不帮了。
+
+---
+
+## 问题 14：种类格子 `BOTTOM OVERFLOWED BY 16 PIXELS`（安卓平板）
+
+- **现象**：安卓平板上，点单页左边的**种类**列表里，**只有两个**格子出现黄黑条纹 +
+  `BOTTOM OVERFLOWED BY 16 PIXELS`，其它格子正常。（`flutter run` 的终端里会打出
+  `A RenderFlex overflowed by 16 pixels on the bottom.` + `The relevant error-causing widget was: Column`）
+
+- **原因**：和**问题 4**（菜品格子）是同一个病根，只是换了地方 ——
+  `lib/widgets/category_grid.dart` 的格子高度是 `SliverGridDelegateWithMaxCrossAxisExtent`
+  按 `childAspectRatio: 1.7` **算出来的固定值**（格子宽 ÷ 1.7），而格子里的内容是：
+
+  ```
+  14 内边距 + 种类名（fontSize 20，最多 2 行） + 6 间距 + 「N 件 · 已卖 M」（fontSize 13）
+  ```
+
+  平板竖屏时左栏列窄 → 格子又矮又窄；**名字最长的那两个种类**会折成**两行**（20px × 2 ≈ 47px），
+  于是总高 ~96px 刚好超过格子高度（~95px）→ 溢出 16px（含系统字体缩放时更多）。
+  名字一行的格子只要 ~73px，所以看起来"只有那两个坏了"。
+
+- **处理**：给格子内容加"装不下就等比缩小"的兜底（**问题 4 用的就是这一套**）：
+
+  1. `MediaQuery.withClampedTextScaling(maxScaleFactor: 1.2)` ——
+     系统"字体大小"调得很大时，格子里最多按 1.2 倍渲染（不然下面的 FittedBox 会把整块缩得太小）；
+  2. `LayoutBuilder` 拿到格子的**真实宽度** → 文字照这个宽度正常折行（不能直接套 FittedBox，
+     否则里面的 Text 会因为"无界宽度"变成一行不折行）；
+  3. `FittedBox(fit: BoxFit.scaleDown)` —— 装得下就原样显示，装不下**整体等比缩小**，永不溢出；
+  4. 外面再包一层 `Center`：内容比格子矮时仍然**垂直居中**（保持原来的观感）。
+
+  另外给底下那行小字加了 `maxLines: 1 + ellipsis`（它本来没限制行数，也是溢出的帮凶）。
+
+- **涉及文件**：`lib/widgets/category_grid.dart`
+
+- **状态**：待验证 ⏳（等你重新 `flutter run -d R9WR201TRKJ` 看一眼那两个格子）
+
+- **以后注意**：凡是"固定高度（`childAspectRatio` / 固定 `SizedBox`）+ 内部是文字 Column"的格子，
+  都要按这一套兜底（`LayoutBuilder` + `FittedBox(scaleDown)`，必要时先 clamp 字体缩放）——
+  这类问题**只在特定设备宽度 / 系统字体大小下才出现**，自己的开发机上看不到，
+  所以别用"我这儿没复现"来判断修好没修好。
+
+---
+
+## 问题 15：Windows 上「N 份起」好使，安卓平板上不生效（菜单没同步过去）
+
+- **现象**：
+  - 在 Windows 上重新导入 Excel（表里新加了「基础数量」列）→ 点某道菜，数量从 2 开始、格子上也有「2 份起」角标；
+  - 在安卓平板上同一道菜还是从 1 开始（没有角标）；
+  - 就算在 Windows 上点了设置里的 **「上传本机配置」** 也没用。
+  （`minQuantity` 在数据里、代码也是同一份，所以问题**只可能是"平板上的那份菜单是旧的"**。）
+
+- **原因**：**「店级配置」和「菜单」是两条独立的同步线**。
+  - `store_settings`（店名 / 地址 / 税率 / 货币 / 桌号 / 备注 / 日结支出）走「上传本机配置 / 从云端恢复配置」；
+    **它里面根本没有菜品** —— 所以点它当然带不过去 `minQuantity`；
+  - `menu`（分类 + 菜品）是另一条线，按**版本号**走：本机 `menuDirty` 就推、否则服务器版本更高才拉。
+    平板要是从来没在那之后同步过（或它自己也被标成"待上传"），菜单就一直停在旧那份 ——
+    旧的 JSON 里没有 `minQuantity`，`MenuItem.fromJson` 默认补 1，于是"看起来功能没生效"。
+
+- **处理**：
+  1. `lib/services/sync_service.dart`：
+     - 每次同步读到 `menu` 表那一行就顺手记下**云端菜单摘要** `CloudMenuInfo`（版本 / 道菜数 / 有几道「几份起」）——
+       只数 JSON 里的条数，不建模型，很便宜；
+     - 新增 `localMenuSummary`（本机道菜数 + 几份起的道数）；
+     - 新增两颗**手动**按钮的后端：`pushMenu()` / `pullMenu()`（`pullMenu` 用 `replaceMenuFromServer` **不看版本号**地覆盖本机，
+       并且拒绝「云端那份是空的」，不让人手改坏的 JSON 把本机菜单清空）。
+  2. `lib/screens/settings_screen.dart`：后台同步区加一块「菜品（菜单）」——
+     直接写出两边的差别（本机 3 道有基础数量 / 云端 0 道就变橙），下面两颗按钮
+     「从云端下载菜单」「上传本机菜单」；
+  3. 文案 zh/es/en 各一份（`sync.menu*`）；`setup_supabase.md` §5.1 改成四颗按钮 + 这段坑的说明。
+
+- **涉及文件**：`lib/services/sync_service.dart`、`lib/screens/settings_screen.dart`、
+  `lib/l10n/app_strings.dart`、`setup_supabase.md`
+
+- **状态**：待验证 ⏳（平板上升级 App 后：设置 → 后台同步 看那两行数字 → 点「从云端下载菜单」，
+  然后点那道 2 份起的菜，数量应该从 2 开始）
+
+- **以后注意**：菜单 / 店级配置 / 员工名单**三条线各走各的**，报"某台设备上少了什么"时，
+  先分清那样东西属于哪条线；`menu` 表里是整份 JSON，所以**新增字段（unit / minQuantity）
+  不会自己长到旧数据上** —— 要么重新导入 Excel，要么把新版那份上传/下载一次。
+
+---
+
+## 问题 16：（预留）下一个报错
 
 > 遇到就照模板填（现象/原因/处理/文件/状态），并同步更新 `log.md` 变更记录。

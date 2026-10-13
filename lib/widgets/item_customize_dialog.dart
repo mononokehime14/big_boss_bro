@@ -71,8 +71,17 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
   late final List<String> _notes =
       List.of(widget.initial?.notes ?? const <String>[]);
 
-  /// 份数（默认 1）。
-  late int _qty = widget.initial?.quantity ?? 1;
+  /// 份数（编辑时用原来的，但不低于最少份数；新加时**从最少份数开始**）。
+  ///
+  /// ⚠️ 这里只能在 initState 里赋值：字段初始化器跑在 `widget` 被赋值之前，
+  /// 直接写 `widget.item?.minQuantity` 会崩。
+  late int _qty;
+
+  /// 这道菜的**最少份数**（Excel 的「基础数量」列；没这列 = 1）。
+  int get _minQty => widget.item?.minQuantity ?? 1;
+
+  /// **真正会下单的份数**：输入框里手打了一个比最少份数还小的数时，按最少份数算。
+  int get _effectiveQty => _qty < _minQty ? _minQty : _qty;
 
   final _noteCtl = TextEditingController();
   final _qtyCtl = TextEditingController();
@@ -107,6 +116,10 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
       if (kept.isEmpty) continue; // 默认「不选」（加料开关就是这种）
       _selected[g.name] = kept;
     }
+    // 份数：最少份数（「基础数量」列）→ 新加时从它开始；编辑老行时不低于它
+    final minQty = _minQty;
+    final initialQty = widget.initial?.quantity ?? minQty;
+    _qty = initialQty < minQty ? minQty : initialQty;
     _qtyCtl.text = '$_qty';
   }
 
@@ -161,11 +174,17 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
     return item.unitPriceFor(_selections);
   }
 
-  String get _displayName => widget.title ?? widget.item?.name ?? '';
+  /// 标题上显示的名字：外面传了就用传的，否则用**昵称优先**的名字
+  /// （点单界面看昵称，见 `MenuItem.displayName`）。
+  String get _displayName =>
+      widget.title ?? widget.item?.displayName ?? '';
 
   /// 改份数（+/- 按钮和输入框都走这里，两边永远同步）。
+  ///
+  /// 不会低于这道菜的**最少份数**（「基础数量」列，例如套餐 2 份起）。
   void _setQty(int v) {
-    final q = v < 1 ? 1 : v;
+    final min = _minQty;
+    final q = v < min ? min : v;
     setState(() {
       _qty = q;
       _qtyCtl.text = '$q';
@@ -205,7 +224,8 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
       ItemEditResult(
         selections: _selections,
         notes: notes,
-        quantity: _qty,
+        // 比最少份数小的话按最少份数下单（「基础数量」列，例如 2 份起）
+        quantity: _effectiveQty,
       ),
     );
   }
@@ -365,14 +385,6 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                             color: Colors.grey.shade700,
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            L10n.t('custom.note.multi'),
-                            style: TextStyle(
-                                fontSize: 11, color: Colors.grey.shade600),
-                          ),
-                        ),
                       ],
                     ),
                     const SizedBox(height: 8),
@@ -399,9 +411,8 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                             controller: _noteCtl,
                             focusNode: _noteFocus,
                             textInputAction: TextInputAction.done,
-                            decoration: InputDecoration(
-                              hintText: L10n.t('custom.note.hint'),
-                              border: const OutlineInputBorder(),
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
                               isDense: true,
                             ),
                             onSubmitted: (_) => _addNote(),
@@ -476,9 +487,23 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                             color: Colors.grey.shade700,
                           ),
                         ),
+                        // 「2 份起」提示（Excel 的「基础数量」列 > 1 时才显示）
+                        if (_minQty > 1) ...[
+                          const SizedBox(width: 4),
+                          Text(
+                            '$_minQty ${L10n.t('custom.qty.min')}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFFEF6C00),
+                            ),
+                          ),
+                        ],
                         const SizedBox(width: 12),
                         IconButton(
-                          onPressed: _qty > 1 ? () => _setQty(_qty - 1) : null,
+                          // 减到最少份数就停住（要整行删掉用购物车里的 ✕）
+                          onPressed:
+                              _qty > _minQty ? () => _setQty(_qty - 1) : null,
                           icon: const Icon(Icons.remove_circle_outline),
                           tooltip: L10n.t('custom.qty.minus'),
                         ),
@@ -510,7 +535,7 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                         if (item != null)
                           Text(
                             '${L10n.t('cart.total')} '
-                            '${money(_unitPrice * _qty, symbol)}',
+                            '${money(_unitPrice * _effectiveQty, symbol)}',
                             style: const TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.w700,

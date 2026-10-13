@@ -26,11 +26,16 @@ class CartItem {
   /// 所有备注拼成一行（显示 / 打印用）。
   String get note => notes.join(' · ');
 
-  /// 购物车里的唯一键：同菜 + 同选项 + 同备注 才算同一行。
+  /// 购物车里的唯一键：同菜 + **同单价** + 同选项 + 同备注 才算同一行。
   ///
   /// 备注之间用 `\u0001` 分隔：否则「一条备注 a/b」和「两条备注 a、b」会撞成同一行。
-  String get key =>
-      '${menuItem.id}|${selections.join('/')}|${notes.join('\u0001')}';
+  ///
+  /// ⚠️ 为什么还要带上**名字 + 单价**：内置的「自定义」菜所有行的 `id` 都是
+  /// `__custom__`（见 `data/custom_menu_entry.dart`），只按 id 算键的话
+  /// 「生日蛋糕 ¥80」和「加急 ¥20」会**并成同一行**（显示的是先加进去那份的名字/价格）。
+  /// 普通菜的名字/单价由 id 唯一决定，所以这里加上它们不影响原来的行为。
+  String get key => '${menuItem.id}|${menuItem.name}|${menuItem.price}|'
+      '${selections.join('/')}|${notes.join('\u0001')}';
 
   /// 单价 = 基础价 + 所选项的加价（见 `MenuItem.unitPriceFor`）。
   double get unitPrice => menuItem.unitPriceFor(selections);

@@ -1,0 +1,70 @@
+// ---------------------------------------------------------------------------
+// file_picker 11.0.3 —— **本地补丁副本**（third_party/）
+//
+// 上游的 android/build.gradle 有两处在本项目（Gradle 9.3.1 + AGP 9.1.0 + android.builtInKotlin=false）
+// 下会出问题：
+//
+//  1) buildscript 里钉着 `com.android.tools.build:gradle:8.5.1` 和 `kotlin-gradle-plugin:1.8.22`
+//     → 会和项目的 AGP 9.1.0 / Kotlin 2.4.0 打架（Kotlin 1.8 也不支持 Gradle 9）。
+//     处理：整块删掉，直接用项目 root 提供的 AGP 9.1.0 和 Kotlin 2.4.0。
+//
+//  2) 它把 Kotlin 插件的应用写成了**条件式**：
+//         if (!isAgp9OrAbove) { apply plugin: 'org.jetbrains.kotlin.android' }
+//     而 Flutter 判断"插件是否自己应用了 KGP"是**扫 build.gradle 文本**（FlutterPluginUtils
+//     .getSubprojectPluginState 的正则）。文本里出现了这句 → Flutter 认为"它自己会应用" → 于是
+//     Flutter 不再帮它应用 KGP；可 AGP≥9 时它自己又跳过了 → **谁都没应用 KGP**
+//     → android/src/main/kotlin/ 下的 Kotlin 源码根本没被编译
+//     → 最终报：GeneratedPluginRegistrant.java: cannot find symbol: class FilePickerPlugin
+//     处理：改成**无条件**应用（本文件第 38 行），并把 kotlinOptions.jvmTarget 也改成无条件。
+//
+// ⚠️ 只改构建脚本 / manifest，**Dart（lib/）和 Kotlin/Java 源码一行未动**。
+// 说明文档：项目根目录 `release.md` 第 9 节。
+// ---------------------------------------------------------------------------
+
+group 'com.mr.flutter.plugin.filepicker'
+version '1.0-SNAPSHOT'
+
+// 注意：这里**不再**用 buildscript{} 引入 AGP / KGP。
+// 两者由项目根目录的 android/settings.gradle.kts（pluginManagement）统一提供（AGP 9.1.0 / Kotlin 2.4.0）。
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'   // ← 关键：无条件应用 Kotlin 插件
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+android {
+    // 跟着 app 的 compileSdk 走（app 现在是 37）；用 Flutter 提供的扩展变量，不写死
+    compileSdk flutter.compileSdkVersion
+
+    namespace 'com.mr.flutter.plugin.filepicker'
+
+    defaultConfig {
+        minSdk 21
+        consumerProguardFiles 'proguard-rules.pro'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    dependencies {
+        implementation 'androidx.core:core:1.15.0'
+        implementation 'androidx.annotation:annotation:1.9.1'
+        implementation 'androidx.lifecycle:lifecycle-runtime:2.8.7'
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.15.0'
+}
+
+// Java 与 Kotlin 的 jvmTarget 必须一致，否则 AGP 会报 "Inconsistent JVM-target compatibility"。
+// 用 KGP 2.x 的新 DSL（compilerOptions）；老写法 kotlinOptions{} 在 Kotlin 2.4 上已被弃用/移除。
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}

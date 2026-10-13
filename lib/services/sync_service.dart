@@ -14,6 +14,7 @@ import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
 import 'attendance_sync.dart';
 import 'order_sync.dart';
+import 'store_settings_sync.dart';
 import 'supabase_rest.dart';
 
 /// 同步状态（设置页显示用）。
@@ -42,6 +43,46 @@ class SyncStatus {
     this.pushed = 0,
     this.pulled = 0,
   });
+}
+
+/// **云端那份菜单**的摘要（设置页显示用）。
+///
+/// 为什么要给用户看这个：菜单和订单/店级配置是**各走各的**三条线 ——
+/// 菜单按「版本号」同步，而店级配置里**不含菜品**。真实踩过：
+/// 在收银机上重新导入 Excel（菜里带了新的「基础数量」），再点「上传本机配置」，
+/// 以为平板就能拿到 —— 结果平板上的菜单还是旧的那份（没有 `minQuantity`），
+/// 「2 份起」自然不生效。有这行摘要，一眼就能比出「本机 3 道几份起 / 云端 0 道」。
+class CloudMenuInfo {
+  /// 服务器上的菜单版本号（每次上传 +1，设备比它决定要不要拉）。
+  final int version;
+
+  /// 云端菜单里有几道菜。
+  final int itemCount;
+
+  /// 其中**几份起**（`minQuantity > 1`）的有几道。
+  final int minQtyCount;
+
+  const CloudMenuInfo({
+    required this.version,
+    required this.itemCount,
+    required this.minQtyCount,
+  });
+
+  /// 从 `menu` 表那一行算出来（**只数 JSON 里的条数**，不建模型 —— 每趟同步都会调）。
+  factory CloudMenuInfo.fromRow(Map<String, dynamic> row) {
+    final data = row['data'];
+    final items = (data is Map ? data['items'] : null);
+    final list = items is List ? items : const [];
+    var minQty = 0;
+    for (final it in list) {
+      if (it is Map && ((it['minQuantity'] as num?)?.toInt() ?? 1) > 1) minQty++;
+    }
+    return CloudMenuInfo(
+      version: (row['version'] as num?)?.toInt() ?? 0,
+      itemCount: list.length,
+      minQtyCount: minQty,
+    );
+  }
 }
 
 /// **后台同步**：把本机的单子和菜单同步到 Supabase（云端），
@@ -101,6 +142,18 @@ class SyncService extends ChangeNotifier {
   /// 才会存在（404）。没建好**不能**把订单/菜单的同步一起搞挂 ——
   /// 收银照常，只是状态栏提醒一句。
   String? _attendanceWarning;
+
+  /// 这一趟「店级配置」同步的结果说明（值是一个 `L10n.t()` 的 key）；正常为 null。
+  ///
+  /// 为什么单独一个字段：**表还没建（404）不能算同步失败** ——
+  /// 订单/菜单/考勤都照常，只是提醒一句（跟 [_attendanceWarning] 一个思路，
+  /// 区别是这个不写进 `status.error`，因为它不是错误）。
+  String? _settingsNote;
+
+  /// **手动**菜单同步（上传 / 下载）的结果说明（`L10n.t()` 的 key）；正常为 null。
+  ///
+  /// 跟 [_settingsNote] 一个套路：菜单表没建 / 云端还没有菜单都不算「同步失败」。
+  String? _menuNote;
 
   SyncStatus _status = const SyncStatus();
   SyncStatus get status => _status;
@@ -191,7 +244,7 @@ class SyncService extends ChangeNotifier {
     super.dispose();
   }
 
-  /// 设置改了（设备名 / 开关 / 账号）时调用。
+  /// 设置改了（设备名 / 开关 / 账号 / 店级配置）时调用。
   void onSettingsChanged() {
     pos.deviceId = deviceName;
     if (_settings.syncEnabled) {
@@ -201,8 +254,22 @@ class SyncService extends ChangeNotifier {
       _timer = null;
     }
     _refreshPending();
+    // 店级配置（店名 / 税率 / 货币 / 桌号 / 备注 / 日结支出…）改了就顺手推一趟。
+    // 判断靠「和上次同步的内容比」——所以改打印机地址这种本机专属设置
+    // **不会**白白触发一次上传（那些字段不参与同步，见 StoreSettingsSync.toData）。
+    if (settingsPending) _scheduleSync();
+
+    // 刚把"缺的那一项"补齐（地址 / key / 邮箱 / 密码，通常是新设备上刚输的密码）
+    // → 不用等下一个 25 秒，2 秒后就同步一次。
+    final incomplete = syncBlockedReason != null;
+    if (_configWasIncomplete && !incomplete) _scheduleSync();
+    _configWasIncomplete = incomplete;
+
     notifyListeners();
   }
+
+  /// 上一次看到的"同步配置是不是还不齐"（用来发现用户刚把密码填上）。
+  bool _configWasIncomplete = false;
 
   /// 防抖用的定时器：本地一变就重排一个「2 秒后同步」（见 [_scheduleSync]）。
   Timer? _debounce;
@@ -224,6 +291,36 @@ class SyncService extends ChangeNotifier {
 
   /// 菜单有没有还没推上去的改动（设置页显示用）。
   bool get menuPending => _settings.menuDirty;
+
+  /// **手动**菜单同步（上传 / 下载）的结果说明（`L10n.t()` 的 key）；正常为 null。
+  String? get menuNote => _menuNote;
+
+  /// 本机菜单的摘要（设置页显示用）：**道菜数 + 有几道是「几份起」**。
+  ///
+  /// 「几份起」那道数很重要：菜单同步出问题时，一眼就能看出
+  /// 「本机 3 道 / 云端 0 道」——说明弹性数量（`minQuantity`）根本没传到这台设备上。
+  ({int items, int minQty}) get localMenuSummary => (
+        items: pos.menu.length,
+        minQty: pos.menu.where((m) => m.hasMinQuantity).length,
+      );
+
+  /// **云端**那份菜单的摘要（版本号 / 道菜数 / 有几道「几份起」）。
+  ///
+  /// 每次同步读到 `menu` 表那一行就顺手更新（只数 JSON 里的条数，不建模型，很便宜）。
+  /// 从没读到过（没同步过 / 表没建）就是 null。
+  CloudMenuInfo? _cloudMenu;
+  CloudMenuInfo? get cloudMenu => _cloudMenu;
+
+  /// **店级配置**有没有本机改动还没推上去（设置页显示用）。
+  ///
+  /// 判断方式：把当前店级配置序列化成 JSON，和「上次同步时服务器上的内容」比。
+  /// 从没同步过（[Settings.storeSettingsSyncedJson] 为空）→ **不算本机改动** ——
+  /// 新设备第一次接入时以服务器那份为准（这正是"换台平板就自动拿到旧配置"的关键）。
+  bool get settingsPending =>
+      StoreSettingsSync.hasLocalChanges(_settings, _settings.storeSettingsSyncedJson);
+
+  /// 这一趟对店级配置做了什么（值是 `L10n.t()` 的 key；null = 这一趟没动它）。
+  String? get settingsNote => _settingsNote;
 
   /// 本地**员工名单**改了（加/删/改名/改 PIN）→ 标脏 + 防抖推。
   void onLocalStaffChanged() {
@@ -302,6 +399,11 @@ class SyncService extends ChangeNotifier {
   Future<void> syncNow() async {
     if (_status.busy) return;
     if (!_settings.syncEnabled) return;
+    // 还没填登录密码 → **静默跳过**。
+    // 为什么：开关现在是默认打开的（URL/key/邮箱都有预填值），
+    // 不挡住的话每 25 秒就会试一次登录、报一次「Invalid login credentials」，
+    // 既吓人又可能撞上 Supabase 的登录限流。设置页那行橙字会提示"还没填登录密码"。
+    if (_settings.syncPassword.isEmpty) return;
     final rest = _client;
     if (rest == null) return;
 
@@ -319,6 +421,7 @@ class SyncService extends ChangeNotifier {
     ({int pushed, int pulled}) result;
     _skippedBadRows = 0;
     _attendanceWarning = null;
+    _settingsNote = null;
     try {
       result = await _syncAll(rest);
     } on SupabaseError catch (e, st) {
@@ -458,6 +561,17 @@ class SyncService extends ChangeNotifier {
           ? L10n.t('sync.attendanceTableMissing')
           : '${L10n.t('sync.error')}: ${e.message}';
       debugPrint('考勤同步跳过：${e.message}');
+    }
+
+    // ---- 5) 店级配置（店名 / 地址 / 税 / 货币 / 桌号 / 备注 / 日结支出）----
+    // 新设备第一次接入就是靠这一步把"这家店怎么配置"拿回来的。
+    // 同样「尽力而为」：表没建好（404）只记一句提醒，不影响订单/菜单（收银优先）。
+    try {
+      await _syncSettings(rest);
+    } on SupabaseError catch (e) {
+      if (e.statusCode != 404) rethrow;
+      _settingsNote = 'sync.settingsTableMissing';
+      debugPrint('店级配置同步跳过：${e.message}');
     }
 
     return (pushed: pushed, pulled: incoming.length);
@@ -670,9 +784,13 @@ class SyncService extends ChangeNotifier {
     final rows = await rest.select('menu', filters: {'id': 'eq.current'});
     if (rows.isEmpty) {
       // 服务器上还没有菜单 → 把本地的推上去（第一次接入时用）
-      await _pushMenu(rest);
+      final back = await _pushMenu(rest);
+      _cloudMenu = back == null ? null : CloudMenuInfo.fromRow(back);
       return;
     }
+    // 顺手记下云端那份的摘要：设置页要显示「云端：v5 · 128 道菜 · 3 道几份起」，
+    // 好跟本机那份对一眼（菜单同步出问题时全靠这一行定位）
+    _cloudMenu = CloudMenuInfo.fromRow(rows.first);
     final serverVersion = (rows.first['version'] as num?)?.toInt() ?? 0;
     final localVersion = _settings.menuVersion;
 
@@ -703,7 +821,10 @@ class SyncService extends ChangeNotifier {
     }
   }
 
-  Future<void> _pushMenu(SupabaseRest rest) async {
+  /// 把本机菜单推到 `menu` 表（只有一行 `id = 'current'`）。
+  ///
+  /// 返回服务器回给我们的那一行（拿它的 `version`）；没回包就是 null。
+  Future<Map<String, dynamic>?> _pushMenu(SupabaseRest rest) async {
     final data = pos.menuSnapshot();
     final back = await rest.upsert('menu', [
       {
@@ -714,11 +835,267 @@ class SyncService extends ChangeNotifier {
         },
       }
     ]);
-    final version =
-        back.isEmpty ? null : (back.first['version'] as num?)?.toInt();
+    final row = back.isEmpty ? null : back.first;
+    final version = (row?['version'] as num?)?.toInt();
     _settings.menuVersion = version ?? _settings.menuVersion + 1;
     _settings.menuDirty = false;
     await settingsCtl.persist();
+    return row;
+  }
+
+  // ---------------- 菜单（手动上传 / 下载）----------------
+
+  /// **手动**：把本机菜单上传到云端（覆盖服务器那份）。**不看版本号**。
+  ///
+  /// 什么时候用：本机这份才是对的（例如刚重新导入过 Excel，菜里带了「基础数量」），
+  /// 但云端被别的设备的旧菜单占着 —— 自动同步那套规矩（谁版本高听谁的）掰不过来。
+  Future<bool> pushMenu() async {
+    final rest = _client;
+    if (rest == null) {
+      _fail('还没填后台地址 / anon key / 登录邮箱');
+      return false;
+    }
+    try {
+      await _ensureSignedIn(rest);
+      final row = await _pushMenu(rest);
+      // 刚推上去的那份内容 = 本机这份，所以云端摘要直接按本机算（只从回包里取版本号）——
+      // 不依赖服务器有没有把 `data` 回给我们
+      final s = localMenuSummary;
+      _cloudMenu = CloudMenuInfo(
+        version: (row?['version'] as num?)?.toInt() ?? _settings.menuVersion,
+        itemCount: s.items,
+        minQtyCount: s.minQty,
+      );
+      _menuNote = 'sync.menuPushed';
+      notifyListeners();
+      return true;
+    } on SupabaseError catch (e, st) {
+      if (e.statusCode != 404) {
+        _fail(e, st);
+        return false;
+      }
+      _menuNote = 'sync.menuTableMissing';
+      notifyListeners();
+      return false;
+    } catch (e, st) {
+      _fail(e, st);
+      return false;
+    }
+  }
+
+  /// **手动**：从云端下载菜单（覆盖本机那份）。**不看版本号**。
+  ///
+  /// 什么时候用：这台设备的菜单是旧的（换设备 / 新装的平板），
+  /// 自动同步又因为「本机也标了要上传」这类状态没拉下来 —— 一刀切地以云端为准。
+  Future<bool> pullMenu() async {
+    final rest = _client;
+    if (rest == null) {
+      _fail('还没填后台地址 / anon key / 登录邮箱');
+      return false;
+    }
+    try {
+      await _ensureSignedIn(rest);
+      final rows = await rest.select('menu', filters: {'id': 'eq.current'});
+      if (rows.isEmpty) {
+        // 云端还没有：提示"先在一台设备上点上传本机菜单"
+        _cloudMenu = null;
+        _menuNote = 'sync.menuEmpty';
+        notifyListeners();
+        return false;
+      }
+      final info = CloudMenuInfo.fromRow(rows.first);
+      final raw = rows.first['data'];
+      if (raw is! Map) {
+        _menuNote = 'sync.menuBadData';
+        notifyListeners();
+        return false;
+      }
+      MenuData parsed;
+      try {
+        parsed = _menuDataFromJson(raw.cast<String, dynamic>());
+      } catch (e) {
+        debugPrint('手动下载菜单：云端数据解析失败：$e');
+        _menuNote = 'sync.menuBadData';
+        notifyListeners();
+        return false;
+      }
+      // 云端那份是空的（被人手改过之类）→ **不能**拿它把本机菜单清空
+      if (parsed.items.isEmpty) {
+        _menuNote = 'sync.menuBadData';
+        notifyListeners();
+        return false;
+      }
+      pos.replaceMenuFromServer(parsed);
+      _settings.menuVersion = info.version;
+      _settings.menuDirty = false;
+      await settingsCtl.persist();
+      _cloudMenu = info;
+      _menuNote = 'sync.menuPulled';
+      notifyListeners();
+      return true;
+    } on SupabaseError catch (e, st) {
+      if (e.statusCode != 404) {
+        _fail(e, st);
+        return false;
+      }
+      _menuNote = 'sync.menuTableMissing';
+      notifyListeners();
+      return false;
+    } catch (e, st) {
+      _fail(e, st);
+      return false;
+    }
+  }
+
+  // ---------------- 店级配置（store_settings）----------------
+
+  /// **店级配置同步**：表 `store_settings` 永远只有一行（`id = 'current'`）。
+  ///
+  /// 规则（关键在"本机改没改"怎么判断）：
+  /// 1. 服务器上**还没有**这一行 → 只有本机**真的配置过**（不是出厂默认值）才推上去当初始值。
+  ///    这条保护很重要：新装的平板里全是默认值，不该抢先把自己的默认配置写成"全店配置"
+  ///    （万一平板先跑、收银机后跑，也不会把收银机真正的店名/备注盖掉）；
+  /// 2. 本机改过（当前内容和「上次同步的内容」不一样）→ 推本机（后改的赢，跟菜单一个规矩）；
+  /// 3. 其它情况（服务器版本更高，**或本机从来没同步过**）→ 拉下来覆盖本机 ——
+  ///    新设备第一次接入就走这条：店名 / 地址 / 税率 / 货币 / 桌号 / 备注 / 日结支出 一次拿到。
+  Future<void> _syncSettings(SupabaseRest rest) async {
+    final rows = await rest.select(
+      'store_settings',
+      filters: {'id': 'eq.${StoreSettingsSync.rowId}'},
+    );
+
+    if (rows.isEmpty) {
+      // 云端还没有这份配置：出厂默认值就没什么好推的（也顺便避免了上面第 1 条那个坑）
+      if (StoreSettingsSync.isPristine(_settings)) return;
+      await _pushSettings(rest, StoreSettingsSync.encode(_settings));
+      _settingsNote = 'sync.settingsPushed';
+      return;
+    }
+
+    final data = StoreSettingsSync.dataFromRow(rows.first);
+    if (data == null) {
+      // 服务器上那一行被人手改坏了 → 跳过，**不能**拿它覆盖本机配置
+      _skippedBadRows++;
+      debugPrint('后台同步：服务器上的店级配置数据不完整，已跳过');
+      return;
+    }
+    final serverVersion = (rows.first['version'] as num?)?.toInt() ?? 0;
+
+    if (StoreSettingsSync.hasLocalChanges(
+        _settings, _settings.storeSettingsSyncedJson)) {
+      await _pushSettings(rest, StoreSettingsSync.encode(_settings));
+      _settingsNote = 'sync.settingsPushed';
+      return;
+    }
+
+    if (serverVersion > _settings.storeSettingsVersion ||
+        _settings.storeSettingsSyncedJson.isEmpty) {
+      await _applySettings(data, serverVersion);
+      _settingsNote = 'sync.settingsPulled';
+    }
+  }
+
+  /// 把本机店级配置推上去，并把「版本号 / 服务器上现在是什么内容」记回本地。
+  Future<void> _pushSettings(SupabaseRest rest, String localJson) async {
+    final back = await rest.upsert('store_settings', [
+      StoreSettingsSync.toRow(_settings, deviceId: deviceName),
+    ]);
+    final version =
+        back.isEmpty ? null : (back.first['version'] as num?)?.toInt();
+    _settings.storeSettingsVersion =
+        version ?? _settings.storeSettingsVersion + 1;
+    // 基线记**发出去的那份字符串**（不是重新 encode 一遍），这样和服务器上的内容严格对应。
+    _settings.storeSettingsSyncedJson = localJson;
+    await settingsCtl.persist();
+  }
+
+  /// 用服务器那份覆盖本机的**店级**配置。
+  ///
+  /// 打印机地址 / 纸宽 / 小票编码 / 后台账号这些**本机专属**的字段一个字都不动。
+  Future<void> _applySettings(
+      Map<String, dynamic> data, int serverVersion) async {
+    await settingsCtl.update((s) {
+      StoreSettingsSync.applyTo(s, data);
+      s.storeSettingsVersion = serverVersion;
+      // 基线取「把服务器那份应用之后的本机内容」：服务器上可能有我们不认识的键、
+      // 也可能少几个键（被本机默认值补上）——这样下次同步才不会误判成"本机改过"
+      // 而反复推上去（两台设备互相顶版本号，永远同步不完）。
+      s.storeSettingsSyncedJson = StoreSettingsSync.encode(s);
+    });
+  }
+
+  /// **手动**：把本机的店级配置上传到云端（覆盖服务器那份）。
+  ///
+  /// 什么时候用：云端被"先跑的那台设备"的配置占了、但本机这份才是全店该用的配置。
+  Future<bool> pushStoreSettings() async {
+    final rest = _client;
+    if (rest == null) {
+      _fail('还没填后台地址 / anon key / 登录邮箱');
+      return false;
+    }
+    try {
+      await _ensureSignedIn(rest);
+      await _pushSettings(rest, StoreSettingsSync.encode(_settings));
+      _settingsNote = 'sync.settingsPushed';
+      notifyListeners();
+      return true;
+    } on SupabaseError catch (e, st) {
+      if (e.statusCode != 404) {
+        _fail(e, st);
+        return false;
+      }
+      _settingsNote = 'sync.settingsTableMissing';
+      notifyListeners();
+      return false;
+    } catch (e, st) {
+      _fail(e, st);
+      return false;
+    }
+  }
+
+  /// **手动**：从云端恢复店级配置（覆盖本机）。
+  ///
+  /// 什么时候用：新设备已经同步过一次但配置看着不对，或者想强制"以云端为准"。
+  Future<bool> pullStoreSettings() async {
+    final rest = _client;
+    if (rest == null) {
+      _fail('还没填后台地址 / anon key / 登录邮箱');
+      return false;
+    }
+    try {
+      await _ensureSignedIn(rest);
+      final rows = await rest.select(
+        'store_settings',
+        filters: {'id': 'eq.${StoreSettingsSync.rowId}'},
+      );
+      if (rows.isEmpty) {
+        // 云端还没有：提示"先在一台设备上点上传本机配置"
+        _settingsNote = 'sync.settingsEmpty';
+        notifyListeners();
+        return false;
+      }
+      final data = StoreSettingsSync.dataFromRow(rows.first);
+      if (data == null) {
+        _settingsNote = 'sync.settingsBadData';
+        notifyListeners();
+        return false;
+      }
+      await _applySettings(data, (rows.first['version'] as num?)?.toInt() ?? 0);
+      _settingsNote = 'sync.settingsPulled';
+      notifyListeners();
+      return true;
+    } on SupabaseError catch (e, st) {
+      if (e.statusCode != 404) {
+        _fail(e, st);
+        return false;
+      }
+      _settingsNote = 'sync.settingsTableMissing';
+      notifyListeners();
+      return false;
+    } catch (e, st) {
+      _fail(e, st);
+      return false;
+    }
   }
 
   /// **重置同步状态**：忘了登录态、把所有本地单和菜单重新标成「要推」，
@@ -726,6 +1103,9 @@ class SyncService extends ChangeNotifier {
   ///
   /// 什么时候用：换了后台项目 / 账号密码不对一直失败 / 数据看着不同步想重来一遍。
   /// **只动同步标记，不删单子、不改金额。**
+  ///
+  /// 注意：**店级配置不在这里重置**（它没有"脏标记"，而是每次同步拿内容和服务器那份比）。
+  /// 想强制覆盖某一头，用设置页那两颗按钮：「上传本机配置」/「从云端恢复配置」。
   Future<void> resetSyncState() async {
     _settings.syncRefreshToken = '';
     _settings.menuVersion = 0;

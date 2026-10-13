@@ -14,10 +14,13 @@ import 'settings_screen.dart';
 
 /// 主页外壳：底部 4 个标签（点单 / 订单 / 签到 / 设置）。
 ///
-/// **权限**：「设置」是管理员的地方（打印机、税、桌号、菜单、账号…），
-/// 收银员点它会要求输**管理员密码**（输对后本次会话临时提权）。
-/// 点单、订单、签到三页收银员都能随便用（签到页里「看考勤/管员工」那一半
-/// 另有管理员门禁；删历史订单也另有门禁）。
+/// **权限**：
+/// - 「设置」是管理员的地方（打印机、税、桌号、菜单、账号…），
+///   普通店员点它会要求输**管理员密码**（输对后本次会话临时提权）；
+/// - 「签到」这一页**所有账号都能进**：能打卡、能看今日打卡的人；
+///   里面的**每周考勤**和**员工管理**要点开时才要管理员密码
+///   （见 `attendance_screen.dart` 的 `_adminLockedCard` / `requireAdmin`）；
+/// - 点单、订单两页也都能随便用（删历史订单另有管理员门禁）。
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
@@ -39,7 +42,8 @@ class _HomeShellState extends State<HomeShell> {
         // 不写 const：语言切换时需要整棵界面重建，让 L10n.t 重新取文案
         children: [
           PosScreen(),
-          OrdersScreen(),
+          // 订单页点一张进行中的单 → 切回「点单」页改它（见 OrdersScreen.onOpenPos）
+          OrdersScreen(onOpenPos: () => setState(() => _index = 0)),
           AttendanceScreen(),
           SettingsScreen(),
         ],
@@ -56,7 +60,7 @@ class _HomeShellState extends State<HomeShell> {
             icon: const Icon(Icons.receipt_long),
             label: L10n.t('nav.orders'),
           ),
-          // 员工签到：收银员也能用（不受管理员限制），所以放在「设置」前面
+          // 员工签到：所有账号都能用（打卡 + 今日打卡的人）；管理员那一半另有门禁
           NavigationDestination(
             icon: const Icon(Icons.how_to_reg_outlined),
             label: L10n.t('nav.attendance'),

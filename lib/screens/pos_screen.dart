@@ -12,7 +12,7 @@ import '../widgets/payment_flow.dart';
 
 /// 点单主界面（Loyverse 风格）。
 ///
-/// - 宽屏（收银机）：左边 60% 点菜、右边 40% **常驻购物车**。
+/// - 宽屏（收银机）：左边 70% 点菜、右边 30% **常驻购物车**（7 : 3）。
 ///   **桌号 / 外卖在购物车顶部的下拉里选**（有菜的桌子用橙色标出）。
 /// - 窄屏（手机）：菜单 + 底部购物车栏（点开弹窗，里面同样是那个下拉）。
 ///
@@ -28,13 +28,15 @@ class PosScreen extends StatelessWidget {
     final settings = context.watch<SettingsController>().settings;
     final pos = context.watch<PosController>();
 
-    // 标题顺便显示当前桌/外卖，避免看错桌
+    // 标题顺便显示当前桌/外卖（有名字/号也带上），避免看错单
+    final open = pos.openOrderForSelectedTable();
+    final tag = open?.takeawayTag ?? '';
     final target = !pos.hasTableSelected
         ? ''
         : pos.isPhoneTakeaway
-            ? ' · ${L10n.t('order.phonecallTakeaway')}'
+            ? ' · ${L10n.t('order.phonecallTakeaway')}${tag.isEmpty ? '' : ' $tag'}'
             : pos.isTakeaway
-                ? ' · ${L10n.t('order.takeaway')}'
+                ? ' · ${L10n.t('order.takeaway')}${tag.isEmpty ? '' : ' $tag'}'
                 : ' · ${L10n.t('order.table')} ${pos.selectedTable}';
 
     return Scaffold(
@@ -52,10 +54,11 @@ class PosScreen extends StatelessWidget {
           if (constraints.maxWidth >= 800) {
             return Row(
               children: [
-                const Expanded(flex: 6, child: MenuArea()),
+                // 7 : 3 —— 点菜区给大（菜名看得清、一屏放得下更多菜），购物车窄一点够用
+                const Expanded(flex: 7, child: MenuArea()),
                 const VerticalDivider(width: 1),
                 Expanded(
-                  flex: 4,
+                  flex: 3,
                   child: CartPanel(
                     onSave: () => saveOrderFlow(context),
                     onKitchen: () => kitchenOrderFlow(context),

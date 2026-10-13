@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:big_boss_bro/data/sample_menu.dart';
 import 'package:big_boss_bro/models/employee.dart';
+import 'package:big_boss_bro/models/menu_item.dart';
 import 'package:big_boss_bro/models/order.dart';
 import 'package:big_boss_bro/services/sync_service.dart';
 import 'package:big_boss_bro/state/attendance_controller.dart';
@@ -379,6 +380,126 @@ void main() {
     expect(s.pos.menu.map((m) => m.name), contains('后台加的菜'));
     expect(s.pos.categories.map((c) => c.name), contains('后台加的类'));
     expect(s.settings.settings.menuVersion, 7);
+  });
+
+  // ---- 菜单的**手动**上传 / 下载（设置 → 后台同步 里那两颗按钮）----
+  //
+  // 为什么单独测：菜单和店级配置是**两条线**，而「上传本机配置」**不含菜品** ——
+  // 真实踩过：收银机重新导入 Excel（菜里带了「基础数量」）后点「上传本机配置」，
+  // 以为平板就拿到了，结果平板上还是旧菜单、「N 份起」不生效。这两颗按钮就是那条退路。
+
+  test('菜单摘要：数得出道菜数和「几份起」的道数（minQuantity > 1）', () {
+    final info = CloudMenuInfo.fromRow({
+      'version': 5,
+      'data': {
+        'items': [
+          {'id': 'a', 'minQuantity': 2},
+          {'id': 'b'},
+          {'id': 'c', 'minQuantity': 1},
+          {'id': 'd', 'minQuantity': 4},
+        ],
+      },
+    });
+    expect(info.version, 5);
+    expect(info.itemCount, 4);
+    expect(info.minQtyCount, 2, reason: '只有 2 和 4 算「几份起」');
+  });
+
+  test('手动上传菜单：POST 到 menu 表、脏标记清掉、云端摘要按本机算', () async {
+    final s = await setup(defaultHandler);
+    s.pos.addMenuItem(
+        const MenuItem(
+          id: 'x1',
+          name: '套餐',
+          price: 260,
+          emoji: '',
+          categoryId: 'c1',
+          minQuantity: 2,
+        ),
+      );
+    expect(s.sync.localMenuSummary.minQty, 1);
+
+    final ok = await s.sync.pushMenu();
+
+    expect(ok, isTrue);
+    expect(s.sync.status.error, isNull);
+    expect(
+      s.seen.any((r) => r.url.path == '/rest/v1/menu' && r.method == 'POST'),
+      isTrue,
+    );
+    expect(s.settings.settings.menuDirty, isFalse);
+    expect(s.sync.menuNote, 'sync.menuPushed');
+    expect(s.sync.cloudMenu, isNotNull);
+    expect(s.sync.cloudMenu!.minQtyCount, 1,
+        reason: '刚推上去的那份就是本机这份');
+  });
+
+  test('手动下载菜单：不看版本号，本机菜单直接换成云端那份（连 minQuantity 一起）',
+      () async {
+    final s = await setup((req) async {
+      if (req.url.path == '/rest/v1/menu' && req.method == 'GET') {
+        return json([
+          {
+            'id': 'current',
+            'version': 3,
+            'updated_at': '2026-09-20T12:00:00Z',
+            'data': {
+              'categories': [
+                {'id': 'c1', 'name': 'Paquete', 'emoji': '', 'colorValue': 0},
+              ],
+              'items': [
+                {
+                  'id': 'p1',
+                  'name': 'Paquete Familiar #1',
+                  'price': 260,
+                  'emoji': '',
+                  'categoryId': 'c1',
+                  'options': [],
+                  'unit': '',
+                  'minQuantity': 2,
+                }
+              ],
+            },
+          }
+        ]);
+      }
+      return defaultHandler(req);
+    });
+    // 本机是一份**旧**菜单（还没同步过，version 0），本地也标了「要上传」——
+    // 自动同步那套规矩这时候会先推本机，就得靠这颗按钮一刀切
+    s.settings.settings.menuDirty = true;
+
+    final ok = await s.sync.pullMenu();
+
+    expect(ok, isTrue);
+    expect(s.sync.menuNote, 'sync.menuPulled');
+    final item = s.pos.menu.firstWhere((m) => m.name == 'Paquete Familiar #1');
+    expect(item.minQuantity, 2, reason: '「几份起」要跟着菜单一起过来');
+    expect(item.hasMinQuantity, isTrue);
+    expect(s.settings.settings.menuVersion, 3);
+    expect(s.settings.settings.menuDirty, isFalse);
+    expect(s.sync.cloudMenu!.version, 3);
+    expect(s.sync.cloudMenu!.minQtyCount, 1);
+  });
+
+  test('手动下载菜单：云端那份是空的 → 不覆盖本机，只记一句提醒', () async {
+    final s = await setup((req) async {
+      if (req.url.path == '/rest/v1/menu' && req.method == 'GET') {
+        return json([
+          {'id': 'current', 'version': 9, 'data': {'categories': [], 'items': []}}
+        ]);
+      }
+      return defaultHandler(req);
+    });
+    s.pos.addMenuItem(sampleMenu.first);
+    final before = s.pos.menu.length;
+
+    final ok = await s.sync.pullMenu();
+
+    expect(ok, isFalse);
+    expect(s.sync.menuNote, 'sync.menuBadData');
+    expect(s.pos.menu.length, before, reason: '本机菜单不能被清空');
+    expect(s.settings.settings.menuVersion, isNot(9));
   });
 
   test('access token 过期（401）：自动重登一次再同步，不用人工干预', () async {

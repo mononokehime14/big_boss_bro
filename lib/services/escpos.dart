@@ -4,11 +4,12 @@ import 'package:gbk_codec/gbk_codec.dart';
 
 /// 一行文字的放大方式 —— 直接对应 ESC/POS 的 `GS ! n`（0x1D 0x21 n）。
 ///
-/// 这里只开放三档（**厨师单字体大小**设置用这三档）：
-/// - [normal]：1×1，58mm 32 列 / 80mm 48 列；
-/// - [large]：1×2（**只加高**）—— 列数不变，**排版一个字符都不会错位**，推荐先用它；
+/// 厨师单上三档都用到了：
+/// - [normal]：1×1，58mm 32 列 / 80mm 48 列（虚线 / 表头 / 选项 / 备注）；
+/// - [large]：1×2（**只加高**）—— 列数不变，排版不会错位（标题「厨师单 N」）；
 /// - [xlarge]：2×2（双倍宽 + 双倍高）—— 每行列数**减半**（58mm 只剩 16 列），
-///   所以排版要用 [TicketScale.columnsFor] 换算，否则右边会被切掉。
+///   所以排版要用 [TicketScale.columnsFor] 换算，否则右边会被切掉
+///   （地点/外卖+时间、外卖名字、等待时间、**菜品行**）。
 enum TicketScale {
   normal(1, 1),
   large(1, 2),
@@ -22,18 +23,6 @@ enum TicketScale {
 
   const TicketScale(this.width, this.height);
 
-  /// 设置里的「厨师单字体大小」：1 = 正常，2 = 大，3 = 特大。
-  static TicketScale fromKitchenFontSize(int fontSize) {
-    switch (fontSize) {
-      case 2:
-        return TicketScale.large;
-      case 3:
-        return TicketScale.xlarge;
-      default:
-        return TicketScale.normal;
-    }
-  }
-
   /// 放大之后一行还放得下多少**字符列**（宽度倍数 2 时列数减半）。
   int columnsFor(int paperColumns) => paperColumns ~/ width;
 
@@ -46,6 +35,7 @@ enum TicketScale {
 /// - 普通行：给 [text]，按默认/指定 [codec] 编码。
 /// - 原始行：给 [raw]（已经是最终字节），用于需要精确控制指令的场景（如中文能力探测）。
 /// - [scale] 不是 [TicketScale.normal] 时，这一行前后会包上 `GS ! n`（放大）/ 复原指令。
+/// - [bold] 为 true 时，这一行前后包上 `ESC E 1` / `ESC E 0`（加粗）。
 class TicketLine {
   final String text;
   final String? codec;
@@ -54,11 +44,15 @@ class TicketLine {
   /// 这一行的字号（默认正常大小）。
   final TicketScale scale;
 
+  /// 这一行要不要加粗（默认不加粗）。
+  final bool bold;
+
   const TicketLine(
     this.text, {
     this.codec,
     this.raw,
     this.scale = TicketScale.normal,
+    this.bold = false,
   });
 }
 
@@ -113,6 +107,50 @@ List<int> doubleSizeBytes(String text) => <int>[
       0x1B, 0x21, 0x00, // 复位
     ];
 
+/// 厨师单的**默认行距（点）**。
+///
+/// 打印机自己的默认行距是 30~34 点（`ESC 2` = 1/6 英寸，Font A 字高 24 点）
+/// → 空隙只有约 10 点（1.2mm），几乎贴着打。
+///
+/// **这个值是厨师单松紧的总开关**，算法见 [buildEscPosBytes]：
+/// - 普通行 = 这个值；
+/// - 放大行 = 字高（24 × 高倍数）**再加上和普通行一样的空隙**（= 这个值 - 24）。
+///
+/// ⚠️ **实测结论：这个值在很多机器上根本不起作用** —— 只要那一行用了 `GS !` 放大，
+/// 固件就直接把行高定为「字高 × 倍数」，把 `ESC 3` 忽略掉（你这台就是这样：
+/// 48 改成 72 纸上完全没变化）。所以厨师单真正靠的是下面的 [kKitchenExtraFeedDots]。
+///
+/// 保留这个常量是因为：**认 `ESC 3` 的机器**上它仍然有用（普通行的行距）。
+/// 取值参考（1 点 ≈ 0.125mm @203dpi）：24 = 最紧；48 = 比默认透气；64 = 很宽松。
+const int kKitchenLineSpacingDots = 48;
+
+/// 厨师单**每一行之后再额外走纸的点数**（`ESC J n`）—— **这才是真正管用的"行距"旋钮**。
+///
+/// 为什么用它：`ESC J` 是"**直接走纸 n 点**"，跟字高、跟行距设置都无关，
+/// 所以哪怕那一行是放大字（`GS !`），也照样能被撑开 —— 不认 `ESC 3` 的机器也认它。
+///
+/// 取值（1 点 ≈ 0.125mm @203dpi）：**0 = 不加**（回到打印机原来的样子）；
+/// **16 = 当前值（≈2mm，看得出来变松）**；24 = 很宽松（≈3mm）。
+///
+/// 测试页里加了一段「LINE SPACING PROBE」，会分别用默认 / `ESC J` / `ESC 3`
+/// 各打两行 —— 一比就知道你这台机器认哪种（哪种的上下空隙更大）。
+const int kKitchenExtraFeedDots = 16;
+
+/// 厨师单的**菜品行要不要加粗**（`ESC E 1`）。
+///
+/// 加粗 + 双倍高，厨房隔着两米也看得清（参考图 `assets/sample_test_print.jpg`
+/// 里店名那行就是这种"加重"效果，`ESC E` 就是它）。
+/// 有些打印机加粗会显得发糊 → 把这行改成 `false` 就恢复普通字重。
+const bool kKitchenBoldItemNames = true;
+
+/// `ESC E n`：加粗（1 = 开，0 = 关）。参考图里店名那行就是这种"加重"的效果。
+List<int> emphasize(bool on) => <int>[0x1B, 0x45, on ? 1 : 0];
+
+/// `ESC J n`：**直接走纸 n 点**（不改行距设置，也跟字号无关）。
+///
+/// 撑开行距用这个最稳：连不认 `ESC 3` 的机器也认它。
+List<int> feedDots(int dots) => <int>[0x1B, 0x4A, dots];
+
 /// 把一行行文本编码成 ESC/POS 字节流（所有打印通道共用）。
 ///
 /// 指令说明：
@@ -121,21 +159,30 @@ List<int> doubleSizeBytes(String text) => <int>[
 ///                  若用 Font B（9×17），48 列只有 432 点 ≈ 60mm，纸宽就“没铺满”。
 /// - `1C 26`        `FS &` 进入**中文模式**（仅当编码为 gbk）。中文热敏机不加这一条会乱码。
 /// - `1B 61 00`     左对齐
+/// - `1B 33 n`      [lineSpacingDots] 不为空时，把行距设成 n 点。
+///                  ⚠️ 实测**很多机器在放大字（`GS !`）的行上忽略这条**，所以厨师单
+///                  主要靠下面的 [extraFeedDots]，这个参数是留给"认 ESC 3"的机器的。
+/// - `1B 4A n`      [extraFeedDots] > 0 时，**每一行之后再走纸 n 点** ——
+///                  这才是"看得见的行距"，跟字号/行距设置都无关，不认 `ESC 3` 的机器也认它。
 /// - 每行：按编码转字节 + 换行（带 [TicketLine.raw] 的行直接用原始字节）；
 ///   [TicketLine.scale] 非正常时，行首发 `ESC 3 n`（把行距撑到字高，否则下一行会
-///   压在放大后的字上）+ `GS ! n` 放大，换行后发 `GS ! 0` 复原 + `ESC 2` 行距复位
-///   （**复原一定要在换行之后**，否则这一行会按原大小打出来）。
+///   压在放大后的字上）+ `GS ! n` 放大，换行后发 `GS ! 0` 复原 + 行距复位
+///   （**复原一定要在换行之后**，否则这一行会按原大小打出来）；
+///   [TicketLine.bold] 时行首 `ESC E 1`、换行后 `ESC E 0`。
 /// - `1D 56 42 00`  半切纸
 List<int> buildEscPosBytes(
   List<TicketLine> lines, {
   String codec = 'gbk',
   bool fontA = true,
+  int? lineSpacingDots,
+  int extraFeedDots = 0,
 }) {
   final out = <int>[];
   out.addAll([0x1B, 0x40]); // 初始化
   if (fontA) out.addAll([0x1B, 0x4D, 0x00]); // ESC M 0 → Font A
   if (codec == 'gbk') out.addAll([0x1C, 0x26]); // FS & → 中文模式（GBK）
   out.addAll([0x1B, 0x61, 0x00]); // 左对齐
+  if (lineSpacingDots != null) out.addAll(setLineSpacing(lineSpacingDots));
 
   for (final line in lines) {
     final raw = line.raw;
@@ -144,16 +191,26 @@ List<int> buildEscPosBytes(
       continue;
     }
     final scale = line.scale;
-    if (scale != TicketScale.normal) {
-      out.addAll(lineSpacing(scale)); // ESC 3 n → 行距 = 字高
+    if (scale == TicketScale.normal) {
+      // 普通行：用基准行距（没设过就沿用打印机默认）
+      if (lineSpacingDots != null) out.addAll(setLineSpacing(lineSpacingDots));
+    } else {
+      out.addAll(lineSpacing(scale, baseDots: lineSpacingDots)); // ESC 3 n
       out.addAll(gsBang(scale)); // GS ! n → 放大
     }
+    if (line.bold) out.addAll(emphasize(true));
     out.addAll(encodeText(line.text, line.codec ?? codec));
     out.addAll([0x0A]); // 换行
+    if (line.bold) out.addAll(emphasize(false));
     if (scale != TicketScale.normal) {
       out.addAll(gsBang(TicketScale.normal)); // 字号复原
-      out.addAll([0x1B, 0x32]); // ESC 2 → 行距恢复默认（普通行不受影响）
+      // 行距复位：有自定义行距就回到自定义值，否则回到打印机默认（ESC 2）
+      out.addAll(lineSpacingDots == null
+          ? <int>[0x1B, 0x32]
+          : setLineSpacing(lineSpacingDots));
     }
+    // 每一行之后再额外走纸 —— 这才是"看得见的行距"（跟字号、行距设置都无关）
+    if (extraFeedDots > 0) out.addAll(feedDots(extraFeedDots));
   }
 
   out.addAll([0x0A, 0x0A]); // 底部留白
@@ -161,15 +218,26 @@ List<int> buildEscPosBytes(
   return out;
 }
 
+/// `ESC 3 n`：把行距设成 n 点（24 点 = Font A 一倍字高，30 点 = 打印机默认）。
+List<int> setLineSpacing(int dots) => <int>[0x1B, 0x33, dots];
+
 /// `GS ! n`：设置字符放大倍数（宽 × 高）。
 List<int> gsBang(TicketScale scale) => <int>[0x1D, 0x21, scale.gsBangParam];
 
-/// `ESC 3 n`：把行距设成 n 点。
+/// `ESC 3 n`：**放大行**的行距。
 ///
-/// Font A 一个字高 24 点，所以行距就取 `24 × 高度倍数`：
-/// 不设的话，有些机器打放大字时**下一行会压在它身上**（行距还是默认的 ~30 点）。
-List<int> lineSpacing(TicketScale scale) =>
-    <int>[0x1B, 0x33, 24 * scale.height];
+/// - 不给 [baseDots]：行距 = 字高（`24 × 高度倍数`）—— 只要保证下一行不压在放大字上。
+///   顾客小票走这条老路（行为不变）；
+/// - 给 [baseDots]（厨师单）：行距 = 字高 **+ 和普通行一样的空隙**（`baseDots - 24`）。
+///   为什么要这样：菜品行是双倍高，如果只按字高 48 点打，看起来比旁边普通行还挤，
+///   于是"把行距调大"就只对普通行有效、肉眼完全看不出来（真实踩过）。
+List<int> lineSpacing(TicketScale scale, {int? baseDots}) {
+  final glyph = 24 * scale.height; // 这一行的字高
+  if (baseDots == null) return <int>[0x1B, 0x33, glyph];
+  // 厨师单：字高 + 和普通行一样的空隙（baseDots - 24），保证普通行/放大行疏密一致
+  final gap = baseDots - 24;
+  return <int>[0x1B, 0x33, glyph + (gap > 0 ? gap : 0)];
+}
 
 /// 把一段文本按指定编码转成字节。
 List<int> encodeText(String text, String codec) {

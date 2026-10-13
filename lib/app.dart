@@ -156,20 +156,98 @@ class _AppShellState extends State<_AppShell> with WidgetsBindingObserver {
             GlobalWidgetsLocalizations.delegate,
             GlobalCupertinoLocalizations.delegate,
           ],
-          home: ValueListenableBuilder<String>(
-            valueListenable: L10n.lang,
-            builder: (context, _, __) => Consumer<AuthController>(
-              // 没登录 → 登录页；登录了 → 正常界面
-              //
-              // ⚠️ 这里**故意不写 `const HomeShell()`**：分析器会提示加 const，
-              // 但那样在切语言时 Flutter 会因为「widget 完全相同」而跳过整棵子树的重建，
-              // 界面上的文字就不会跟着语言变了。
-              builder: (authContext, auth, child) =>
-                  auth.isSignedIn ? HomeShell() : const LoginScreen(),
+          home: _SplashGate(
+            child: ValueListenableBuilder<String>(
+              valueListenable: L10n.lang,
+              builder: (context, _, __) => Consumer<AuthController>(
+                // 没登录 → 登录页；登录了 → 正常界面
+                //
+                // ⚠️ 这里**故意不写 `const HomeShell()` / `const LoginScreen()`**：
+                // 分析器会提示加 const，但那样在切语言时 Flutter 会因为「widget 完全相同」
+                // 而跳过整棵子树的重建，界面上的文字就不会跟着语言变了。
+                // （登录页那个语言按钮点了没反应，真因就是这个 —— 已踩过。）
+                builder: (authContext, auth, child) =>
+                    auth.isSignedIn ? HomeShell() : LoginScreen(),
+              ),
             ),
           ),
         );
       },
+    );
+  }
+}
+
+/// **启动画面**：白底 + 中文 logo（`assets/bbb_log_chinese.png`）。
+///
+/// 什么时候进主界面：`设置` 和 `账号` 都从本机读回来了，**并且**至少显示了
+/// [_minShow] 那么久。后者是为了让 logo 看得见 —— 本机读取只要几毫秒，
+/// 不压一下的话 logo 只闪一下，等于没有。
+///
+/// 想调长短就改 [_minShow]；不想要启动画面的话，把 `_AppShell.build()` 里的
+/// `home:` 恢复成直接的 `ValueListenableBuilder` 就行。
+class _SplashGate extends StatefulWidget {
+  final Widget child;
+  const _SplashGate({required this.child});
+
+  @override
+  State<_SplashGate> createState() => _SplashGateState();
+}
+
+class _SplashGateState extends State<_SplashGate> {
+  static const Duration _minShow = Duration(milliseconds: 1200);
+
+  bool _timeUp = false;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(_minShow, () {
+      if (mounted) setState(() => _timeUp = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 账号没读回来就进去的话会先闪一下登录页，设置没读回来界面会是默认值 —— 等它俩。
+    final ready = context.watch<SettingsController>().loaded &&
+        context.watch<AuthController>().loaded;
+    if (_timeUp && ready) return widget.child;
+    return const _SplashView();
+  }
+}
+
+/// 启动画面本体：一张 logo 居中（图里已经带了店招文字，不用另外加字）。
+class _SplashView extends StatelessWidget {
+  const _SplashView();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: Center(
+        // `cacheWidth`：原图 1254×1254，按显示宽度（380 逻辑像素 × 2 倍屏 = 760）
+        // 解码就够了 —— 解码后的内存从 ~6MB 降到 ~2MB，清晰度看不出来差别。
+        child: Padding(
+          // 手机那种窄屏：FittedBox 会自动缩小，不会撑破
+          padding: const EdgeInsets.all(24),
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Image.asset(
+              'assets/bbb_log_chinese.png',
+              width: 380,
+              cacheWidth: 760,
+              filterQuality: FilterQuality.medium,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

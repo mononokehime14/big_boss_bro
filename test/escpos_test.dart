@@ -84,8 +84,9 @@ void main() {
     });
   });
 
-  // 厨师单字体大小 = ESC/POS 的 `GS ! n`（0x1D 0x21 n）。
-  group('字号指令（厨师单字体大小）', () {
+  // 放大字 = ESC/POS 的 `GS ! n`（0x1D 0x21 n）—— 厨师单每行按自己的 `TicketScale` 发这个指令
+  //（菜品行固定特大、顶部各行见 `receipt_layout.dart`）。
+  group('放大指令 GS ! n', () {
     test('正常字号：不发 GS !（老行为一个字都不变）', () {
       final b = buildEscPosBytes([const TicketLine('AB')]);
       expect(_contains(b, [0x1D, 0x21]), isFalse);
@@ -116,13 +117,6 @@ void main() {
       expect(TicketScale.large.columnsFor(32), 32, reason: '只加高，列数不变');
       expect(TicketScale.xlarge.columnsFor(32), 16);
       expect(TicketScale.xlarge.columnsFor(48), 24);
-    });
-
-    test('设置里的 1/2/3 映射到三档字号', () {
-      expect(TicketScale.fromKitchenFontSize(1), TicketScale.normal);
-      expect(TicketScale.fromKitchenFontSize(2), TicketScale.large);
-      expect(TicketScale.fromKitchenFontSize(3), TicketScale.xlarge);
-      expect(TicketScale.fromKitchenFontSize(9), TicketScale.normal);
     });
   });
 }

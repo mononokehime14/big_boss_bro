@@ -108,6 +108,118 @@ void main() {
           throwsA(isA<MenuImportException>()));
     });
 
+    test('「基础数量」列：认出它并写进 minQuantity，**不能**被当成定制项', () {
+      // 真实场景：表里有 种类 / 菜名 / 基础价格 / **基础数量** / 定制项1 / 选项 / 选项价格
+      final rows = <List<String>>[
+        ['种类', '菜品名字', '基础价格', '基础数量', '个性化定制项1', '定制1选项', '定制1选项价格'],
+        ['Paquete', 'Paquete Familiar #1', '260', '2', 'Size', 'Mediano/Grande', '0/50'],
+        ['Arroz', 'Arroz con pollo', '100', '1', 'Size', 'Mediano/Grande', '0/50'],
+        // 最后一行：**基础数量留空**（不是每种菜都填），但一样有 Size 定制项
+        ['Arroz', 'Sin cantidad', '80', '', 'Size', 'Mediano/Grande', '0/50'],
+      ];
+      final r = MenuImporter.fromRows(rows);
+
+      // 关键回归：「基础数量」列**不能**被当成一组定制项
+      //（被误认时每组会多出「2 / Size」和「定制1选项 / 0/50」两组，这里就会挂）
+      expect(r.optionGroupCount, 3, reason: '三道菜各一组 Size，多出来就是把列认歪了');
+      for (final it in r.data.items) {
+        expect(it.options.length, 1, reason: '${it.name} 应该只有 Size 一组定制项');
+        expect(it.options.first.name, 'Size');
+        expect(it.options.first.name.contains('数量'), isFalse,
+            reason: '「基础数量」列被误当成定制项了');
+        expect(it.options.first.options, ['Mediano', 'Grande']);
+      }
+
+      expect(r.data.items[0].minQuantity, 2); // 2 份起
+      expect(r.data.items[1].minQuantity, 1);
+      expect(r.data.items[2].minQuantity, 1); // 空着 → 1
+      expect(r.data.items[0].hasMinQuantity, isTrue);
+      expect(r.data.items[1].hasMinQuantity, isFalse);
+      // 价格不受影响
+      expect(r.data.items[0].price, 260);
+    });
+
+    test('没有「基础数量」列时，minQuantity 一律是 1', () {
+      final rows = <List<String>>[
+        ['分类', '菜名', '价格'],
+        ['Arroz', 'A', '100'],
+      ];
+      final r = MenuImporter.fromRows(rows);
+      expect(r.data.items.first.minQuantity, 1);
+    });
+
+    test('「菜品昵称」列：认出来写进 nickName；**不能**被当成定制项', () {
+      // 真实表头顺序：种类 | 菜品名字 | 菜品昵称 | 基础价格 | 基础数量 | 定制项1 | 选项 | 选项价格
+      // ⚠️ 昵称列右边紧跟定制项，认漏了整张表的定制项都会歪（真实踩过）
+      final rows = <List<String>>[
+        ['种类', '菜品名字', '菜品昵称', '基础价格', '基础数量', '个性化定制项1', '定制1选项', '定制1选项价格'],
+        ['LONCHE', 'Lonche #1 Chop Suey de pollo', 'L #1', '160', '1', 'Size', 'Mediano/Grande', '140/185'],
+        ['LONCHE', 'Lonche #2 Pollo cantones', '', '160', '1', 'Size', 'Mediano/Grande', '140/185'],
+      ];
+      final r = MenuImporter.fromRows(rows);
+
+      expect(r.itemCount, 2);
+      // 昵称读到了
+      expect(r.data.items[0].nickName, 'L #1');
+      expect(r.data.items[0].displayName, 'L #1'); // 有昵称 → 显示昵称
+      // 空昵称 → 显示全名
+      expect(r.data.items[1].nickName, '');
+      expect(r.data.items[1].displayName, 'Lonche #2 Pollo cantones');
+      // 关键回归：昵称列没被当成一组定制项（每道菜只有 Size 一组）
+      for (final it in r.data.items) {
+        expect(it.options.length, 1, reason: '${it.name} 应该只有 Size 一组定制项');
+        expect(it.options.first.name, 'Size');
+        expect(it.options.first.name.contains('昵称'), isFalse,
+            reason: '「菜品昵称」列被误当成定制项了');
+        expect(it.options.first.options, ['Mediano', 'Grande']);
+      }
+      // 基础价没被昵称列带歪
+      expect(r.data.items[0].price, 160);
+    });
+
+    test('定制项**可以有三组**（昵称列存在时也不能漏）', () {
+      final rows = <List<String>>[
+        [
+          '种类', '菜品名字', '菜品昵称', '基础价格', '基础数量',
+          '个性化定制项1', '定制1选项', '定制1选项价格',
+          '个性化定制项2', '定制2选项', '定制2选项价格',
+          '个性化定制项3', '定制3选项', '定制3选项价格',
+        ],
+        [
+          'CALDOS', 'Caldo De Verdura', 'Caldo Verdura', '0', '1',
+          'Size', 'Chico/Mediano/Grande', '50/120/180',
+          'con Noodle', 'con Noodle', '50',
+          'con Hefen', 'con Hefen', '70',
+        ],
+      ];
+      final r = MenuImporter.fromRows(rows);
+
+      expect(r.optionGroupCount, 3, reason: '三组定制项都要认出来');
+      final it = r.data.items.single;
+      expect(it.nickName, 'Caldo Verdura');
+      expect(it.options.length, 3);
+      expect(it.options[0].name, 'Size');
+      expect(it.options[0].options, ['Chico', 'Mediano', 'Grande']);
+      expect(it.options[0].prices, [50, 120, 180]);
+      expect(it.options[1].name, 'con Noodle');
+      expect(it.options[1].options, ['con Noodle']);
+      expect(it.options[1].prices, [50]);
+      expect(it.options[2].name, 'con Hefen');
+      expect(it.options[2].prices, [70]);
+      // 三组都能加钱：基础价 0 + 三个选项
+      expect(it.unitPriceFor(['Grande', 'con Noodle', 'con Hefen']), 300);
+    });
+
+    test('没有昵称列时，nickName 空、displayName 回退到全名', () {
+      final rows = <List<String>>[
+        ['分类', '菜名', '价格'],
+        ['Arroz', 'Arroz con pollo', '100'],
+      ];
+      final r = MenuImporter.fromRows(rows);
+      expect(r.data.items.first.nickName, '');
+      expect(r.data.items.first.displayName, 'Arroz con pollo');
+    });
+
     test('每个分类都分到颜色，且**相邻分类颜色一定不同**', () {
       final rows = <List<String>>[
         ['分类', '菜名'],
@@ -162,7 +274,37 @@ void main() {
               reason: '价格列被误当成定制项了：${g.name}');
           expect(g.name.contains('选项'), isFalse,
               reason: '选项列被误当成定制项名了：${g.name}');
+          // 回归：表里新加的「基础数量」列**不能**被当成一组定制项
+          expect(g.name.contains('数量'), isFalse,
+              reason: '「基础数量」列被误当成定制项了：${g.name}');
+          // 回归：新加的「菜品昵称」列**也不能**被当成一组定制项
+          //（它的表头里有「菜品」两个字，而且右边紧跟定制项，认漏了整张表都会歪）
+          expect(g.name.contains('昵称'), isFalse,
+              reason: '「菜品昵称」列被误当成定制项了：${g.name}');
         }
+      }
+
+      // 「菜品昵称」列：有昵称的菜，displayName 用昵称；没昵称的用全名
+      final nicknamed =
+          r.data.items.where((it) => it.nickName.trim().isNotEmpty).toList();
+      expect(nicknamed, isNotEmpty, reason: '样例里有「菜品昵称」列，应该有菜带昵称');
+      for (final it in nicknamed) {
+        expect(it.displayName, it.nickName.trim());
+      }
+      for (final it in r.data.items.where((it) => it.nickName.trim().isEmpty)) {
+        expect(it.displayName, it.name, reason: '没昵称就应该显示全名');
+      }
+
+      // 定制项**不止一组**：样例里有定制项 1/2/3（三组），解析器要能全认出来
+      expect(r.data.items.any((it) => it.options.length >= 2), isTrue,
+          reason: '样例里有带多组定制项的菜');
+      expect(r.data.items.any((it) => it.options.length == 3), isTrue,
+          reason: '样例里有带三组定制项的菜（Size + con Noodle + con Hefen）');
+
+      // 「基础数量」列：每道菜至少 1 份起（没这一列时默认也是 1）
+      for (final it in r.data.items) {
+        expect(it.minQuantity, greaterThanOrEqualTo(1),
+            reason: '${it.name} 的最少份数不对');
       }
 
       // 抽查一道菜（VERDURA CANTONES，Vegetables）：一组 Size，**每个选项都带价格**

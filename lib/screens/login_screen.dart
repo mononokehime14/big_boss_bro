@@ -109,12 +109,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       child: Text(L10n.t('auth.signIn')),
                     ),
                     const SizedBox(height: 12),
-                    Text(
-                      L10n.t('auth.defaultHint'),
-                      textAlign: TextAlign.center,
-                      style:
-                          TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                    ),
                     const Divider(height: 28),
                     // 语言（被切成看不懂的语言时的救命按钮）
                     Wrap(

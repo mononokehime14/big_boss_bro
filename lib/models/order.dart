@@ -85,6 +85,15 @@ class OrderLine {
   /// 菜价的单位（Excel 里的「单位」列，例如 份 / 杯）；空 = 不显示。
   final String unit;
 
+  /// **菜品昵称**的快照（Excel 的「菜品昵称」列，例如 `L #1`）；空 = 没有昵称。
+  ///
+  /// - **点单界面 / 厨师单显示昵称**（员工看着顺口）；
+  /// - **顾客小票打全名**（[name]）—— 客人看到的必须跟菜单一致。
+  ///
+  /// 在这里存**快照**（而不是打印时去查菜单）：菜单改了之后，老单子上的名字
+  /// 也不应该跟着变（跟 [name] / [unitPrice] 一个道理）。
+  final String nickName;
+
   /// 这一行**是否已经下过厨房**（= 已经打给厨房了）。
   ///
   /// 购物车下面两个按钮的区别就在这个字段：
@@ -106,11 +115,18 @@ class OrderLine {
     this.options = const [],
     this.notes = const [],
     this.unit = '',
+    this.nickName = '',
     this.sentToKitchen = false,
   });
 
   /// 所有备注拼成一行（显示 / 打印用）。
   String get note => notes.join(' · ');
+
+  /// **员工看的那份名字**：有昵称就用昵称，没有就用全名。
+  ///
+  /// 用它的是：点单页购物车、厨师单。**顾客小票用 [name]**。
+  String get displayName =>
+      nickName.trim().isEmpty ? name : nickName.trim();
 
   double get subtotal => unitPrice * quantity;
 
@@ -130,6 +146,7 @@ class OrderLine {
     List<String>? options,
     List<String>? notes,
     String? unit,
+    String? nickName,
     bool? sentToKitchen,
   }) =>
       OrderLine(
@@ -140,6 +157,7 @@ class OrderLine {
         options: options ?? this.options,
         notes: notes ?? this.notes,
         unit: unit ?? this.unit,
+        nickName: nickName ?? this.nickName,
         sentToKitchen: sentToKitchen ?? this.sentToKitchen,
       );
 
@@ -151,6 +169,7 @@ class OrderLine {
         'options': options,
         'notes': notes,
         'unit': unit,
+        'nickName': nickName,
         'sentToKitchen': sentToKitchen,
       };
 
@@ -165,6 +184,8 @@ class OrderLine {
         // 备注：新格式是数组；老数据是单个字符串（`note`）
         notes: _notesFromJson(json),
         unit: (json['unit'] as String?) ?? '',
+        // 老数据没有昵称 → 空 = 显示全名
+        nickName: (json['nickName'] as String?) ?? '',
         // 老数据没有这个字段 → 当作「已经下过厨房」（那时候下单一律打厨房单）
         sentToKitchen: (json['sentToKitchen'] as bool?) ?? true,
       );
@@ -300,6 +321,28 @@ class Order {
   /// 桌号（餐厅自己定义，可为空；外卖为空）。
   final String table;
 
+  /// **外卖单的名字**（堂食恒为空）。
+  ///
+  /// 起名 = "保存这张外卖单"：起过名的外卖单会出现在桌号下拉的列表里，
+  /// 可以随时选回来继续加菜/改单（见 `PosController.openTakeawayOrders`）；
+  /// 结账后它就不再是"进行中"，自然从列表里消失。
+  ///
+  /// 空字符串 = 普通外卖单（每单独立、不列表，点完厨房直接结账就完事）。
+  final String label;
+
+  /// **当天第几号外卖**（外卖类型才有，1 开始；0 = 没有号，比如老数据）。
+  ///
+  /// 用来区分单子（外卖下拉列表 / 订单列表显示「外卖 #3」）；
+  /// **厨房单上**：外卖单**没起名字**时打的就是这个号（`#3`，特大字）；
+  /// 起过名字就打名字。见 `receipt_layout.dart` 的 `buildKitchenRows` ①b。
+  final int dailyNo;
+
+  /// **要等多久（分钟）**：主要给**电话外卖**用 —— 客人在电话里说"20 分钟后来拿"，
+  /// 保存这张单时填上，**厨房单会跟着打出来**（见 `receipt_layout.dart` 的 `buildKitchenRows`）。
+  ///
+  /// 0 = 没填（不打这一行）。
+  final int waitMinutes;
+
   /// 堂食 / 外卖。
   final OrderType orderType;
 
@@ -351,6 +394,9 @@ class Order {
     List<Payment>? payments,
     this.paymentMethod,
     this.table = '',
+    this.label = '',
+    this.dailyNo = 0,
+    this.waitMinutes = 0,
     this.orderType = OrderType.dineIn,
     this.status = OrderStatus.inProgress,
     this.closedAt,
@@ -389,6 +435,15 @@ class Order {
   bool get isPhoneTakeaway => orderType == OrderType.phonecallTakeaway;
 
   int get itemCount => lines.fold<int>(0, (sum, l) => sum + l.quantity);
+
+  /// 外卖单在**界面**上用的标记：`名字 #号` / `名字` / `#号` / ''（老数据都没有）。
+  ///
+  /// 例：`张三 #3`、`#3`、`张三`。
+  /// 厨房单上**只用其中一样**：有名字打名字，没名字才打 `#号`（见 `buildKitchenRows` ①b）。
+  String get takeawayTag => <String>[
+        if (label.trim().isNotEmpty) label.trim(),
+        if (dailyNo > 0) '#$dailyNo',
+      ].join(' ');
 
   /// 小计（所有菜相加，**不含**折扣和另加的税）。
   double get subtotal =>
@@ -475,6 +530,9 @@ class Order {
     List<Payment>? payments,
     PaymentMethod? paymentMethod,
     String? table,
+    String? label,
+    int? dailyNo,
+    int? waitMinutes,
     OrderType? orderType,
     OrderStatus? status,
     DateTime? closedAt,
@@ -500,6 +558,9 @@ class Order {
         payments: payments ?? this.payments,
         paymentMethod: paymentMethod ?? this.paymentMethod,
         table: table ?? this.table,
+        label: label ?? this.label,
+        dailyNo: dailyNo ?? this.dailyNo,
+        waitMinutes: waitMinutes ?? this.waitMinutes,
         orderType: orderType ?? this.orderType,
         status: status ?? this.status,
         closedAt: closedAt ?? this.closedAt,
@@ -526,6 +587,9 @@ class Order {
         'payments': payments.map((p) => p.toJson()).toList(),
         'paymentMethod': paymentMethod?.id,
         'table': table,
+        'label': label,
+        'dailyNo': dailyNo,
+        'waitMinutes': waitMinutes,
         'orderType': orderType.id,
         'status': status.id,
         'closedAt': closedAt?.toIso8601String(),
@@ -559,6 +623,10 @@ class Order {
             ? null
             : PaymentMethod.fromId(json['paymentMethod'] as String),
         table: (json['table'] as String?) ?? '',
+        // 旧数据没有这两个字段 → 空名字 / 0 号（显示时就不带「#N」）
+        label: (json['label'] as String?) ?? '',
+        dailyNo: (json['dailyNo'] as num?)?.toInt() ?? 0,
+        waitMinutes: (json['waitMinutes'] as num?)?.toInt() ?? 0,
         orderType: json['orderType'] == null
             ? OrderType.dineIn
             : OrderType.fromId(json['orderType'] as String),
