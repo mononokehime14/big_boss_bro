@@ -8,12 +8,19 @@ DateTime closedOrCreatedAt(Order o) => o.closedAt ?? o.createdAt;
 
 /// 「进行中」的订单列表怎么排（订单页那个小开关）。
 enum OrderSort {
-  /// **按位置**（默认）：**外卖 → 电话外卖 → 桌子**，
+  /// **默认 = 按单号**：**单号从大到小**（号大的 = 更近开的单，在最上面）。
+  ///
+  /// 单号是"每天从 1 开始"的那个号（`Order.dailyNo`，堂食 / 外卖 / 电话外卖**共用**一条序列，
+  /// 见 `PosController._nextDailyNo`）。注意号**每天归零**，所以排序时先按**哪一天**
+  /// （新的一天在上面），同一天之内再按号从大到小。
+  number('number'),
+
+  /// **按位置**：**外卖 → 电话外卖 → 桌子**，
   /// 桌子按桌号清单的顺序（`1 2 … 9 10 A B C`，跟点单页那个下拉一致）。
   position('position'),
 
   /// **按时间**：最近**保存 / 下厨房**的排最上面（`Order.updatedAt`：
-  /// 每次追单、改份数、改备注都会刷新，所以"刚动过的单"永远在最上面）。
+  /// 每次追单、改份数、改备注都会刷新，所以"刚动过的那张"永远在最上面）。
   time('time');
 
   final String id;
@@ -21,7 +28,7 @@ enum OrderSort {
 
   static OrderSort fromId(String? id) => OrderSort.values.firstWhere(
         (e) => e.id == id,
-        orElse: () => OrderSort.position,
+        orElse: () => OrderSort.number,
       );
 }
 
@@ -34,6 +41,8 @@ List<Order> sortInProgressOrders(
   List<String> tables,
 ) {
   switch (sort) {
+    case OrderSort.number:
+      return _byNumber(orders);
     case OrderSort.position:
       return _byPosition(orders, tables);
     case OrderSort.time:
@@ -43,7 +52,11 @@ List<Order> sortInProgressOrders(
 
 /// **「已结单」列表怎么排**（订单页「已结单」那一页的小开关）。
 enum ClosedSort {
-  /// **按时间**（默认）：**结账确认时间由近到远**（今天结的最上面）。
+  /// **默认 = 按单号**：单号从大到小（跟「进行中」的默认排序同一个规则：
+  /// 先看哪一天，同一天里号大的在前）。
+  number('number'),
+
+  /// **按时间**：**结账确认时间由近到远**（今天结的最上面）。
   /// 用 `closedAt`（结账那一刻），老数据没有就用开单时间。
   time('time'),
 
@@ -55,13 +68,15 @@ enum ClosedSort {
 
   static ClosedSort fromId(String? id) => ClosedSort.values.firstWhere(
         (e) => e.id == id,
-        orElse: () => ClosedSort.time,
+        orElse: () => ClosedSort.number,
       );
 }
 
 /// 按 [sort] 排「已结单」（返回新列表，不动传进来的那个）。
 List<Order> sortClosedOrders(List<Order> orders, ClosedSort sort) {
   switch (sort) {
+    case ClosedSort.number:
+      return _byNumber(orders);
     case ClosedSort.time:
       return _sortBy(orders, (o) => <num>[-_closedMs(o)]);
     case ClosedSort.amount:
@@ -80,6 +95,25 @@ List<Order> filterOrdersOnDate(List<Order> orders, String dateKey) {
 }
 
 int _closedMs(Order o) => closedOrCreatedAt(o).millisecondsSinceEpoch;
+
+/// **按单号排（默认）**：**号大的在前**（更近开的单在上面）。
+///
+/// 单号每天从 1 开始，所以**先按"哪一天"排**（新的一天在上面），
+/// 同一天里再按号从大到小；老数据没号（`0`）的排到最后。
+/// 最后一级用开单时间兜底，保证同号的顺序也是确定的。
+///
+/// ⚠️ `_sortBy` 排的是**升序**，要"从大到小"就得**把键取负** ——
+/// 这里所有的键都是负数（`-天`、`-号`、`-毫秒`）。
+/// 没号的单特殊：真号取负之后都是负数，所以给它 `0`（比任何真号都大 → 排最后）。
+List<Order> _byNumber(List<Order> orders) => _sortBy(orders, (o) => <num>[
+      -_dayNumber(o),
+      o.dailyNo > 0 ? -o.dailyNo : 0,
+      -o.createdAt.millisecondsSinceEpoch,
+    ]);
+
+/// 开单那天写成一个能比大小的整数（`20261011`），**越新越大**。
+int _dayNumber(Order o) =>
+    o.createdAt.year * 10000 + o.createdAt.month * 100 + o.createdAt.day;
 
 /// 按位置排：外卖（0）→ 电话外卖（1）→ 桌子（2）。
 ///

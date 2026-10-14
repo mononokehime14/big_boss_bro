@@ -63,15 +63,17 @@ class Settings {
   /// 见 `utils/menu_sort.dart` 的 `MenuSort`。
   String menuSort;
 
-  /// **「进行中」订单列表的排法**：`'position'`（默认：外卖 → 电话外卖 → 桌子，
-  /// 桌子按桌号清单的顺序）/ `'time'`（最近保存/下厨房的在最上面）。
+  /// **「进行中」订单列表的排法**：`'number'`（默认：按单号从大到小）/
+  /// `'position'`（外卖 → 电话外卖 → 桌子，桌子按桌号清单的顺序）/
+  /// `'time'`（最近保存/下厨房的在最上面）。
   /// 见 `utils/order_sort.dart` 的 `OrderSort`。
   ///
   /// 跟 [menuSort] 一样**只存本机**（属于"这台设备怎么看列表"，不同步到云端）。
   String orderSort;
 
-  /// **「已结单」订单列表的排法**：`'time'`（默认：按结账确认时间，由近到远）/
-  /// `'amount'`（按金额，由大到小）。见 `utils/order_sort.dart` 的 `ClosedSort`。
+  /// **「已结单」订单列表的排法**：`'number'`（默认：按单号从大到小）/
+  /// `'time'`（按结账确认时间，由近到远）/ `'amount'`（按金额，由大到小）。
+  /// 见 `utils/order_sort.dart` 的 `ClosedSort`。
   ///
   /// 跟 [orderSort] 一样**只存本机**（属于"这台设备怎么看列表"）。
   String closedSort;
@@ -184,8 +186,8 @@ class Settings {
     this.kitchenCopies = 2,
     this.receiptLang = '',
     this.menuSort = 'default',
-    this.orderSort = 'position',
-    this.closedSort = 'time',
+    this.orderSort = 'number',
+    this.closedSort = 'number',
     this.syncEnabled = false,
     this.supabaseUrl = '',
     this.supabaseAnonKey = '',
@@ -322,11 +324,17 @@ class SettingsStore {
   static const _kReceiptLang = 'receipt_lang';
   static const _kMenuSort = 'menu_sort';
 
-  /// 「进行中」订单列表的排法（`position` / `time`，见 `Settings.orderSort`）。
+  /// 「进行中」订单列表的排法（`number` / `position` / `time`，见 `Settings.orderSort`）。
   static const _kOrderSort = 'order_sort';
 
-  /// 「已结单」订单列表的排法（`time` / `amount`，见 `Settings.closedSort`）。
+  /// 「已结单」订单列表的排法（`number` / `time` / `amount`，见 `Settings.closedSort`）。
   static const _kClosedSort = 'closed_sort';
+
+  /// **一次性迁移标记**：这两个排法以前的老默认值是 `position`（进行中）/ `time`（已结单），
+  /// 而本机存过的值**只在用户点过小圆片时才有**。这一版把默认换成「按单号」，
+  /// 所以**第一次**启动时把两个排法都重置成 `number`，之后完全按用户自己的选择走
+  /// （重置不了"用户明明选过按时间"这一种，但那种情况本来就该保留 —— 见下面 load()）。
+  static const _kSortMigrated = 'order_sort_migrated';
 
   /// 自定义排序的顺序表（种类 id + 菜品 id 混排，见 `Settings.menuOrder`）。
   static const _kMenuOrder = 'menu_order';
@@ -413,6 +421,12 @@ class SettingsStore {
       if (legacy.isNotEmpty) notes = {'': legacy};
     }
 
+    // 订单页两个排法：**只有在"迁移过"之后才认本机存的值**。
+    // 没迁移过（= 这台设备还没进过这一版）→ 直接用新默认「按单号」，
+    // 这样以前存的 `position` / `time`（可能只是随手点过）不会把新默认盖掉；
+    // 用户在新版里点了哪个小圆片（= 触发一次 save）之后就照他选的走。
+    final sortReady = prefs.getBool(_kSortMigrated) ?? false;
+
     return Settings(
       storeName: prefs.getString(_kStoreName) ?? kDefaultStoreName,
       storeHeader: prefs.getString(_kStoreHeader) ?? '',
@@ -430,8 +444,9 @@ class SettingsStore {
       kitchenCopies: prefs.getInt(_kKitchenCopies) ?? 2,
       receiptLang: prefs.getString(_kReceiptLang) ?? '',
       menuSort: prefs.getString(_kMenuSort) ?? 'default',
-      orderSort: prefs.getString(_kOrderSort) ?? 'position',
-      closedSort: prefs.getString(_kClosedSort) ?? 'time',
+      orderSort: sortReady ? (prefs.getString(_kOrderSort) ?? 'number') : 'number',
+      closedSort:
+          sortReady ? (prefs.getString(_kClosedSort) ?? 'number') : 'number',
       menuOrder: _decodeList(prefs.getString(_kMenuOrder), const <String>[]),
       menuPassword: prefs.getString(_kMenuPassword) ?? kDefaultMenuPassword,
       taxRate: (prefs.getDouble(_kTaxRate) ?? 0),
@@ -481,6 +496,8 @@ class SettingsStore {
     await prefs.setString(_kMenuSort, settings.menuSort);
     await prefs.setString(_kOrderSort, settings.orderSort);
     await prefs.setString(_kClosedSort, settings.closedSort);
+    // 存过一次之后，本机这两个排法就是"用户的选择"了（见 load() 里的迁移说明）
+    await prefs.setBool(_kSortMigrated, true);
     await prefs.setString(_kMenuOrder, jsonEncode(settings.menuOrder));
     await prefs.setString(_kMenuPassword, settings.menuPassword);
     await prefs.setDouble(_kTaxRate, settings.taxRate);

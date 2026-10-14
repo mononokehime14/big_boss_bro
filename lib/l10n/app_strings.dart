@@ -99,13 +99,15 @@ class L10n {
     'settings.notes.general': '通用（所有种类）',
     'order.status.inProgress': '进行中',
     'order.status.completed': '已结单',
-    // ---- 进行中订单列表的两种排法 ----
+    // ---- 订单页那几种排法 ----
+    // **按单号**（默认）：号从大到小（号是"每天从 1 开始"那个，堂食/外卖/电话外卖共用一条）
+    'order.sort.number': '按单号',
     'order.sort.position': '按位置',
     'order.sort.time': '按时间',
-    // ---- 已结单那一页：按金额排 + 只看某一天 ----
     'order.sort.amount': '按金额',
+    // 已结单：只看某一天 + 一键回今天
     'order.date.today': '今天',
-    // ---- 已结单：点开看明细 / 补打小票 ----
+    // 已结单：点开看明细 / 补打小票
     'order.detail.title': '单子明细',
     'order.closedAt': '结账时间',
     'order.reprint': '补打小票',
@@ -167,7 +169,6 @@ class L10n {
     'sync.never': '还没同步过',
     'sync.pending': '待上传',
     'sync.error': '同步出错',
-    'sync.docHint': '怎么建后台（建表 / 建账号）见仓库里的 setup_supabase.md',
     'sync.reset': '重置同步状态',
     'sync.resetConfirm': '会忘掉登录状态，并把本机所有单子和菜单重新推一遍（不删单子、不改金额）。确定？',
     'sync.short': '同步',
@@ -191,9 +192,7 @@ class L10n {
     'sync.settingsPullConfirm': '会用云端的店级配置覆盖本机（店名 / 店头地址 / 税率 / 货币与汇率 / 桌号 / 各分类备注 / 日结支出 / 菜品管理密码）。订单、菜单、打印机设置都不动。确定？',
     'sync.settingsPush': '上传本机配置',
     'sync.settingsPushConfirm': '会把本机的店级配置覆盖到云端，其它设备下次同步会跟着变。确定？',
-    'sync.settingsHint': '店级配置（店名 / 地址 / 税率 / 货币 / 桌号 / 备注 / 日结支出）会自动同步，新设备登录后自动拿回来；打印机地址、纸宽、小票编码这些是每台设备自己的，不跟着同步。',
     // ---- 菜品（菜单）同步：**店级配置里不含菜品**，菜单单独一条线 ----
-    'sync.menuHint': '⚠️ 菜品（菜单）不上面那份「店级配置」里 —— 它单独同步。换了设备 / 重新导入过 Excel 之后，看下面「本机」和「云端」的道数对不对得上，对不上就点一下「从云端下载菜单」。',
     'sync.menuLocal': '本机',
     'sync.menuCloud': '云端',
     'sync.menuItems': '道菜',
@@ -393,12 +392,14 @@ class L10n {
     'checkout.cardDone': '已刷卡 · 确认收款',
     'pay.exact': '正好',
     'pay.short': '还差',
-    // ---- 结账窗口（左边明细 + 小计/合计，右边折扣/币种/收款，**一个页面**）----
+    // ---- 结账窗口（左右两栏，两步走）----
     'checkout.title': '结账',
     'checkout.items': '单子明细',
+    'checkout.back': '返回上一步',
     'checkout.printBill': '打印单子',
     'checkout.printAgain': '再打一张',
     'checkout.printed': '已打印',
+    'checkout.confirm': '确认',
     'menu.rates': '币种与汇率',
     'menu.rates.hint': '汇率 = 「1 个外币等于多少店里收钱的货币」。例：1 USD = 18.50 就填 18.5。留空 = 没设汇率，收款时那个币种是灰的。',
     'menu.baseCurrency': '本币',
@@ -520,17 +521,19 @@ class L10n {
     'menu.password.wrong': 'Contraseña incorrecta',
     'settings.notes.general': 'General (todas)',
     'order.status.inProgress': 'En curso',
-    // ---- 进行中订单列表的两种排法 ----
+    'order.status.completed': 'Cobrado',
+    // ---- Formas de ordenar la lista de pedidos ----
+    // **Por número** (predeterminado): de mayor a menor
+    'order.sort.number': 'Por número',
     'order.sort.position': 'Por ubicación',
     'order.sort.time': 'Por hora',
-    // ---- Pedidos cobrados: orden por importe + un solo día ----
     'order.sort.amount': 'Por importe',
+    // Pedidos cobrados: un solo día + volver a hoy
     'order.date.today': 'Hoy',
-    // ---- Pedidos cobrados: ver detalle / reimprimir ----
+    // Pedidos cobrados: ver detalle / reimprimir
     'order.detail.title': 'Detalle del pedido',
     'order.closedAt': 'Hora de cobro',
     'order.reprint': 'Reimprimir ticket',
-    'order.status.completed': 'Cobrado',
     'order.settle': 'Cobrar',
     'kitchen.title': 'NOTA COCINA',
     'kitchen.colName': 'Producto',
@@ -589,7 +592,6 @@ class L10n {
     'sync.never': 'nunca',
     'sync.pending': 'Pendientes',
     'sync.error': 'Error',
-    'sync.docHint': 'Cómo crear el backend (tablas / cuenta): ver setup_supabase.md',
     'sync.reset': 'Reiniciar sincronización',
     'sync.resetConfirm': 'Se olvida la sesión y se vuelven a subir todos los pedidos y el menú (no borra pedidos). ¿Continuar?',
     'sync.short': 'Sinc.',
@@ -612,8 +614,6 @@ class L10n {
     'sync.settingsPullConfirm': 'Se sobrescribirá la configuración local con la del servidor (nombre / dirección / impuesto / moneda / mesas / notas por categoría / gastos diarios / contraseña de menú). Los pedidos, el menú y la impresora no se tocan. ¿Continuar?',
     'sync.settingsPush': 'Subir configuración',
     'sync.settingsPushConfirm': 'Se sobrescribirá la configuración del servidor con la de este dispositivo; los demás la recibirán en la próxima sincronización. ¿Continuar?',
-    'sync.settingsHint': 'La configuración de la tienda (nombre / dirección / impuesto / moneda / mesas / notas / gastos) se sincroniza sola y un dispositivo nuevo la recibe al iniciar sesión. La impresora, el ancho de papel y la codificación del ticket son de cada dispositivo.',
-    'sync.menuHint': '⚠️ El menú (platillos) NO va dentro de la configuración de tienda: se sincroniza aparte. Después de cambiar de dispositivo o de reimportar el Excel, compara los números de «este dispositivo» y «servidor»; si no coinciden, pulsa «Descargar menú».',
     'sync.menuLocal': 'Este dispositivo',
     'sync.menuCloud': 'Servidor',
     'sync.menuItems': 'platillos',
@@ -813,12 +813,14 @@ class L10n {
     'checkout.cardDone': 'Tarjeta OK · Cobrar',
     'pay.exact': 'Exacto',
     'pay.short': 'Falta',
-    // ---- 结账窗口（左边明细 + 小计/合计，右边折扣/币种/收款，**一个页面**）----
+    // ---- 结账窗口（左右两栏，两步走）----
     'checkout.title': 'Cobro',
     'checkout.items': 'Detalle del pedido',
+    'checkout.back': 'Volver',
     'checkout.printBill': 'Imprimir cuenta',
     'checkout.printAgain': 'Imprimir otra',
     'checkout.printed': 'Impreso',
+    'checkout.confirm': 'Confirmar',
     'menu.rates': 'Moneda y tipo de cambio',
     'menu.rates.hint': 'Tipo de cambio = cuánto vale 1 unidad de esa moneda en tu moneda base. Ej.: 1 USD = 18.50 → escribe 18.5. Vacío = sin tipo de cambio (esa moneda queda deshabilitada al cobrar).',
     'menu.baseCurrency': 'Moneda de la tienda',
@@ -940,17 +942,19 @@ class L10n {
     'menu.password.wrong': 'Wrong password',
     'settings.notes.general': 'General (all)',
     'order.status.inProgress': 'Open',
-    // ---- 进行中订单列表的两种排法 ----
+    'order.status.completed': 'Closed',
+    // ---- Ways to sort the order list ----
+    // **By number** (default): highest first
+    'order.sort.number': 'By number',
     'order.sort.position': 'By position',
     'order.sort.time': 'By time',
-    // ---- Closed orders: sort by amount + one single day ----
     'order.sort.amount': 'By amount',
+    // Closed orders: one single day + jump back to today
     'order.date.today': 'Today',
-    // ---- Closed orders: detail view / reprint ----
+    // Closed orders: detail view / reprint
     'order.detail.title': 'Order details',
     'order.closedAt': 'Closed at',
     'order.reprint': 'Reprint receipt',
-    'order.status.completed': 'Closed',
     'order.settle': 'Checkout',
     'kitchen.title': 'Kitchen ticket',
     'kitchen.colName': 'Item',
@@ -1009,7 +1013,6 @@ class L10n {
     'sync.never': 'never',
     'sync.pending': 'Pending',
     'sync.error': 'Error',
-    'sync.docHint': 'How to create the backend (tables / account): see setup_supabase.md',
     'sync.reset': 'Reset sync state',
     'sync.resetConfirm': 'Forgets the login session and re-uploads all local orders and the menu (nothing is deleted). Continue?',
     'sync.short': 'Sync',
@@ -1032,8 +1035,6 @@ class L10n {
     'sync.settingsPullConfirm': 'This overwrites local settings with the cloud copy (store name / address / tax / currency / tables / per-category notes / daily expenses / menu password). Orders, menu and printer settings are untouched. Continue?',
     'sync.settingsPush': 'Upload settings',
     'sync.settingsPushConfirm': 'This overwrites the cloud copy with this device\'s settings; other devices pick it up on their next sync. Continue?',
-    'sync.settingsHint': 'Store settings (name / address / tax / currency / tables / notes / daily expenses) sync automatically and a new device gets them after signing in. Printer address, paper width and receipt codec belong to each device and are not synced.',
-    'sync.menuHint': '⚠️ The menu (dishes) is NOT part of "store settings" — it syncs on its own line. After switching devices or re-importing the Excel, compare the "this device" and "cloud" counts below; if they differ, tap "Download menu".',
     'sync.menuLocal': 'This device',
     'sync.menuCloud': 'Cloud',
     'sync.menuItems': 'dishes',
@@ -1233,12 +1234,14 @@ class L10n {
     'checkout.cardDone': 'Card OK · Confirm',
     'pay.exact': 'Exact',
     'pay.short': 'Short',
-    // ---- 结账窗口（左边明细 + 小计/合计，右边折扣/币种/收款，**一个页面**）----
+    // ---- 结账窗口（左右两栏，两步走）----
     'checkout.title': 'Checkout',
     'checkout.items': 'Order items',
+    'checkout.back': 'Back',
     'checkout.printBill': 'Print bill',
     'checkout.printAgain': 'Print again',
     'checkout.printed': 'Printed',
+    'checkout.confirm': 'Confirm',
     'menu.rates': 'Currency & rates',
     'menu.rates.hint': 'Rate = how much 1 unit of that currency is worth in your base currency. E.g. 1 USD = 18.50 → type 18.5. Empty = no rate (that currency is disabled at checkout).',
     'menu.baseCurrency': 'Base currency (what you collect)',

@@ -6,7 +6,7 @@ import 'payment_flow.dart';
 /// 打开购物车明细底部弹窗（窄屏/手机用；宽屏是右侧常驻面板）。
 ///
 /// 弹窗里就是同一个 [CartPanel]：上面是这张单已有的菜、下面是本次新增的菜，
-/// 下面两个按钮 **保存 / 厨房** —— 点完先关弹窗，再用点单页的 context 跑流程
+/// 下面三个按钮 **保存 / 厨房 / 结账** —— 点完先关弹窗，再用点单页的 context 跑流程
 /// （弹窗自己的 context 已经关闭，不能再用）。
 Future<void> showCartSheet(BuildContext context) {
   void runAfterClose(Future<void> Function(BuildContext) flow) {
@@ -33,6 +33,10 @@ Future<void> showCartSheet(BuildContext context) {
         onKitchen: () {
           Navigator.of(sheetContext).pop();
           runAfterClose(kitchenOrderFlow);
+        },
+        onCheckout: () {
+          Navigator.of(sheetContext).pop();
+          runAfterClose(checkoutOrderFlow);
         },
       ),
     ),

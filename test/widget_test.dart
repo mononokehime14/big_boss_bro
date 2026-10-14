@@ -19,10 +19,10 @@ void main() {
     await tester.pumpWidget(
       BigBossBroApp(printService: UnsupportedPrintService()),
     );
-    // ① 先过**启动画面**（`_SplashGate` 里那个 logo）：它最少显示 1200ms，
+    // ① 先过**启动画面**（`_SplashGate` 里那个 logo）：它最少显示 1800ms，
     //    并且要等设置 / 账号读回来。`pumpAndSettle()` 不会等定时器，
     //    所以这里必须**手动把时间推过去**（改启动画面时长的话这里也要跟着改）。
-    await tester.pump(const Duration(milliseconds: 1400));
+    await tester.pump(const Duration(milliseconds: 2000));
     // 等账号从本地读回来（读完才会出现默认管理员）
     await tester.pumpAndSettle();
     await tester.pump(const Duration(milliseconds: 100));

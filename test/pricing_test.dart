@@ -223,22 +223,30 @@ void main() {
     });
   });
 
-  // 现金结账框里「实收」下面的快捷金额标签（正好 / 邻近整数）。
+  // 现金结账框里「实收」旁边的快捷金额标签（正好 + **三个**取整档）。
   group('快捷实收金额 quickReceivedAmounts', () {
-    test('应收 240 → 正好 240 / 250 / 300', () {
-      expect(quickReceivedAmounts(240), [240, 250, 300]);
+    test('应收 240 → 正好 240 / 250 / 300 / 400', () {
+      expect(quickReceivedAmounts(240), [240, 250, 300, 400]);
     });
 
-    test('应收 550（本身就是 50 的整数）→ 550 / 600 / 1000', () {
+    test('应收 550（本身就是 50 的整数）→ 550 / 600 / 1000（凑不满四个就少给几个）', () {
       expect(quickReceivedAmounts(550), [550, 600, 1000]);
     });
 
-    test('应收 61 → 61 / 70 / 100', () {
-      expect(quickReceivedAmounts(61), [61, 70, 100]);
+    test('应收 61 → 61 / 70 / 100 / 200', () {
+      expect(quickReceivedAmounts(61), [61, 70, 100, 200]);
     });
 
-    test('带小数也不重复：245.5 → 245.5 / 250 / 300', () {
-      expect(quickReceivedAmounts(245.5), [245.5, 250, 300]);
+    test('带小数也不重复：245.5 → 245.5 / 250 / 300 / 400', () {
+      expect(quickReceivedAmounts(245.5), [245.5, 250, 300, 400]);
+    });
+
+    test('一般是「正好 + 三个取整档」= 最多四个', () {
+      expect(quickReceivedAmounts(100), [100, 200, 500, 1000]);
+      expect(quickReceivedAmounts(1000).length, 1, reason: '整千没得凑整');
+      for (final due in [7.0, 123.0, 480.0, 999.0]) {
+        expect(quickReceivedAmounts(due).length, lessThanOrEqualTo(4));
+      }
     });
 
     test('永远以「正好」开头，且严格递增', () {

@@ -409,7 +409,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                                               () => _receivedTouched = true),
                                         ),
                                       ),
-                                      // 快捷金额（正好 + 两个邻近整数）**就在实收框右边**
+                                      // 快捷金额（正好 + 三个取整档）**就在实收框右边**
                                       for (var i = 0;
                                           i < _quickReceived.length;
                                           i++) ...[
@@ -472,15 +472,6 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                                                 ? Colors.red.shade700
                                                 : const Color(0xFF1FA85A),
                                           ),
-                                        ),
-                                        Text(
-                                          '${L10n.t('pay.received')}: '
-                                          '${money(_received ?? _dueForeign, _symbol)}'
-                                          '   ·   ${L10n.t('pay.due')}: '
-                                          '${money(_dueForeign, _symbol)}',
-                                          style: TextStyle(
-                                              fontSize: 13,
-                                              color: Colors.grey.shade700),
                                         ),
                                       ],
                                     ),
@@ -968,22 +959,52 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
 /// 记完之后菜会出现在购物车上面的「已在单上」区，标成**橙色「未下厨」**，
 /// 下次点「厨房」时会跟别的没下厨的菜一起打给厨房。
 Future<void> saveOrderFlow(BuildContext context) =>
-    _submitOrder(context, toKitchen: false);
+    _submitOrder(context, toKitchen: false, askName: true);
 
-/// 购物车下面**右边那个「厨房」**：把本次新增的菜记到单上，然后**打厨房单**。
+/// 购物车下面**中间那个「厨房」**：把本次新增的菜记到单上，然后**打厨房单**。
 ///
 /// 厨房单打的是这张单上**所有还没下厨的行**（包括之前「保存」过的），
 /// 所以厨房不会漏菜；打成功了才把这些行标成「已下厨」（失败可以再点一次重打）。
 Future<void> kitchenOrderFlow(BuildContext context) =>
     _submitOrder(context, toKitchen: true);
 
-/// 「保存」和「厨房」共用的流程：**先记单，再（可选）打厨房单**。
+/// 购物车下面**右边那个「结账」**：**先记单**（跟「保存」一样），
+/// 然后**直接打开这张单的结账窗口**（就是订单页那个「结账」）。
+///
+/// 为什么要它：客人到店点外卖、点完当场就要付钱 —— 不用再绕到「订单」页去找那张单。
+/// 结完账这张单就变成「已结单」（要不要打小票在结账窗口里自己决定）。
+///
+/// 两个细节：
+/// - **不问外卖名字**（跟「保存」不同）：客人正等着付钱，别在这时候弹起名框；
+/// - **没起名字的外卖单**既没桌号也没名字，`openOrderForSelectedTable()` 是找不到它的
+///   （那是故意的设计），所以兜底用"刚刚动过的那一张"（`lastTouchedOrder`）——
+///   这样"点完厨房再点结账"也能结到正确的那张单。
+Future<void> checkoutOrderFlow(BuildContext context) async {
+  final pos = context.read<PosController>();
+  // 购物车里有菜 → 先记到单上（这一步跟「保存」完全一样，只是不问名字）
+  final saved = await _submitOrder(context, toKitchen: false, askName: false);
+  if (!context.mounted) return;
+  // 购物车本来就是空的（比如刚点过「厨房」）→ 结"当前这张还没结的单"
+  final order =
+      saved ?? pos.openOrderForSelectedTable() ?? pos.lastTouchedOrder;
+  if (order == null) return; // 没东西可结
+  await settleOrderFlow(context, order);
+}
+
+/// 「保存」「厨房」「结账」共用的流程：**先记单，再（可选）打厨房单**。
 ///
 /// 目标是**当前选中的桌**：那桌已经有进行中的单就自动**并进那张单**；
 /// 外卖每单独立（当前行为，不自动并入 —— 见 `openOrderForSelectedTable`）。
-Future<void> _submitOrder(
+///
+/// 返回**刚记下的那张单**（购物车空、或者没东西可记时返回 null）——
+/// 「结账」那个按钮要用它。
+///
+/// [askName] 只在「保存」时为 true：外卖单存下来之后顺口问一句"要不要起个名字"
+/// （起名 = 存进下拉列表，之后能选回来接着改）；「结账」时**不问**，直接去收款。
+Future<Order?> _submitOrder(
   BuildContext context, {
   required bool toKitchen,
+  bool askName = false,
 }) async {
   final pos = context.read<PosController>();
   final settingsCtl = context.read<SettingsController>();
@@ -991,7 +1012,7 @@ Future<void> _submitOrder(
   final cashier = context.read<AuthController>().currentName;
   final settings = settingsCtl.settings;
 
-  if (!pos.hasTableSelected) return;
+  if (!pos.hasTableSelected) return null;
 
   // 这张单要打/要记的（下面两个分支都会赋值）
   final Order order;
@@ -1007,36 +1028,42 @@ Future<void> _submitOrder(
             taxIncluded: settings.taxIncluded,
             cashier: cashier,
           );
-    if (saved == null) return;
+    if (saved == null) return null;
+    // 记下来"刚动过的是哪张单"：「结账」按钮靠它兜底（尤其是没名字的外卖单）
+    pos.markTouchedOrder(saved.id);
     // 「保存」到此为止：只记单，不打印。
     //
     // 外卖单顺手问一句"要不要起个名字"：**起名 = 把这张外卖单存进下拉列表**，
     // 之后随时能选回来接着加菜/改单（结账后自动从列表消失）。
     // 点「不用名字」也没关系 —— 那就是一张点完厨房直接结账的普通外卖单。
     if (!toKitchen) {
-      if (saved.isTakeaway && saved.label.trim().isEmpty && context.mounted) {
+      if (askName &&
+          saved.isTakeaway &&
+          saved.label.trim().isEmpty &&
+          context.mounted) {
         // 外卖 / 电话外卖：「保存这张外卖单」= 起名（可不填）+ 电话外卖的等待时间
         final r = await showTakeawayNameDialog(context, saved);
         if (r != null) {
           pos.setOrderLabel(saved.id, r.label, waitMinutes: r.waitMinutes);
         }
       }
-      return;
+      return saved;
     }
     order = saved;
   } else {
     // ---- 1') 购物车是空的 ----
     // 「保存」没东西可存；「厨房」仍然要能打：把这张单上**还没下厨的菜**补打给厨房
     // （比如先点了「保存」，或者上一次厨房单没打成功、失败被跳过）
-    if (!toKitchen) return;
+    if (!toKitchen) return null;
     final open = pos.openOrderForSelectedTable();
-    if (open == null) return; // 这桌没有进行中的单 → 没东西可打
+    if (open == null) return null; // 这桌没有进行中的单 → 没东西可打
+    pos.markTouchedOrder(open.id);
     order = open;
   }
 
   // ---- 2) 厨房单：这张单上所有还没下厨的菜 ----
   final pending = pos.unsentLines(order.id);
-  if (pending.isEmpty) return;
+  if (pending.isEmpty) return order;
 
   final ticket = Order(
     id: order.id,
@@ -1059,12 +1086,12 @@ Future<void> _submitOrder(
       service.printKitchenTicket(ticket, settings, isAppend: isAppend);
 
   final err = await printTicket();
-  if (!context.mounted) return;
+  if (!context.mounted) return order;
 
   if (err == null) {
     // 打成功了才算「下过厨房」
     pos.markOrderSent(order.id);
-    return;
+    return order;
   }
 
   // 打不出来：让收银员「重试打印」或「跳过」；**重试成功才标已下厨**
@@ -1073,6 +1100,8 @@ Future<void> _submitOrder(
     if (retryErr == null) pos.markOrderSent(order.id);
     return retryErr;
   });
+  // 打印失败 / 被跳过也把这张单交回去 —— 「结账」照样得能结
+  return order;
 }
 
 /// 结账流程：一个结账窗口（明细 + 折扣 + 收款都在一页）→ 记成已结单。

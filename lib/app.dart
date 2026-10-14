@@ -194,7 +194,8 @@ class _SplashGate extends StatefulWidget {
 }
 
 class _SplashGateState extends State<_SplashGate> {
-  static const Duration _minShow = Duration(milliseconds: 1200);
+  /// 最少显示多久：**1.8 秒**（够看清 logo，又不至于让人等得不耐烦）。
+  static const Duration _minShow = Duration(milliseconds: 1800);
 
   bool _timeUp = false;
   Timer? _timer;

@@ -23,7 +23,8 @@ void main() {
   });
 
   /// 把面板挂起来。回调只记次数 —— 按钮变灰时点了不会有任何回调。
-  Future<({int Function() saved, int Function() kitchen})> pumpPanel(
+  Future<({int Function() saved, int Function() kitchen, int Function() checkout})>
+      pumpPanel(
     WidgetTester tester,
     PosController pos,
   ) async {
@@ -37,6 +38,7 @@ void main() {
 
     var saved = 0;
     var kitchen = 0;
+    var checkout = 0;
 
     await tester.pumpWidget(
       MultiProvider(
@@ -49,16 +51,21 @@ void main() {
             body: CartPanel(
               onSave: () => saved++,
               onKitchen: () => kitchen++,
+              onCheckout: () => checkout++,
             ),
           ),
         ),
       ),
     );
     await tester.pumpAndSettle();
-    return (saved: () => saved, kitchen: () => kitchen);
+    return (
+      saved: () => saved,
+      kitchen: () => kitchen,
+      checkout: () => checkout,
+    );
   }
 
-  testWidgets('购物车里有新菜：保存 和 厨房 都能点', (tester) async {
+  testWidgets('购物车里有新菜：保存 / 厨房 / 结账 都能点', (tester) async {
     final pos = PosController();
     pos.selectTable('1');
     pos.addToCart(sampleMenu.first);
@@ -72,6 +79,11 @@ void main() {
     await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
     expect(calls.saved(), 1, reason: '购物车里有新菜，保存应该能点');
+
+    // 结账：外卖客人当场点完就付钱走这条路（记单 → 直接开结账窗口）
+    await tester.tap(find.text('结账'));
+    await tester.pumpAndSettle();
+    expect(calls.checkout(), 1, reason: '购物车里有新菜，结账应该能点');
   });
 
   testWidgets('先点「保存」之后：购物车空了，但「厨房」还能点（把没下厨的菜打出去）',
@@ -114,7 +126,7 @@ void main() {
     expect(calls.kitchen(), 1, reason: '回到原来的桌，未下厨的菜还能打给厨房');
   });
 
-  testWidgets('购物车空 + 单上也没有菜：两个按钮都点不动', (tester) async {
+  testWidgets('购物车空 + 单上也没有菜：三个按钮都点不动', (tester) async {
     final pos = PosController();
     pos.selectTable('1');
 
@@ -122,8 +134,26 @@ void main() {
 
     await tester.tap(find.text('厨房'));
     await tester.tap(find.text('保存'));
+    await tester.tap(find.text('结账'));
     await tester.pumpAndSettle();
     expect(calls.kitchen(), 0);
     expect(calls.saved(), 0);
+    expect(calls.checkout(), 0, reason: '没东西可结 → 结账按钮应该是灰的');
+  });
+
+  testWidgets('菜都下过厨房了（购物车空）→ 结账仍然能点：结的是这张还没结的单',
+      (tester) async {
+    final pos = PosController();
+    pos.selectTable('1');
+    pos.addToCart(sampleMenu.first);
+    final order = pos.placeOrder()!; // 保存
+    pos.markOrderSent(order.id); // 厨房：都下过厨房了
+
+    final calls = await pumpPanel(tester, pos);
+
+    await tester.tap(find.text('结账'));
+    await tester.pumpAndSettle();
+    expect(calls.checkout(), 1,
+        reason: '这一桌还有一张没结的单 → 结账必须还能点（客人要付钱了）');
   });
 }

@@ -84,16 +84,18 @@ class SettingsController extends ChangeNotifier {
     _store.save(_settings);
   }
 
-  /// **「进行中」订单列表的排法**：'position'（默认：外卖 → 电话外卖 → 桌子）/
-  /// 'time'（最近保存 / 下厨房的在最上面）。见 `utils/order_sort.dart` 的 `OrderSort`。
+  /// **「进行中」订单列表的排法**：'number'（默认：按单号从大到小）/
+  /// 'position'（外卖 → 电话外卖 → 桌子）/ 'time'（最近保存 / 下厨房的在最上面）。
+  /// 见 `utils/order_sort.dart` 的 `OrderSort`。
   void setOrderSort(String id) {
     _settings.orderSort = id;
     notifyListeners();
     _store.save(_settings);
   }
 
-  /// **「已结单」订单列表的排法**：'time'（默认：按结账确认时间由近到远）/
-  /// 'amount'（按金额由大到小）。见 `utils/order_sort.dart` 的 `ClosedSort`。
+  /// **「已结单」订单列表的排法**：'number'（默认：按单号从大到小）/
+  /// 'time'（按结账确认时间由近到远）/ 'amount'（按金额由大到小）。
+  /// 见 `utils/order_sort.dart` 的 `ClosedSort`。
   void setClosedSort(String id) {
     _settings.closedSort = id;
     notifyListeners();

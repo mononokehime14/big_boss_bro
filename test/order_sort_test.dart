@@ -3,12 +3,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:big_boss_bro/models/order.dart';
 import 'package:big_boss_bro/utils/order_sort.dart';
 
-/// 「进行中」订单列表的两种排法（订单页那个小开关）。
+/// 「进行中」订单列表的几种排法（订单页那个小开关）。
 ///
-/// - **按位置**（默认）：外卖 → 电话外卖 → 桌子（桌子按桌号清单的顺序）；
+/// - **默认（按单号）**：号大的在上面（号每天从 1 开始，堂食/外卖共用一条序列）；
+/// - **按位置**：外卖 → 电话外卖 → 桌子（桌子按桌号清单的顺序）；
 /// - **按时间**：最近保存 / 下厨房的在最上面。
 ///
-/// 还有「已结单」那一页的两种排法（按结账时间 / 按金额）和**日期范围筛选**。
+/// 还有「已结单」那一页的排法（按单号 / 按结账时间 / 按金额）和**只看某一天**的筛选。
 void main() {
   var seq = 0;
 
@@ -117,12 +118,63 @@ void main() {
     });
   });
 
+  group('默认排序：按单号（从大到小）', () {
+    test('进行中：号大的在最上面', () {
+      final orders = [
+        order(id: 'n2', table: '2', dailyNo: 2),
+        order(id: 'n5', table: '3', dailyNo: 5),
+        order(id: 'n1', table: '1', dailyNo: 1),
+      ];
+      expect(ids(sortInProgressOrders(orders, OrderSort.number, const [])),
+          ['n5', 'n2', 'n1']);
+    });
+
+    test('跨天：**新的一天**排在旧的一天前面（号每天从 1 重新开始）', () {
+      final orders = [
+        order(
+            id: '昨天#9',
+            table: '1',
+            dailyNo: 9,
+            created: DateTime(2026, 10, 10, 20)),
+        order(
+            id: '今天#1',
+            table: '2',
+            dailyNo: 1,
+            created: DateTime(2026, 10, 11, 9)),
+      ];
+      expect(ids(sortInProgressOrders(orders, OrderSort.number, const [])),
+          ['今天#1', '昨天#9']);
+    });
+
+    test('老数据没有号（dailyNo = 0）排最后', () {
+      final orders = [
+        order(id: '老单', table: '1'),
+        order(id: '新单', table: '2', dailyNo: 3),
+      ];
+      expect(ids(sortInProgressOrders(orders, OrderSort.number, const [])),
+          ['新单', '老单']);
+    });
+
+    test('已结单也能按单号排（那也是它的默认排法）', () {
+      final orders = [
+        order(
+            id: 'a', dailyNo: 3, total: 100, closed: DateTime(2026, 10, 11, 9)),
+        order(
+            id: 'b', dailyNo: 7, total: 20, closed: DateTime(2026, 10, 11, 10)),
+        order(
+            id: 'c', dailyNo: 5, total: 50, closed: DateTime(2026, 10, 11, 11)),
+      ];
+      expect(ids(sortClosedOrders(orders, ClosedSort.number)), ['b', 'c', 'a']);
+    });
+  });
+
   group('杂项', () {
-    test('id 与枚举互转；认不出的当「按位置」', () {
+    test('id 与枚举互转；认不出的当「按单号」（两个列表的默认）', () {
+      expect(OrderSort.fromId('number'), OrderSort.number);
       expect(OrderSort.fromId('time'), OrderSort.time);
       expect(OrderSort.fromId('position'), OrderSort.position);
-      expect(OrderSort.fromId('说什么呢'), OrderSort.position);
-      expect(OrderSort.fromId(null), OrderSort.position);
+      expect(OrderSort.fromId('说什么呢'), OrderSort.number);
+      expect(OrderSort.fromId(null), OrderSort.number);
     });
 
     test('两种排法都**不改**传进来的那个列表', () {
@@ -186,11 +238,12 @@ void main() {
           ['同额-同时-先', '同额-同时-后', '同额-晚', '同额-早']);
     });
 
-    test('id 与枚举互转；认不出的当「按时间」', () {
+    test('id 与枚举互转；认不出的当「按单号」（默认）', () {
+      expect(ClosedSort.fromId('number'), ClosedSort.number);
       expect(ClosedSort.fromId('time'), ClosedSort.time);
       expect(ClosedSort.fromId('amount'), ClosedSort.amount);
-      expect(ClosedSort.fromId('说什么呢'), ClosedSort.time);
-      expect(ClosedSort.fromId(null), ClosedSort.time);
+      expect(ClosedSort.fromId('说什么呢'), ClosedSort.number);
+      expect(ClosedSort.fromId(null), ClosedSort.number);
     });
 
     test('两种排法都**不改**传进来的那个列表', () {

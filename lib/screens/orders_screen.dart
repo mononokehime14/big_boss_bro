@@ -194,7 +194,7 @@ class _SortChip extends StatelessWidget {
   }
 }
 
-/// 「进行中」列表上面那个排序开关：**按位置**（默认）/ **按时间**。
+/// 「进行中」列表上面那个排序开关：**默认（按单号）** / **按位置** / **按时间**。
 ///
 /// 选择存在设置里（`Settings.orderSort`），本机记住、不上云。
 class _InProgressSortBar extends StatelessWidget {
@@ -207,6 +207,12 @@ class _InProgressSortBar extends StatelessWidget {
 
     return _Bar(
       children: [
+        _SortChip(
+          selected: current == OrderSort.number,
+          label: L10n.t('order.sort.number'),
+          icon: Icons.tag,
+          onTap: () => ctl.setOrderSort(OrderSort.number.id),
+        ),
         _SortChip(
           selected: current == OrderSort.position,
           label: L10n.t('order.sort.position'),
@@ -224,12 +230,12 @@ class _InProgressSortBar extends StatelessWidget {
   }
 }
 
-/// 「已结单」列表上面那一条：**看哪一天** + 两种排法 + 右边的「日结」。
+/// 「已结单」列表上面那一条：**看哪一天** + 三种排法 + 右边的「日结」。
 ///
 /// - 日期：点一下开日期选择器（**一天一天看**，跟日结一模一样），
 ///   挑过之后出现「今天」一键跳回今天；
-/// - 排法：**按时间**（结账确认时间由近到远，默认）/ **按金额**（由大到小），
-///   存在设置里（`Settings.closedSort`），本机记住、不上云；
+/// - 排法：**默认（按单号，从大到小）** / **按时间**（结账确认时间由近到远）/
+///   **按金额**（由大到小），存在设置里（`Settings.closedSort`），本机记住、不上云；
 /// - 最右边：「日结」按钮（**要管理员权限**）。
 class _ClosedFilterBar extends StatelessWidget {
   /// 当前看的是哪一天。
@@ -289,6 +295,12 @@ class _ClosedFilterBar extends StatelessWidget {
             label: Text(L10n.t('order.date.today'),
                 style: const TextStyle(fontSize: 14)),
           ),
+        _SortChip(
+          selected: current == ClosedSort.number,
+          label: L10n.t('order.sort.number'),
+          icon: Icons.tag,
+          onTap: () => ctl.setClosedSort(ClosedSort.number.id),
+        ),
         _SortChip(
           selected: current == ClosedSort.time,
           label: L10n.t('order.sort.time'),
@@ -432,6 +444,10 @@ class _OrderList extends StatelessWidget {
         : L10n.t('order.history.empty');
 
     return Column(
+      // ⚠️ 必须 `stretch`：排序 / 筛选那一条里面是 `Wrap`（会收缩到内容宽度），
+      // 不拉伸的话会被 Column 默认的 `center` 摆到**中间**去 ——
+      // 「进行中」的排序按钮以前就是这么被居中了的（要它贴着最左边）。
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (header != null) header!,
         Expanded(
@@ -501,29 +517,22 @@ class _OrderCard extends StatelessWidget {
         child: Padding(
           // 一条单**只有一行**：上下各留 8（字放大了，留点余地）
           padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
-          // 只有中间那段「餐品」是弹性的（`Expanded`）：
-          // 右边两粒按钮永远被推到**最右边**，不管菜名多长都一样。
+          // 布局（一句话）：**左边桌号/名字/单号（最多半行）· 中间菜名 · 右边一组**
+          // 右边那一组（支付方式 / 金额 / 删除 / 结账）**都没有弹性**，
+          // 所以永远贴着卡片右边缘，金额的右边缘每张单都对齐。
           child: LayoutBuilder(builder: (context, box) {
             // 窗口宽（收银台 / 平板）才显示右边那些"有就有、没有也行"的小字；
             // 窄的时候（手机）先让位给桌号和菜名，免得把右边的按钮挤出去。
             final roomy = box.maxWidth >= 700;
+            // 名字 / 单号最多占**一半**宽度（从最左边开始），
+            // 再长也只是在这一半里折行，不会把整行撑得很难看。
+            final tagWidth = box.maxWidth * 0.5;
             return Row(
               children: [
-                // 桌号 / 名字 / 单号：**完整显示，不省略**（宽的时候能占 260）
-                _placeTag(order, roomy ? 260 : 160),
-                const SizedBox(width: 10),
-                // **金额（大字）**：就在桌号 / 名字后面，一眼看到这一单多少钱
-                // （金额也是**完整显示**的，绝不省略）
-                Text(
-                  money(order.total, settings.currencySymbol),
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF232829),
-                  ),
-                ),
+                // 桌号 / 名字 / 单号：**完整显示，不省略**
+                _placeTag(order, tagWidth),
                 const SizedBox(width: 12),
-                // 餐品：**一行搞定**，太长就省略号（`…`）—— 它变形，按钮不变
+                // 餐品：**一行搞定**，太长就省略号（`…`）
                 // （要看全就点开这张单：明细里一道菜一行）
                 Expanded(
                   child: Text(
@@ -533,6 +542,7 @@ class _OrderCard extends StatelessWidget {
                     style: TextStyle(fontSize: 15, color: Colors.grey.shade700),
                   ),
                 ),
+                // ---- 右边这一组：支付方式 → 金额 → 删除 →（结账）----
                 if (roomy && extras.isNotEmpty) ...[
                   const SizedBox(width: 8),
                   // 给它一个**宽度上限**：内容再长也不会把右边的按钮挤出去
@@ -564,8 +574,18 @@ class _OrderCard extends StatelessWidget {
                     ),
                   ),
                 ],
-                // ---- 最右边：删除 + （进行中的）结账 ----
-                // 这两粒**没有弹性**，所以永远贴着卡片右边缘。
+                const SizedBox(width: 12),
+                // **金额（大字）**：放在最右边（完整显示，绝不省略）。
+                // 它的右边缘在每张单上都在同一个位置 → 一列数字对齐，扫起来舒服。
+                Text(
+                  money(order.total, settings.currencySymbol),
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF232829),
+                  ),
+                ),
+                const SizedBox(width: 4),
                 IconButton(
                   onPressed: () => _confirmDelete(context),
                   tooltip: L10n.t('order.delete'),
@@ -590,10 +610,10 @@ class _OrderCard extends StatelessWidget {
   ///
   /// ⚠️ 这里**绝对不省略**（你要求的）：桌号 / 名字 / 单号是"这单是谁的"，
   /// 省了就认不出单子（菜名反而可以省 —— 点开明细能看全）。
-  /// 做法是**折行显示完整**，而不是打省略号：
-  /// 宽度上限 260（窗口窄时 160），名字再长也只是多占一行。
+  /// 做法是**折行显示完整**，而不是打省略号。
   ///
-  /// [maxWidth] 是它的宽度上限（窗口窄的时候收得更紧，但同样不省略）。
+  /// [maxWidth] 是它的宽度上限（调用方给的是**整行宽度的一半**：
+  /// 名字长的单子能占半行，而不是挤在一小块里）。
   Widget _placeTag(Order order, double maxWidth) {
     final wait = order.waitMinutes;
     return ConstrainedBox(

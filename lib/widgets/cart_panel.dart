@@ -26,13 +26,17 @@ import 'takeaway_name_dialog.dart';
 /// 4. **合计**（整桌 = 已在单上 + 本次新增）和下面两个按钮：
 ///    **左「保存」**（只记到单上，不打单）/ **右「厨房」**（记到单上 + 打厨房单）。
 ///
-/// 结账不在这里：去「订单」页选进行中的单结账（逻辑没变）。
+/// 下面三个按钮：**保存 / 厨房 / 结账**（结账 = 记单之后直接开这张单的结账窗口）。
 class CartPanel extends StatefulWidget {
   /// 左按钮「保存」：只把本次新增的菜记到单上，不打厨房单。
   final VoidCallback onSave;
 
-  /// 右按钮「厨房」：记到单上，并把这张单上**没下厨的菜**打一张厨房单。
+  /// 中按钮「厨房」：记到单上，并把这张单上**没下厨的菜**打一张厨房单。
   final VoidCallback onKitchen;
+
+  /// 右按钮「结账」：记到单上，然后**直接打开这张单的结账窗口**
+  /// （外卖客人当场点完就付钱的那种，不用再绕到订单页）。
+  final VoidCallback onCheckout;
 
   /// 是否显示顶部拖动条（放进底部弹窗时为 true）。
   final bool showHandle;
@@ -41,6 +45,7 @@ class CartPanel extends StatefulWidget {
     super.key,
     required this.onSave,
     required this.onKitchen,
+    required this.onCheckout,
     this.showHandle = false,
   });
 
@@ -85,12 +90,16 @@ class _CartPanelState extends State<CartPanel> {
 
     final hasAnything = placed.isNotEmpty || !pos.cartEmpty;
 
-    // 两个按钮**分别**判断能不能点（之前两个共用一个条件，导致「先点保存就再也打不了厨房」）：
+    // 三个按钮**分别**判断能不能点（之前两个共用一个条件，导致「先点保存就再也打不了厨房」）：
     // - 「保存」：要购物车里有**新菜**；
     // - 「厨房」：只要有**还没下厨的菜**就行 —— 包括先点「保存」留在单上的那些
-    //   （这时购物车是空的，但单上还有未下厨的菜，仍然要能打给厨房）。
+    //   （这时购物车是空的，但单上还有未下厨的菜，仍然要能打给厨房）；
+    // - 「结账」：购物车里有新菜，**或者**当前这张单/刚动过的那张单还没结
+    //   （那种"菜都下过厨房了、就等收钱"的情况也要能结）。
     final canSave = pos.hasTableSelected && !pos.cartEmpty;
     final canKitchen = pos.hasTableSelected && (!pos.cartEmpty || unsent > 0);
+    final canCheckout = pos.hasTableSelected &&
+        (!pos.cartEmpty || open != null || pos.lastTouchedOrder != null);
 
     return Container(
       color: Colors.white,
@@ -194,24 +203,63 @@ class _CartPanelState extends State<CartPanel> {
               ],
             ),
           ),
-          // ---- 购物车下面两个按钮：左「保存」/ 右「厨房」----
+          // ---- 购物车下面三个按钮：左「保存」/ 中「厨房」/ 右「结账」----
+          // 「保存」窄一点（`flex: 2`），把地方让给「厨房」和「结账」——
+          // 后两个是真正"要动手"的：一个出厨房单、一个收钱。
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 6),
             child: Row(
               children: [
                 Expanded(
-                  child: OutlinedButton.icon(
+                  flex: 2,
+                  child: OutlinedButton(
                     onPressed: canSave ? widget.onSave : null,
-                    icon: const Icon(Icons.save_outlined, size: 20),
-                    label: Text(L10n.t('cart.save')),
+                    style: OutlinedButton.styleFrom(
+                      // 跟旁边两个实心按钮**一样高**（实心按钮的高度来自主题的 52）
+                      minimumSize: const Size(0, 52),
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      textStyle: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w600),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.save_outlined, size: 18),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            L10n.t('cart.save'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Expanded(
+                  flex: 3,
                   child: FilledButton.icon(
                     onPressed: canKitchen ? widget.onKitchen : null,
                     icon: const Icon(Icons.restaurant, size: 20),
                     label: Text(L10n.t('cart.kitchen')),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // 结账：外卖客人当场点完就付钱 —— 记单之后直接开结账窗口
+                // （颜色用深蓝，跟「厨房」的绿区分开，不至于点错）
+                Expanded(
+                  flex: 3,
+                  child: FilledButton.icon(
+                    onPressed: canCheckout ? widget.onCheckout : null,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF1565C0),
+                      // 三个按钮**一样高**（显式写出来，免得跟主题的 52 打架）
+                      minimumSize: const Size(0, 52),
+                    ),
+                    icon: const Icon(Icons.point_of_sale, size: 20),
+                    label: Text(L10n.t('cart.checkout')),
                   ),
                 ),
               ],
@@ -638,10 +686,10 @@ class _CartLine extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
+                  // 单价**不显示了**（右边那个金额就是"单价 × 份数"，写两遍是重复）——
+                  // 这里只留「点这一行可以改」这句提示
                   Text(
-                    // 单价（+ 单位，例如「¥140.00 / 份」）· 点这一行可以改
-                    '${item.menuItem.hasUnit ? '${money(item.unitPrice, settings.currencySymbol)} / ${item.menuItem.unit}' : money(item.unitPrice, settings.currencySymbol)}'
-                    ' · ${L10n.t('cart.tapToEdit')}',
+                    L10n.t('cart.tapToEdit'),
                     style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
                   ),
                 ],
@@ -766,16 +814,18 @@ class _PlacedLine extends StatelessWidget {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${money(line.unitPrice, symbol)}'
-                      '${line.unit.trim().isEmpty ? '' : ' / ${line.unit.trim()}'}'
-                      '${detail.isEmpty ? '' : ' · $detail'}',
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 3,
-                      style:
-                          TextStyle(fontSize: 14, color: Colors.grey.shade600),
-                    ),
+                    // 单价**不显示了**（右边那个金额就是"单价 × 份数"）；
+                    // 这一行只留**选项 / 备注**（有才显示）
+                    if (detail.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        detail,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 3,
+                        style: TextStyle(
+                            fontSize: 14, color: Colors.grey.shade600),
+                      ),
+                    ],
                   ],
                 ),
               ),

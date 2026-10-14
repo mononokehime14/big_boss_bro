@@ -62,6 +62,8 @@ class PosScreen extends StatelessWidget {
                   child: CartPanel(
                     onSave: () => saveOrderFlow(context),
                     onKitchen: () => kitchenOrderFlow(context),
+                    // 结账：记单之后直接开这张单的结账窗口（外卖当场付钱用）
+                    onCheckout: () => checkoutOrderFlow(context),
                   ),
                 ),
               ],

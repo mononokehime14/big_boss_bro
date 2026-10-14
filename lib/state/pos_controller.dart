@@ -545,8 +545,10 @@ class PosController extends ChangeNotifier {
       table: isTakeaway ? '' : (table ?? _selectedTable),
       // 外卖单的名字 = "保存过"的外卖单（起过名才会出现在下拉列表里，见 openTakeawayOrders）
       label: isTakeaway ? _selectedTakeawayLabel : '',
-      // 外卖单每天从 1 开始的号（没起名字的外卖单，厨房单顶上打的就是它，见 Order.dailyNo）
-      dailyNo: isTakeaway ? _nextTakeawayNo() : 0,
+      // **所有单**都拿一个"当天从 1 开始"的号（堂食 / 外卖 / 电话外卖**共用**一条序列）：
+      // 订单页的**默认排序**就是按它从大到小排；外卖单没起名字时，
+      // 厨房单顶上打的那行大字也是它（见 Order.dailyNo）。
+      dailyNo: _nextDailyNo(),
       orderType: _selectedType,
       status: OrderStatus.inProgress,
       cashier: cashier,
@@ -695,6 +697,31 @@ class PosController extends ChangeNotifier {
       .where((o) => o.isInProgress && o.isTakeaway && o.label.trim().isNotEmpty)
       .toList();
 
+  /// **刚「保存 / 厨房 / 结账」动过的那张单**的 id（本地状态，不落盘）。
+  ///
+  /// 只给购物车那个「**结账**」按钮兜底用：购物车已经清空（比如刚点过「厨房」）、
+  /// 而 [openOrderForSelectedTable] 又认不回来的时候，就结这一张。
+  ///
+  /// 为什么非要有它：**没起名字的外卖单**既没有桌号也没有名字，
+  /// [openOrderForSelectedTable] 故意找不到它（外卖每单独立），
+  /// 但"刚下的这一单"当然要能直接结账 —— 见 `checkoutOrderFlow`。
+  String _lastTouchedOrderId = '';
+
+  /// 见 [_lastTouchedOrderId]。已经结账 / 被删掉的会返回 null。
+  Order? get lastTouchedOrder {
+    if (_lastTouchedOrderId.isEmpty) return null;
+    for (final o in _orders) {
+      if (o.id == _lastTouchedOrderId && o.isInProgress) return o;
+    }
+    return null;
+  }
+
+  /// 记一下"这一单刚被保存 / 下厨房 / 结账动过"（只影响上面那个兜底）。
+  void markTouchedOrder(String orderId) {
+    if (orderId.isEmpty) return;
+    _lastTouchedOrderId = orderId;
+  }
+
   /// 这个外卖单名字能不能用？
   ///
   /// 不允许：空的、和**桌号**重名、和**别的进行中外卖单**重名。
@@ -743,16 +770,18 @@ class PosController extends ChangeNotifier {
     return _orders[i];
   }
 
-  /// **今天的外卖号**：当天已有的最大号 + 1（从 1 开始）。
+  /// **今天的单号**：当天已有的最大号 + 1（从 1 开始）。
+  ///
+  /// **堂食 / 外卖 / 电话外卖共用一条序列**（不分开算）：这样订单页按单号排的时候，
+  /// 一天里谁先开的一目了然，也不会出现"三张单都是 #1"。
   ///
   /// 为什么从订单本身推、而不是存个计数器：重启/换设备都不会把号弄乱，也不占存储。
   /// 代价是"当天删掉最后一张单之后号会被复用"—— 无所谓，这个号只是给人看的
   /// （外卖单**没起名字**时，厨房单顶上那行大字打的就是它，见 Order.dailyNo）。
-  int _nextTakeawayNo() {
+  int _nextDailyNo() {
     final today = _dayKey(DateTime.now());
     var max = 0;
     for (final o in _orders) {
-      if (!o.isTakeaway) continue;
       if (_dayKey(o.createdAt) != today) continue;
       if (o.dailyNo > max) max = o.dailyNo;
     }
@@ -761,8 +790,8 @@ class PosController extends ChangeNotifier {
 
   static String _dayKey(DateTime t) => '${t.year}-${t.month}-${t.day}';
 
-  /// **下一张外卖单会拿到的号**（下拉列表里显示「外卖 #4」这种，让人心里有数）。
-  int get nextTakeawayNo => _nextTakeawayNo();
+  /// **下一张单会拿到的号**（下拉列表里显示「外卖 #4」这种，让人心里有数）。
+  int get nextTakeawayNo => _nextDailyNo();
 
   /// 某个桌号上有多少「进行中」的菜（用于选桌界面显示）。
   int openItemCountForTable(String table) {
