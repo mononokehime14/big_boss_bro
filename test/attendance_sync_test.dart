@@ -98,7 +98,11 @@ void main() {
       expect(row['employee_id'], 'e1');
       expect(row['kind'], 'out');
       expect(row['device_id'], '收银台A');
-      expect(row['at'], DateTime(2026, 9, 21, 18, 30).toIso8601String());
+      // ⚠️ 必须是**带时区标记的 UTC**（`...Z`）。不带的话 Postgres 会按数据库时区
+      // （Supabase = UTC）解释这个「本机时间字符串」→ 存进去的瞬间整整差一个 UTC 偏移
+      // （真实踩过：蒂华纳的打卡全早 7 小时，后台 admin.html 显示 04:43 而不是 11:43）。
+      expect(row['at'], endsWith('Z'), reason: '不带时区的时间串会被当成 UTC');
+      expect(row['at'], DateTime(2026, 9, 21, 18, 30).toUtc().toIso8601String());
       expect(row.containsKey('created_at'), isFalse);
       expect(row.containsKey('pushed'), isFalse, reason: '本地字段不往上传');
     });
@@ -116,7 +120,10 @@ void main() {
       expect(p.employeeId, 'e2');
       expect(p.kind, PunchKind.clockOut);
       expect(p.pushed, isTrue);
-      expect(p.at, DateTime.utc(2026, 9, 21, 18, 30));
+      // 服务器那份是 UTC → 统一转回**本机时间**（考勤的 dayKey/timeHm 都按本机时间算，
+      // 混进一个 UTC 的会让下午 5 点以后的卡分到第二天去）
+      expect(p.at.isUtc, isFalse);
+      expect(p.at, DateTime.utc(2026, 9, 21, 18, 30).toLocal());
     });
 
     test('老数据没有 kind → 当「上班」；没有 id → 用员工+时间推一个稳定 id', () {

@@ -61,7 +61,15 @@ class AttendancePunch {
 
   final PunchKind kind;
 
-  /// 打卡时间（本机时间）。
+  /// 打卡时间。
+  ///
+  /// **不变量：内存里存的永远是「本机时间」**（`isUtc == false`）。
+  /// 考勤那一整套（`dayKey()` 分组、`timeHm()` 显示、`clockInAt()` 找当天的卡）
+  /// 都是直接读这个 DateTime 的 `year/month/day/hour/minute` 字段的 —— 只要有一个
+  /// 是 UTC 的，跨天分组就会错（蒂华纳下午 5 点以后打的卡会被算到第二天）。
+  ///
+  /// 所以：**进来的时候**（本机存储 / 服务器行）都 `.toLocal()`，
+  /// **出去的时候**（存本机 / 发服务器）都 `.toUtc()`。
   final DateTime at;
 
   /// **已经推到后台了吗**（本地字段，跟订单的 `dirty` 一个意思）。
@@ -91,18 +99,24 @@ class AttendancePunch {
   static String fallbackId(String employeeId, DateTime at) =>
       '$employeeId-${at.microsecondsSinceEpoch}';
 
+  /// 存本机（shared_preferences）。
+  ///
+  /// `at` 用 **UTC + `Z`** 写：这样存的是「一个瞬间」，跟设备时区无关
+  /// （老数据是不带时区的本机时间，`DateTime.parse` 会按本机时区解释 —— 照样读得回来）。
   Map<String, dynamic> toJson() => {
         'id': id,
         'employeeId': employeeId,
         'kind': kind.id,
-        'at': at.toIso8601String(),
+        'at': at.toUtc().toIso8601String(),
         'pushed': pushed,
       };
 
   factory AttendancePunch.fromJson(Map<String, dynamic> json) {
     final employeeId = (json['employeeId'] ?? '').toString();
-    final at = DateTime.tryParse((json['at'] ?? '').toString()) ??
-        DateTime.fromMillisecondsSinceEpoch(0);
+    // 统一成本机时间（服务器那条路径也一样）—— 见 [at] 那个不变量
+    final at = (DateTime.tryParse((json['at'] ?? '').toString()) ??
+            DateTime.fromMillisecondsSinceEpoch(0))
+        .toLocal();
     // 老记录没有 id → 推一个稳定 id（见 fallbackId）
     final rawId = (json['id'] ?? '').toString();
     return AttendancePunch(

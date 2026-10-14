@@ -892,7 +892,10 @@ void main() {
                 .body) as List)
         .first as Map;
     expect(row['kind'], 'out');
-    expect(row['at'], startsWith('2026-09-21T18:30'));
+    // 送出去的时间必须是**带 Z 的 UTC 瞬间**（见 AttendanceSync.punchToRow 的注释）
+    expect(row['at'], endsWith('Z'));
+    expect(DateTime.parse(row['at'] as String),
+        DateTime(2026, 9, 21, 18, 30).toUtc());
     expect(s.attendance.unpushedPunches, isEmpty);
   });
 
@@ -919,6 +922,10 @@ void main() {
     expect(s.attendance.punches.length, 1);
     expect(s.attendance.punches.first.id, 'p-other');
     expect(s.attendance.punches.first.kind, PunchKind.clockOut);
+    // 服务器那份（UTC）拉回来要转成**本机时间**，不然按天分组会错
+    expect(s.attendance.punches.first.at.isUtc, isFalse);
+    expect(s.attendance.punches.first.at,
+        DateTime.utc(2026, 9, 21, 18, 30).toLocal());
     expect(s.attendance.punches.first.pushed, isTrue,
         reason: '服务器那份不用再推回去');
     expect(s.attendance.unpushedPunches, isEmpty);

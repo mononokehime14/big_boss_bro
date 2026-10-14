@@ -177,7 +177,9 @@
       </div>
     </div>
     <div class="muted" style="margin:10px 0 6px">
-      绿色 = 上班 · 蓝色 = 下班 · 最后一列是本周工时（小时）
+      绿色 = 上班 · 蓝色 = 下班 · 最后一列是本周工时（小时）<br>
+      打卡时间按<b>这台电脑的时区</b>显示（<span id="attTz"></span>）—— 库里存的是 UTC 瞬间，
+      换一台时区不同的电脑打开，这里显示的时分就会跟着变。
     </div>
     <div class="scroll" style="max-height:none"><table id="tblAttendance"></table></div>
     <div class="muted" style="margin:16px 0 6px" id="attStaffInfo"></div>
@@ -411,7 +413,9 @@ async function refreshAll(full) {
     renderDone();
     renderMenu();
     renderAttendance();
-    setStatus('已连接 · ' + new Date().toLocaleTimeString());
+    // 把时区写在状态栏里：后台所有时间都按**这台电脑**的时区显示，
+    // 不写出来就没法判断「时间不对」到底是数据错了还是时区不对
+    setStatus('已连接 · ' + new Date().toLocaleTimeString() + ' · ' + tzLabel());
   } catch (e) {
     setStatus('出错：' + e.message, true);
   }
@@ -439,6 +443,34 @@ function dayKey(iso) {
   const d = new Date(iso);
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
+
+// ---- 时区（重要：所有时间都按**这台电脑的时区**显示）----
+//
+// 数据库里的时间列（`attendance_punches.at` / `orders.closed_at` / `updated_at` …）
+// 都是 `timestamptz` —— 存的是**一个瞬间**，本身不带时区。网页这边的
+// `new Date(iso)` + `getHours()` 会把它换算成**浏览器所在时区**的墙上时间。
+//
+// 所以：如果这台电脑时区是蒂华纳，显示的就是店里的时间；如果哪天在别的时区
+// （比如国内）打开这个后台，看到的时间就会跟着变 —— 那不是数据错了，是显示器换了。
+// 页面上把时区写出来，就是为了让人一眼分清这两种情况。
+function tzName() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '(未知时区)';
+  } catch (_) {
+    return '(未知时区)';
+  }
+}
+
+/// `UTC-07:00`（夏令时会自动变 `UTC-07:00` / 冬天 `UTC-08:00`）。
+function tzOffset() {
+  const min = -new Date().getTimezoneOffset(); // 分钟，东为正
+  const sign = min < 0 ? '-' : '+';
+  const a = Math.abs(min);
+  return 'UTC' + sign + String(Math.floor(a / 60)).padStart(2, '0') + ':' + String(a % 60).padStart(2, '0');
+}
+
+/// `America/Tijuana (UTC-07:00)`。
+function tzLabel() { return tzName() + ' (' + tzOffset() + ')'; }
 function linesHtml(o) {
   const d = o.data || {};
   const lines = d.lines || [];
@@ -718,6 +750,8 @@ document.querySelectorAll('.tab').forEach((btn) => {
   $('email').value = cfg.email || '';
   $('doneDate').value = dayKey(new Date().toISOString());
   $('dayDate').value = dayKey(new Date().toISOString());
+  // 考勤页那行提示里的时区（登录前就写好，登录后刷新时不用再动）
+  $('attTz').textContent = tzLabel();
   if (cfg.url && cfg.key && cfg.email) $('password').focus();
 })();
 </script>

@@ -248,6 +248,21 @@ void main() {
       expect(OrderSync.toRow(p, deviceId: 'A')['order_type'],
           'phonecall_takeaway');
     });
+
+    test('closed_at 必须是**带 Z 的 UTC**（跟打卡时间同一个坑）', () {
+      final at = DateTime(2026, 9, 20, 21, 6); // 店里的当地时间
+      final closed = order(
+        id: 'n1',
+        status: OrderStatus.completed,
+      ).copyWith(closedAt: at);
+
+      final row = OrderSync.toRow(closed, deviceId: 'A');
+
+      // 不带时区标记的「本机时间字符串」会被 Postgres 当成 UTC → 存进去的瞬间
+      // 差一个 UTC 偏移（后台按日期筛选「已结账」时，晚上结的单会跑到第二天）
+      expect(row['closed_at'], endsWith('Z'));
+      expect(DateTime.parse(row['closed_at'] as String), at.toUtc());
+    });
   });
 
   group('结账补丁 closePatch', () {

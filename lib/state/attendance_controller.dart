@@ -56,14 +56,24 @@ class AttendanceController extends ChangeNotifier {
   /// 同步用：采纳服务器上的打卡（按 id 合并，服务器那份优先，并标记为已上传）。
   ///
   /// 打卡是**只增不改**的，所以合并就是简单的并集 —— 不会像订单那样有冲突。
+  ///
+  /// ⚠️ **本地已经有、而且已经推上去过的那条，也要比一次时间**：
+  /// 老版本 App 把打卡时间当「本机时间字符串」发上去，Postgres 按 UTC 解释
+  /// → 库里存的是一个早了 7~8 小时的瞬间（蒂华纳）。服务器那份用
+  /// `supabase/fix_timezone.sql` 修好之后，这一步会把**本机这份**也一起纠正过来；
+  /// 不然「别的设备打的卡」在这台机器上会永远显示错的（本地那份 `pushed = true`，
+  /// 以前直接就跳过了）。
+  ///
+  /// 已经推上去过的记录，服务器那份就是权威 —— 这也顺手堵住一个坑：
+  /// 一台老设备（本地存着错的旧值）点「重置同步状态」时，不会拿错的值再盖回服务器。
   Future<void> adoptServerPunches(List<AttendancePunch> incoming) async {
     if (incoming.isEmpty) return;
     final byId = {for (final p in _punches) p.id: p};
     var changed = false;
     for (final p in incoming) {
       final mine = byId[p.id];
-      // 本地已经有了、而且已经推上去过 → 跳过
-      if (mine != null && mine.pushed) continue;
+      // 本地已经有了、已经推上去过、而且**是同一个瞬间**（只是 UTC 标记不同）→ 跳过
+      if (mine != null && mine.pushed && mine.at.isAtSameMomentAs(p.at)) continue;
       byId[p.id] = p.copyWith(pushed: true);
       changed = true;
     }
@@ -115,7 +125,9 @@ class AttendanceController extends ChangeNotifier {
     PunchKind kind = PunchKind.clockIn,
     DateTime? now,
   }) async {
-    final at = now ?? DateTime.now();
+    // `.toLocal()` 是保险：`AttendancePunch.at` 的不变量是「本机时间」
+    // （传进来的 `now` 万一是 UTC，当天的分组/显示就会错一天）
+    final at = (now ?? DateTime.now()).toLocal();
     final p = pin.trim();
     Employee? who;
     for (final e in _employees) {

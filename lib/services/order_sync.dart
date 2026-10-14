@@ -177,6 +177,15 @@ class OrderSync {
   ///
   /// 服务器会自己覆盖 `rev` / `updated_at`，所以这里不用送它们；
   /// 送 `rev` 只是为了「乐观并发」时的参考，服务器不采信。
+  ///
+  /// ⚠️ `closed_at` 是 `timestamptz` → **必须转 UTC**再序列化，跟
+  /// `AttendanceSync.punchToRow` 是同一个坑：`DateTime.toIso8601String()` 对本机时间
+  /// 不带时区标记，Postgres 会按 UTC 解释它 → 存进去的瞬间差一个 UTC 偏移，
+  /// 后台按日期筛选「已结账」时，当地时间 17:00 之后结的单会跑到第二天去。
+  ///
+  /// （`data` 里的 `createdAt` / `closedAt` 是 jsonb 里的**墙钟时间**，
+  /// 故意保留本机时分不动 —— 打印小票、看单详情要的是「店里几点」；
+  /// 只有一个时区的店，这样最直观。）
   static Map<String, dynamic> toRow(Order o, {required String deviceId}) => {
         'id': o.id,
         'status': o.status.id,
@@ -186,7 +195,7 @@ class OrderSync {
         'item_count': o.itemCount,
         'cashier': o.cashier,
         'device_id': deviceId.isEmpty ? o.deviceId : deviceId,
-        'closed_at': o.closedAt?.toIso8601String(),
+        'closed_at': o.closedAt?.toUtc().toIso8601String(),
         // 整张单原样存进 data（后台网页直接读它）
         'data': o.copyWith(dirty: false, deviceId: deviceId).toJson(),
       };

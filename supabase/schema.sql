@@ -135,7 +135,9 @@ end $$;
 --    attendance_staff    员工名单：**只有一行**（id='current'），整份名单 JSON + 版本号
 --                        （跟 menu 一个思路：改一次版本 +1，设备比版本号决定要不要拉）
 --    attendance_punches  打卡记录：一次打卡一行（上班 in / 下班 out），**只增不改**，
---                        所以设备之间合并就是「按 id 并集」，不存在冲突
+--                        所以设备之间合并就是「按 id 并集」，不存在冲突。
+--                        `at` 存的是 **UTC 瞬间**（timestamptz）—— 显示时按各自时区换算，
+--                        列上有注释；老数据存歪了的话跑 supabase/fix_timezone.sql。
 -- ---------------------------------------------------------------------------
 create table if not exists public.attendance_staff (
   id          text primary key default 'current',
@@ -166,7 +168,12 @@ create table if not exists public.attendance_punches (
   id          text primary key,                   -- App 生成的全局唯一 id（两台设备不会撞）
   employee_id text        not null,               -- 对应 data.staff[].id
   kind        text        not null default 'in',  -- in = 上班 / out = 下班
-  at          timestamptz not null,               -- 设备上打卡的时间
+  -- ⚠️ 设备打卡的时间，**存 UTC 瞬间**（App 送 `...Z`）。
+  --    `timestamptz` 本身不带时区，谁想看墙上时间谁自己换算（App 按设备时区、
+  --    admin.html 按浏览器时区）。
+  --    历史坑：老版 App 送的是**不带时区标记的本机时间字符串**，被当成 UTC 存下来
+  --    → 早了一个 UTC 偏移（蒂华纳 7~8 小时）。修法见 supabase/fix_timezone.sql。
+  at          timestamptz not null,               -- 打卡那一刻（UTC）
   device_id   text        not null default '',    -- 哪台设备打的
   created_at  timestamptz not null default now()  -- 服务器收到的顺序（增量同步就靠它）
 );

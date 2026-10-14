@@ -75,6 +75,19 @@ class AttendanceSync {
 
   /// 一次打卡 → 服务器 `attendance_punches` 的一行。
   ///
+  /// ⚠️ **`at` 必须转成 UTC 再序列化**（`toUtc()` 之后 `toIso8601String()` 会带 `Z`）。
+  ///
+  /// 真实踩过的坑（蒂华纳店里）：`DateTime.toIso8601String()` 对**本机时间**
+  /// 是不带任何时区标记的（`2026-06-15T11:43:00.000`），PostgREST/Postgres 只能按
+  /// **数据库会话时区**（Supabase = UTC）去解释它 —— 于是库里存的是一个**早了整个
+  /// UTC 偏移**的瞬间（蒂华纳夏令时 = 早 7 小时）。
+  ///
+  /// 为什么 App 里看着还是对的：`timeHm()` / `dayKey()` 直接读 DateTime 的字段，
+  /// 而拉回来的那个 DateTime 是 UTC（时分正好等于当初写的本机时分）—— 两个错误互相
+  /// 抵消了。后台 `admin.html` 老实用浏览器时区去换算，就露馅了（11:43 → 04:43）。
+  ///
+  /// 带上 `Z` 之后就只有一个瞬间，谁在哪台设备/哪个时区看都会换算成本地时间。
+  ///
   /// 注意**不送** `created_at`（那是服务器收到的时间，由数据库自己写）：
   /// 增量拉取就是按它走的，让客户端去写会乱。
   static Map<String, dynamic> punchToRow(
@@ -85,11 +98,16 @@ class AttendanceSync {
         'id': p.id,
         'employee_id': p.employeeId,
         'kind': p.kind.id,
-        'at': p.at.toIso8601String(),
+        'at': p.at.toUtc().toIso8601String(),
         'device_id': deviceId,
       };
 
   /// 服务器一行 → 一次打卡（从服务器来的都算「已上传」）。
+  ///
+  /// ⚠️ `at` 在库里是 `timestamptz`，取回来是 UTC（`...Z`）—— 这里**转成本机时间**，
+  /// 保证 [AttendancePunch.at] 的不变量（内存里永远是本机时间）在两条解析路径上一致。
+  /// 不转的话 `dayKey()` / `timeHm()` 会按 UTC 的日期和时分去分组/显示，
+  /// 蒂华纳下午 5 点以后打的卡会被算到第二天去。
   ///
   /// 万一那一行没有 `id`（正常不会有：它是主键），就用「员工 + 时间」推一个
   /// **稳定** id —— 跟本机那条解析路径用同一个 [AttendancePunch.fallbackId]，
@@ -98,12 +116,15 @@ class AttendanceSync {
     final employeeId = (row['employee_id'] ?? '').toString();
     final at = DateTime.tryParse((row['at'] ?? '').toString()) ??
         DateTime.fromMillisecondsSinceEpoch(0);
+    final localAt = at.toLocal();
     final rawId = (row['id'] ?? '').toString();
     return AttendancePunch(
-      id: rawId.isNotEmpty ? rawId : AttendancePunch.fallbackId(employeeId, at),
+      id: rawId.isNotEmpty
+          ? rawId
+          : AttendancePunch.fallbackId(employeeId, localAt),
       employeeId: employeeId,
       kind: PunchKind.fromId(row['kind'] as String?),
-      at: at,
+      at: localAt,
       pushed: true,
     );
   }

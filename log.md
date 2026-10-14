@@ -1764,3 +1764,57 @@ Actual:   '1     Chop Suey \n     Pollo      '
    `By number / Por número`（不是键名）。
 7. 跑测试：`flutter test`（这轮动了 `test/cart_panel_test.dart` 和 `test/widget_test.dart`）。
 
+---
+
+## 修（时区）：后台考勤的打卡时间**早 7~8 小时** —— 送 Supabase 的时间没带时区
+
+> 你问的：admin.html 里某员工 **04:43 上班 / 14:06 下班**，App 里是 **11:43 / 21:06**，
+> 差 7 小时（蒂华纳夏令时 PDT = UTC-7）。**库里存的值是错的**，admin.html 反而是对的
+> （它老实地按浏览器时区换算）。详细分析见 `troubleshooting.md` 问题 16。
+
+### 根因（一句话）
+
+`DateTime.toIso8601String()` 对**本机时间**生成的字符串**不带时区标记**
+（`2026-06-15T11:43:00.000`）。PostgREST 交给 Postgres 写进 `timestamptz` 列时，
+Postgres 只能按数据库会话时区（Supabase = UTC）去解释 → 库里存的瞬间**早了一个 UTC 偏移**。
+
+App 里之所以看着是对的：拉回来的那个 DateTime 是 **UTC 的 11:43**，而 `timeHm()` /
+`dayKey()` 直接读 `.hour` / `.year-month-day`、**没做 `.toLocal()`** ——
+「写的时候当成 UTC」和「显示的时候当成本机时间」两个错误正好抵消。
+
+### 改了什么
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `lib/services/attendance_sync.dart` | `punchToRow`：`'at': p.at.toUtc().toIso8601String()`（**带 `Z`**）；`punchFromRow`：拉回来的 `.toLocal()` |
+| `lib/services/order_sync.dart` | `toRow` 的 `closed_at` 同样 `.toUtc()`（同一个坑：晚上结的单会跑到第二天，影响后台「已结账 / 日结」） |
+| `lib/models/employee.dart` | 给 `AttendancePunch.at` 定下不变量：**内存里永远是本机时间**。本机存储 `toJson` 写 UTC+`Z`、`fromJson` 读 `.toLocal()` |
+| `lib/state/attendance_controller.dart` | `punch()` 的 `now` 也 `.toLocal()`；`adoptServerPunches()` 对「本地已有且已上传」的那条**也比一次时间** —— 服务器那份修好后各设备能自己纠正（否则错值永远留在本地，点「重置同步状态」还会把服务器再盖坏一次） |
+| `supabase/admin.html` | 状态栏 + 考勤页写出**当前显示用的时区**（`America/Tijuana (UTC-07:00)`）：以后时间不对，先看这一行就能分清是数据错还是换了台电脑看 |
+| `supabase/schema.sql` | `attendance_punches.at` 的列注释写清楚「存 UTC 瞬间」 |
+| `supabase/fix_timezone.sql` | **新增**：一次性把已经存歪的行改回来（带预览 + 计数核对，**只跑一次**） |
+| `test/attendance_sync_test.dart`、`test/sync_service_test.dart`、`test/order_sync_test.dart` | 断言改成「必须带 `Z`」/「拉回来必须是本机时间」（原来那条断言把旧的错误格式锁死了） |
+| `troubleshooting.md` | 问题 16 详细记录这个坑 |
+
+### ⚠️ 光改代码不够 —— 要跑一次 SQL
+
+已经存进库里的那些行**不会自己变好**。`supabase/fix_timezone.sql` 里有：
+预览 → UPDATE → 计数核对 → 验收，四步都写好了，脚本里带说明。
+
+顺序上：**先跑 SQL 或者先更新 App 都行**（脚本靠「`at` 比 `created_at` 早 6~9 小时」
+认出错的行，不会碰到新版 App 正确写进来的数据）。
+
+**你要试的**：
+
+1. 打开 `supabase/fix_timezone.sql`，**一段一段选中**跑（别整份 Run）：
+   第 0 步查时区（`utc_offset` 应该是 7:00 或 8:00，对不上就先换掉文件里的
+   `America/Tijuana`）→ 第 1 步**只看预览**：`old_at` 是不是 04:43、`new_at` 是不是 11:43。
+   **脚本里没有要填的占位符了** —— 它靠「`at` 比 `created_at` 早 6~9 小时」认出错行，
+   预览列出来的行 = 真正会被改的行，一行不多一行不少。
+2. 对得上再选中第 2 步（`begin; … commit;`），跑完看 `still_suspicious` 是 **0** 再 commit。
+3. 刷新 `admin.html` 的考勤页：应该跟 App 里显示的一样（11:43 / 21:06），
+   而且状态栏能看到 `America/Tijuana (UTC-07:00)`。
+4. 在**另一台设备**（手机 / 平板）上打开考勤页确认同一批打卡显示一致
+   —— 这是以前最容易露馅的地方（本地那份 `pushed = true` 的错值会被服务器纠正过来）。
+5. `flutter test`（这轮动了三个测试文件的断言）。
+

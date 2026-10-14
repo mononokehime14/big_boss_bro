@@ -709,6 +709,65 @@
 
 ---
 
-## 问题 16：（预留）下一个报错
+## 问题 16：后台考勤的打卡时间比 App 里**早 7~8 小时**（时区 / UTC 那个坑）
+
+- **现象**：同一个员工同一天，App 里显示「11:43 上班 · 21:06 下班」，后台
+  `supabase/admin.html` 的考勤页显示「04:43 · 14:06」。差 7 小时（冬天差 8 小时），
+  看着像"中国时间"，其实不是 —— 是**墙上时间被当成了 UTC**。
+  同一类的还有：后台「已结账 / 日结」里，晚上 17:00 之后结的单会跑到第二天去。
+
+- **原因**：`DateTime.toIso8601String()` 对**本机时间**（`isUtc == false`）生成的字符串
+  **不带任何时区标记**（`2026-06-15T11:43:00.000`）。PostgREST 把它交给 Postgres 写进
+  `timestamptz` 列时，Postgres 只能按**数据库会话时区**（Supabase = UTC）去解释它 →
+  库里存的瞬间比真实瞬间**早了一个 UTC 偏移**（蒂华纳夏令时 PDT = 7 小时）。
+
+  为什么 App 里看着是对的（**两个错误互相抵消**）：
+  - 写：本机 11:43 的字符串 → 库里存成 `11:43Z`；
+  - 读：拉回来 `DateTime.parse('...11:43:00+00')` 得到 **UTC 的 11:43**，
+    而 `timeHm()` / `dayKey()` 直接读 `.hour` / `.year-month-day`，**没做 `.toLocal()`**
+    → 显示「11:43」，正好等于员工看到的那个钟点。
+
+  后台 `admin.html` 反而是**对的**：`new Date(iso)` + `getHours()` 老实地按浏览器时区
+  换算 → 显示出那个错瞬间在蒂华纳的墙上时间（04:43）。所以不是后台算错了，
+  是**库里存的值本来就是错的**（列类型 `timestamptz` 没问题）。
+
+  同一个坑还有两个隐藏后果（当时没暴露而已）：
+  1. 别的设备（或重装后）拉这批打卡时按 UTC 显示 —— 同一批数据两台设备显示不一样；
+  2. 蒂华纳当地 17:00 以后打的卡，`dayKey()` 按 UTC 日期分组 → 整条记录被算到第二天。
+
+- **处理**：
+  1. **代码**（都加 `.toUtc()` / `.toLocal()`，读写两边一起改才有意义）：
+     - `lib/services/attendance_sync.dart`：`punchToRow` 送 `at.toUtc().toIso8601String()`；
+       `punchFromRow` 把拉回来的 `.toLocal()`；
+     - `lib/services/order_sync.dart`：`toRow` 的 `closed_at` 同样 `.toUtc()`；
+     - `lib/models/employee.dart`：`AttendancePunch` 定下不变量 —— **内存里永远是本机时间**，
+       本机存储 / 服务器两条解析路径都 `.toLocal()`，序列化都 `.toUtc()`；
+     - `lib/state/attendance_controller.dart`：`punch()` 的 `now` 也 `.toLocal()`；
+       `adoptServerPunches()` 对「本地已有且已上传」的那条也比一次时间
+       —— 服务器那份修好之后，各台设备能自己纠正过来（不然错值会永远留在本地，
+       点「重置同步状态」还会拿它把服务器再盖坏一次）。
+  2. **数据**：代码改不好已经存进去的行。跑一次 `supabase/fix_timezone.sql`
+     （带预览 + 计数核对，**只跑一次**；靠「`at` 比 `created_at` 早 6~9 小时」
+     这个特征认出错的行）。
+  3. **看得见**：`admin.html` 状态栏和考勤页现在会写出**当前显示用的时区**
+     （例如 `America/Tijuana (UTC-07:00)`）—— 以后时间看着不对，先看这一行，
+     就能立刻分清是"数据错了"还是"换了台时区不同的电脑在看"。
+
+- **涉及文件**：`lib/services/attendance_sync.dart`、`lib/services/order_sync.dart`、
+  `lib/models/employee.dart`、`lib/state/attendance_controller.dart`、
+  `supabase/admin.html`、`supabase/fix_timezone.sql`（新增）
+
+- **状态**：待验证 ⏳（更新 App + 跑一次 `fix_timezone.sql` 之后：后台考勤应该跟 App
+  显示一致；把手机/平板的系统时区临时改成别的时区再看，App 显示的时间应该跟着变而
+  后台不变 —— 两边都对，只是各按各的时区显示）
+
+- **以后注意**：往 Supabase 的 **`timestamptz` 列**写时间，一律 `.toUtc()`；
+  从服务器读回来要显示/分组，一律 `.toLocal()`。
+  只有 `jsonb` 里给打印小票用的那些墙上时间（`data.createdAt` / `data.closedAt`）
+  故意保留本机时分 —— 那两个字段**不要**顺手改成 UTC，不然小票上的时间会变。
+
+---
+
+## 问题 17：（预留）下一个报错
 
 > 遇到就照模板填（现象/原因/处理/文件/状态），并同步更新 `log.md` 变更记录。
