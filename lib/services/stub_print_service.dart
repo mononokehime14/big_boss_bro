@@ -27,6 +27,7 @@ class UnsupportedPrintService implements ReceiptPrintService {
     Order order,
     Settings settings, {
     bool isAppend = false,
+    int drinksFrom = -1,
   }) async =>
       PrintError.unsupported;
 

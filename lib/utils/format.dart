@@ -4,6 +4,18 @@ String money(num value, String symbol) => '$symbol${value.toStringAsFixed(2)}';
 /// 只保留两位小数（不带货币符号）。
 String moneyNumber(num value) => value.toStringAsFixed(2);
 
+/// **带正负号的金额**，给「特别备注加价」这种地方用：`+70`、`-60`、`+12.50`。
+///
+/// 整数不带小数尾巴（`+70` 而不是 `+70.00`）—— 备注价签要短，贴在文字后面才好看。
+String signedAmount(num value) {
+  final v = value.toDouble();
+  final abs = v.abs();
+  final text = abs == abs.roundToDouble()
+      ? abs.toStringAsFixed(0)
+      : abs.toStringAsFixed(2);
+  return v < 0 ? '-$text' : '+$text';
+}
+
 /// 短时间格式（同步状态用）：`2025-01-31 09:05`。
 String timeShort(DateTime t) =>
     '${t.year}-${_two(t.month)}-${_two(t.day)} ${_two(t.hour)}:${_two(t.minute)}';

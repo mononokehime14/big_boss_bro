@@ -1,8 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:big_boss_bro/data/settings_store.dart';
 
 void main() {
+  setUp(() {
+    // 存/读设置的测试要用 SharedPreferences（测试里没插件 → 得用假数据）
+    SharedPreferences.setMockInitialValues({});
+  });
   group('备注按种类分组', () {
     test('通用备注所有种类都能用；分类备注只归自己', () {
       final s = Settings();
@@ -23,6 +28,73 @@ void main() {
 
       s.removeNote('drink', '加冰');
       expect(s.notesFor('drink'), isEmpty);
+    });
+  });
+
+  // 常用备注也能**带加价**（「换炒饭 +70」）：设置里那条备注后面那个小金额框。
+  group('常用备注的加价', () {
+    test('存加价 / 查加价 / 不加价就是 0', () {
+      final s = Settings();
+      s.addNote('hot', '换炒饭', price: 70);
+      s.addNote('hot', '少辣'); // 没填金额 = 不改价
+      expect(s.notePriceFor('hot', '换炒饭'), 70);
+      expect(s.notePriceFor('hot', '少辣'), 0);
+      expect(s.notePriceFor('hot', '没有这条'), 0);
+    });
+
+    test('同一条备注再加一次 = 改它的加价；填 0 = 改回不改价', () {
+      final s = Settings();
+      s.addNote('hot', '换炒饭', price: 70);
+      s.addNote('hot', '换炒饭', price: 50);
+      expect(s.notePriceFor('hot', '换炒饭'), 50);
+      expect(s.notesFor('hot'), ['换炒饭']); // 不会变成两条
+
+      s.addNote('hot', '换炒饭', price: 0);
+      expect(s.notePriceFor('hot', '换炒饭'), 0);
+      expect(s.notePricesByCategory.containsKey('hot'), isFalse,
+          reason: '0 的不用记（省得存一堆没用的）');
+    });
+
+    test('通用（""）的加价对所有种类生效；分类自己的优先', () {
+      final s = Settings();
+      s.addNote('', '加饭', price: 10);
+      expect(s.notePriceFor('drink', '加饭'), 10);
+      expect(s.notePriceFor('', '加饭'), 10);
+
+      // 同一个名字在某个分类下另定一个价 → 那个分类用自己那份
+      s.addNote('drink', '加饭', price: 15);
+      expect(s.notePriceFor('drink', '加饭'), 15);
+      expect(s.notePriceFor('hot', '加饭'), 10);
+    });
+
+    test('删掉这条备注，加价也一起删', () {
+      final s = Settings();
+      s.addNote('hot', '换炒饭', price: 70);
+      s.removeNote('hot', '换炒饭');
+      expect(s.notesFor('hot'), isEmpty);
+      expect(s.notePriceFor('hot', '换炒饭'), 0);
+      expect(s.notePricesByCategory.containsKey('hot'), isFalse);
+    });
+
+    test('加价能存住（重启 App 还在）', () async {
+      final store = SettingsStore();
+      final s = Settings()..addNote('hot', '换炒饭', price: 70);
+      await store.save(s);
+
+      final back = await store.load();
+      expect(back.notesFor('hot'), ['换炒饭']);
+      expect(back.notePriceFor('hot', '换炒饭'), 70);
+    });
+
+    test('老数据（没有加价这个字段）读回来 = 所有备注都不改价', () async {
+      // 只存了备注文字、没有 note_prices_by_category 那种老存档
+      SharedPreferences.setMockInitialValues({
+        'notes_by_category': '{"hot":["少辣"]}',
+      });
+      final back = await SettingsStore().load();
+      expect(back.notesFor('hot'), ['少辣']);
+      expect(back.notePriceFor('hot', '少辣'), 0);
+      expect(back.notePricesByCategory, isEmpty);
     });
   });
 

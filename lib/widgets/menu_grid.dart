@@ -13,7 +13,7 @@ import 'custom_item_dialog.dart';
 import 'item_customize_dialog.dart';
 import 'reorderable_cell.dart';
 
-/// 某个种类下的菜品格子。
+/// 菜品格子（某个种类下的菜 **或者搜索结果**）。
 ///
 /// 格子**底色 = 所属种类的颜色**，上面**只写菜名**（价格不显示 —— 点开
 /// 「点菜」框里会写清楚单价和合计；名字太长就省略号，格子不会为它变大）。
@@ -24,6 +24,9 @@ import 'reorderable_cell.dart';
 ///   `reorderable_cell.dart`）；首字母 / 流行度下 = 快速加一份（不弹框）。
 ///
 /// 排序（默认 / 首字母 / 流行度）在 `menu_area.dart` 的排序条里选。
+///
+/// **搜索**（`PosController.menuSearching`）时这里显示的是**所有种类里**搜到的菜，
+/// 每个格子按它自己的种类上色；这时候不能拖动（拖的顺序只在种类内才有意义）。
 class MenuGrid extends StatelessWidget {
   const MenuGrid({super.key});
 
@@ -31,24 +34,32 @@ class MenuGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final pos = context.watch<PosController>();
     final settings = context.watch<SettingsController>().settings;
+    final mode = MenuSort.fromId(settings.menuSort);
+    final searching = pos.menuSearching;
 
     final catId = pos.selectedCategoryId;
-    final catIndex = pos.categories.indexWhere((c) => c.id == catId);
-    final bg = Color(catIndex >= 0
-        ? categoryColorAt(pos.categories[catIndex].colorValue, catIndex)
-        : 0xFF1FA85A);
+    final items = searching
+        ? pos.searchItems(mode, order: settings.menuOrder)
+        : (catId.isEmpty
+            ? const <MenuItem>[]
+            : pos.itemsSorted(catId, mode, order: settings.menuOrder));
 
-    final mode = MenuSort.fromId(settings.menuSort);
-    final items = catId.isEmpty
-        ? const <MenuItem>[]
-        : pos.itemsSorted(catId, mode, order: settings.menuOrder);
-    // 「默认」= 本机记住的顺序，可以拖；另外两种是算出来的顺序，拖了没意义
-    final canDrag = mode == MenuSort.natural;
+    /// 这道菜的格子用什么底色：**它自己那个种类的颜色**（搜索时各菜可能不同种类）。
+    Color bgOf(MenuItem item) {
+      final i = pos.categories.indexWhere((c) => c.id == item.categoryId);
+      return Color(i >= 0
+          ? categoryColorAt(pos.categories[i].colorValue, i)
+          : 0xFF1FA85A);
+    }
+
+    // 「默认」= 本机记住的顺序，可以拖；另外两种是算出来的顺序，拖了没意义。
+    // 搜索时也不给拖（结果跨种类，顺序表按种类分组存）。
+    final canDrag = mode == MenuSort.natural && !searching;
 
     if (items.isEmpty) {
       return Center(
         child: Text(
-          L10n.t('category.empty'),
+          L10n.t(searching ? 'menu.search.none' : 'category.empty'),
           style: TextStyle(color: Colors.grey.shade600),
         ),
       );
@@ -81,7 +92,7 @@ class MenuGrid extends StatelessWidget {
           child: _MenuCell(
             item: item,
             currency: settings.currencySymbol,
-            background: bg,
+            background: bgOf(item),
             // 默认排序时，长按留着拖动用 —— 不然会一边拖一边加一份
             quickAdd: !canDrag,
           ),
@@ -142,6 +153,8 @@ class _MenuCell extends StatelessWidget {
             item,
             selections: result.selections,
             notes: result.notes,
+            // 备注的加价（「换炒饭 +70」）要跟着进购物车
+            notePrices: result.notePrices,
             quantity: result.quantity,
           );
         },

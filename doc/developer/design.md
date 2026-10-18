@@ -38,7 +38,9 @@
 **两条关键设计**
 1. **先记单、后打印**：只要确认下单/结账，订单立刻保存；打印失败只提示“重试/跳过”，**订单绝不丢**。
 2. **两种打印**：
-   - **厨房单**（下单/追单时）：只有 `数量 + 菜名 + 桌号`，不含价格 —— 给厨房做菜用。菜品区**数量在左、菜名在右**。
+   - **厨房单**（下单/追单时）：只有 `数量 + 菜名 + 桌号 / 外卖名字`，不含价格 —— 给厨房做菜用。
+     版式从上到下 = **别针留白 → 票号 + 时间 → 桌号/名字/等待时间（特大）→ 菜品区（数量在左、
+     菜名居中）→ 底部「西文 + 中文」的堂食/外卖徽标**（见 `kitchen_ticket.md` §0）。
    - **顾客小票**（结账时）：含 `单价 / 金额 / 合计 / 支付方式 / 谢谢光临` —— 给客人。
 
 ---
@@ -251,6 +253,9 @@ Excel(.xlsx) ──xlsx_reader──> 二维字符串表 ──menu_importer─�
 - `PosController.selectedCategoryId` 为空 = **第一步（选种类）**，非空 = **第二步（选菜品）**。
   `widgets/menu_area.dart` 根据它切换：`CategoryGrid`（种类卡片）↔ `CategoryHeader + MenuGrid`。
   点顶部色条 → `clearCategory()` 回到种类列表。
+- **搜索**是第三条路：`PosController.menuSearchQuery` 非空（`menuSearching`）时，
+  `MenuArea` 直接显示 `MenuGrid` 的**跨种类搜索结果**（`searchItems()`，菜名 + 昵称匹配），
+  每个格子仍按**它自己的种类**上色，也不给拖动（顺序表是按种类分组存的）。
 - 配色在 `utils/category_colors.dart`（**纯 Dart**，服务和测试都能用）：
   10 色调色板 + `paletteColorAt(index)`。**按分类顺序轮换取色，所以相邻分类必然不同色**。
   `Category.colorValue` 存最终颜色；为 0 时按序号自动取，用户也能在「菜品管理」里手动指定。
@@ -340,6 +345,14 @@ accounts(JSON) ──AccountStore──> AuthController ──> app.dart 门禁(
   改已下单行份数（`changeOrderLineQuantity`）都会**停在最少份数**，
   要整行删掉用 ✕。⚠️ 导入器里这一列**必须在"定制项分组"之前认掉并占位**，
   否则它会被当成下一组定制项的名字列（真实踩过：`Verdura Cantones` 莫名多出一组）。
+- **「厨房收到几份」记在行上**：`OrderLine` 用 `quantity`（一共几份，账单按它算钱）+
+  `sentQty`（厨房已经收到几份）两个数，`unsentQty = quantity - sentQty` 就是**这一行还要补打几份**。
+  于是：同款菜**并进原来那一行**（菜名 + 单价 + 定制项 + 特别备注含加价全一样才算同款），
+  厨房单只打 `unsentQty`；「保存」不限次数、厨房单没变化就不出纸。
+  老数据只有 `sentToKitchen`(bool) → 读成 `sentQty = quantity`（那时候下单一律打整张单）。
+- **外卖单不靠名字"存在"**：`openTakeawayOrders()` 列的是**所有进行中的外卖单**（按当天号排），
+  没名字的用 `#号` 显示；点它 = `PosController.focusOrder(单)`（按 **id** 钉住），
+  所以点完「厨房」这张单还在购物车里，能接着加菜 / 结账，结账后才从列表消失。
 
 ### 12. 异步与重建（容易踩的两个点）
 

@@ -46,11 +46,18 @@ abstract class ReceiptPrintService {
   bool get isConnected;
   PrinterDevice? get connectedDevice;
 
-  /// 打印「厨房单」：下单/追单时给厨房看（只有菜名+数量+桌号）。
+  /// 打印「厨房单」：下单/追单时给厨房看（桌号 / 外卖名字 + 菜名 + 数量，不含价格）。
+  ///
+  /// 版式见 `receipt_layout.dart` 的 `buildKitchenRows` 和 `kitchen_ticket.md` §0：
+  /// 上面留别针区 → 票号 + 时间 → 桌号/名字（特大）→ 菜品 → **底部堂食/外卖徽标（西文 + 中文）**。
+  ///
+  /// [drinksFrom] = **第一道饮料在第几行**（`-1` = 没有饮料）：行要由调用方排成
+  /// 「餐品在前、饮料在后」，这里会在饮料前面打一条虚线（见 `PosController.kitchenTicketLines`）。
   Future<PrintError?> printKitchenTicket(
     Order order,
     Settings settings, {
     bool isAppend = false,
+    int drinksFrom = -1,
   });
 
   /// 打印「顾客小票 / 单子」：结账窗口里点「打印单子 / 再打一张」时打给客人

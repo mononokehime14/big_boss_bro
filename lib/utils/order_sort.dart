@@ -50,6 +50,22 @@ List<Order> sortInProgressOrders(
   }
 }
 
+/// **「进行中」现在的固定排法：按单号从小到大**。
+///
+/// 订单页那一排"排序方式"已经去掉了（实际没用）：进行中永远是**号小的在前**，
+/// 也就是**先开的单排在上面** —— 收银员顺着往下收，不会漏老单。
+///
+/// 单号每天从 1 开始，所以先按"哪一天"（旧的在前），同一天里号小的在前；
+/// 老数据没号（`0`）的排最前。同号用开单时间兜底，顺序永远确定。
+List<Order> sortOpenOrdersByNumber(List<Order> orders) => _sortBy(
+      orders,
+      (o) => <num>[
+        _dayNumber(o),
+        o.dailyNo > 0 ? o.dailyNo : 0,
+        o.createdAt.millisecondsSinceEpoch,
+      ],
+    );
+
 /// **「已结单」列表怎么排**（订单页「已结单」那一页的小开关）。
 enum ClosedSort {
   /// **默认 = 按单号**：单号从大到小（跟「进行中」的默认排序同一个规则：

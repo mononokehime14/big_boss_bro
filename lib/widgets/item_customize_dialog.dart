@@ -11,11 +11,16 @@ import '../utils/format.dart';
 class ItemEditResult {
   final List<String> selections;
   final List<String> notes;
+
+  /// 每条备注对应的**加价**（跟 [notes] 一一对应；短了按 0 算）。
+  final List<double> notePrices;
+
   final int quantity;
 
   const ItemEditResult({
     required this.selections,
     required this.notes,
+    this.notePrices = const [],
     required this.quantity,
   });
 }
@@ -71,6 +76,47 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
   late final List<String> _notes =
       List.of(widget.initial?.notes ?? const <String>[]);
 
+  /// 每条备注的**加价**（跟 [_notes] 一一对应；「换炒饭 +70」就是 70，可以为负）。
+  ///
+  /// 编辑老单进来时**原样带过来**（已经有的备注默认不变金额）。
+  late final List<double> _notePrices = [
+    for (var i = 0; i < _notes.length; i++)
+      (i < (widget.initial?.notePrices.length ?? 0))
+          ? widget.initial!.notePrices[i]
+          : 0.0,
+  ];
+
+  /// 第 [i] 条备注的加价（越界 = 0）。
+  double _priceAt(int i) => i < _notePrices.length ? _notePrices[i] : 0;
+
+  /// **最后动过的是第几条备注**（点常用备注标签 / 「加进备注」时更新；-1 = 没动过）。
+  ///
+  /// 用途：**备注文字框空着、只有右边加价框填了数** 的时候，这个数归这条备注
+  /// （最常见的一步操作：点常用备注标签 → 在加价框打 70 → 直接点「加入购物车」）。
+  /// 没有它，这一步填的 70 会被**默默丢掉** —— 看着就是"金额没生效"。
+  int _lastTouched = -1;
+
+  /// 备注文字后面跟的价签（` +70` / ` -60`；0 就不显示）。
+  String _priceTag(double price) =>
+      price == 0 ? '' : ' ${signedAmount(price)}';
+
+  /// 备注输入框右边那个小金额框里填的数。
+  ///
+  /// **空着的时候不是 0**：如果打的这条文字正好是一条**常用备注**
+  /// （设置 → 常用备注，标签上写着 `换炒饭 +70`），就用它存的加价 ——
+  /// 这样"直接把常用备注的名字打进去"和"点那个标签"是同一个效果。
+  /// 想这一次不加钱就把金额框填 `0`（显式 0 就是 0）。
+  double get _typedPrice {
+    final raw = _notePriceCtl.text.trim().replaceAll(',', '.');
+    if (raw.isNotEmpty) return double.tryParse(raw) ?? 0;
+    final text = _noteCtl.text.trim();
+    if (text.isEmpty) return 0;
+    return context
+        .read<SettingsController>()
+        .settings
+        .notePriceFor(_categoryId, text);
+  }
+
   /// 份数（编辑时用原来的，但不低于最少份数；新加时**从最少份数开始**）。
   ///
   /// ⚠️ 这里只能在 initState 里赋值：字段初始化器跑在 `widget` 被赋值之前，
@@ -84,6 +130,10 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
   int get _effectiveQty => _qty < _minQty ? _minQty : _qty;
 
   final _noteCtl = TextEditingController();
+
+  /// 备注右边那个**小金额框**（这条备注要加多少钱；**空 = 看它是不是常用备注**，
+  /// 是的话自动用那条常用备注存的加价 —— 见 [_typedPrice]）。
+  final _notePriceCtl = TextEditingController();
   final _qtyCtl = TextEditingController();
   final _noteFocus = FocusNode();
   bool _saveAsTag = false;
@@ -121,6 +171,18 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
     final initialQty = widget.initial?.quantity ?? minQty;
     _qty = initialQty < minQty ? minQty : initialQty;
     _qtyCtl.text = '$_qty';
+
+    // ⚠️ 备注框 / 加价框**每敲一个字都要重算**（标题的菜价、底下的合计、备注价签）。
+    //    以前这两个框没有监听：填了「换炒饭 +70」之后框里的价格一动不动，
+    //    看着就像"备注加价没生效"（其实只是没刷新）—— 真实踩过。
+    _noteCtl.addListener(_refreshPrice);
+    _notePriceCtl.addListener(_refreshPrice);
+  }
+
+  /// 备注 / 加价输入框变了 → 重算价格并刷新界面。
+  void _refreshPrice() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   /// 这个定制项**默认选哪个**（返回空串 = 默认不选）：
@@ -141,7 +203,10 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
 
   @override
   void dispose() {
+    _noteCtl.removeListener(_refreshPrice);
+    _notePriceCtl.removeListener(_refreshPrice);
     _noteCtl.dispose();
+    _notePriceCtl.dispose();
     _qtyCtl.dispose();
     _noteFocus.dispose();
     super.dispose();
@@ -167,12 +232,45 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
     return out;
   }
 
-  /// 按当前选择算出的单价（基础价 + 各选中项加价）。
+  /// 按当前选择算出的单价（基础价 + 各选中项加价，**不含备注加价**）。
   double get _unitPrice {
     final item = widget.item;
     if (item == null) return 0;
     return item.unitPriceFor(_selections);
   }
+
+  /// **备注加价合计（每份）**：已经加进去的 + 输入框里正在填的那条。
+  ///
+  /// 跟 `_confirm()` 一个口径：
+  /// - 输入框里的文字**还没加进列表** → 加上它的加价；
+  /// - 文字**已经在列表里了** → 以加价框为准（填了数才是改价，没填就还是原价）；
+  /// - 文字框**空着**但加价框里有数 → 这个数是给**最后动过的那条**备注的
+  ///   （典型操作：点常用备注标签 → 在加价框打 70 → 直接确认）。
+  double get _noteTotal {
+    var sum = 0.0;
+    for (var i = 0; i < _notes.length; i++) {
+      sum += _priceAt(i);
+    }
+    final box = _notePriceCtl.text.trim();
+    final typed = _noteCtl.text.trim();
+    if (typed.isEmpty) {
+      final i = _lastTouched;
+      if (box.isEmpty || i < 0 || i >= _notes.length) return sum;
+      return sum - _priceAt(i) + _typedPrice;
+    }
+    final typedPrice = _typedPrice;
+    final i = _notes.indexOf(typed);
+    if (i < 0) return sum + typedPrice;
+    // 已经在列表里：加价框**填了数**才当成改价，否则这条仍按原来的加价算
+    if (box.isEmpty) return sum;
+    return sum - _priceAt(i) + typedPrice;
+  }
+
+  /// **加上备注加价之后**的单价（「换炒饭 +70」算在这里）。
+  ///
+  /// ⚠️ 标题上写的「菜价」用的就是它 —— 以前标题写的是不含备注加价的 `_unitPrice`，
+  /// 于是填了 +70 之后**标题价格一动不动**，看着像"加价没生效"（其实就是没显示）。
+  double get _unitPriceWithNotes => _unitPrice + _noteTotal;
 
   /// 标题上显示的名字：外面传了就用传的，否则用**昵称优先**的名字
   /// （点单界面看昵称，见 `MenuItem.displayName`）。
@@ -191,20 +289,80 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
     });
   }
 
-  /// 「加进备注」：把输入框里的文字存成一条备注，清空输入框准备填下一条。
+  /// 点「常用备注」标签：选中 = 加进备注，再点 = 去掉。
+  ///
+  /// **加价从哪来**（这是"金额好像没生效"的关键）：
+  /// 1. 优先用**设置里给这条常用备注存的加价**（设置 → 常用备注 那个小金额框，
+  ///    标签上会写成 `换炒饭 +70`）；
+  /// 2. 没存过（老数据，或者老板当初没填）→ **用右边加价框里现在填的数**。
+  ///    所以「先在加价框打 70，再点常用备注标签」也能把这 70 带上去；
+  /// 3. 两个都没有 → 0（就是一条不改钱的备注，跟以前一样）。
+  ///
+  /// 带上加价之后还会把它填进右边那个框：让人**看得见**这条备注加了多少钱，
+  /// 想改就直接改那个数再点「加进备注」。
+  void _toggleSavedNote(String n, bool on, double savedPrice) {
+    if (!on) {
+      final i = _notes.indexOf(n);
+      if (i >= 0) {
+        setState(() {
+          _notes.removeAt(i);
+          if (i < _notePrices.length) _notePrices.removeAt(i);
+          if (_lastTouched == i) _lastTouched = -1;
+        });
+      }
+      return;
+    }
+    if (_notes.contains(n)) return;
+    final price = savedPrice != 0 ? savedPrice : _typedPrice;
+    setState(() {
+      _notes.add(n);
+      _notePrices.add(price);
+      _lastTouched = _notes.length - 1;
+      if (price != 0) _notePriceCtl.text = _fmtPrice(price);
+    });
+  }
+
+  /// 加价框里显示用：整数不带小数尾巴（`70` 而不是 `70.00`）。
+  String _fmtPrice(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+
+  /// 「加进备注」：把输入框里的文字（+ 右边那个小框里的加价）存成一条备注，
+  /// 清空两个输入框准备填下一条。
   void _addNote() {
     final text = _noteCtl.text.trim();
     if (text.isEmpty) return;
+    final price = _typedPrice;
     if (_saveAsTag) {
-      context.read<SettingsController>().addSavedNote(_categoryId, text);
+      // 存成常用标签时**连加价一起存**（下次点这个标签，加价自动跟着来）
+      context
+          .read<SettingsController>()
+          .addSavedNote(_categoryId, text, price: price);
     }
     setState(() {
-      if (!_notes.contains(text)) _notes.add(text);
+      final i = _notes.indexOf(text);
+      if (i >= 0) {
+        // 同一条备注再加一次 = 改它的加价
+        _notePrices[i] = price;
+        _lastTouched = i;
+      } else {
+        _notes.add(text);
+        _notePrices.add(price);
+        _lastTouched = _notes.length - 1;
+      }
       _noteCtl.clear();
+      _notePriceCtl.clear();
     });
     // 光标留在输入框里，方便接着填下一条
     _noteFocus.requestFocus();
   }
+
+  /// 去掉第 [i] 条备注（文字和加价一起删）。
+  void _removeNote(int i) => setState(() {
+        _notes.removeAt(i);
+        if (i < _notePrices.length) _notePrices.removeAt(i);
+        // 下标会往前挪，干脆忘掉"最后动过的那条"，免得加价框里的数记到错的备注上
+        if (_lastTouched == i) _lastTouched = -1;
+      });
 
   /// 备注要存到哪个种类下（编辑老单时可能没有对应菜单项 → 存到「通用」）。
   String get _categoryId => widget.item?.categoryId ?? '';
@@ -214,16 +372,37 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
     // 输入框里还没点「加进备注」的那条也算上，别让收银员白填
     final typed = _noteCtl.text.trim();
     if (typed.isNotEmpty && _saveAsTag) {
-      settingsCtl.addSavedNote(_categoryId, typed);
+      settingsCtl.addSavedNote(_categoryId, typed, price: _typedPrice);
     }
     final notes = List<String>.of(_notes);
-    if (typed.isNotEmpty && !notes.contains(typed)) notes.add(typed);
+    final prices = [
+      for (var i = 0; i < _notes.length; i++) _priceAt(i),
+    ];
+    if (typed.isNotEmpty) {
+      final i = notes.indexOf(typed);
+      if (i >= 0) {
+        // 这条已经在列表里（多半是刚点的常用备注标签）：
+        // **加价框里填了数就改成这个数** —— 否则"点标签带进来 0、再填 70 确认"
+        // 会把 70 默默丢掉，看着就是"金额没生效"。
+        if (_notePriceCtl.text.trim().isNotEmpty) prices[i] = _typedPrice;
+      } else {
+        notes.add(typed);
+        prices.add(_typedPrice);
+      }
+    } else if (_notePriceCtl.text.trim().isNotEmpty &&
+        _lastTouched >= 0 &&
+        _lastTouched < prices.length) {
+      // 备注框空着、只有加价框填了数 → 这个数归**最后动过的那条**备注
+      // （最常见的一步操作：点常用备注标签 → 加价框打 70 → 直接点「加入购物车」）
+      prices[_lastTouched] = _typedPrice;
+    }
 
     Navigator.pop(
       context,
       ItemEditResult(
         selections: _selections,
         notes: notes,
+        notePrices: prices,
         // 比最少份数小的话按最少份数下单（「基础数量」列，例如 2 份起）
         quantity: _effectiveQty,
       ),
@@ -250,7 +429,7 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // ---- 标题：菜名 + 单价（选了不同规格会变）----
+            // ---- 标题：菜名 + **这一行现在的单价**（选了规格 / 加了备注都会变）----
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
               child: Row(
@@ -263,15 +442,33 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                     ),
                   ),
                   if (item != null)
-                    Text(
-                      item.hasUnit
-                          ? '${money(_unitPrice, symbol)} / ${item.unit}'
-                          : money(_unitPrice, symbol),
-                      style: const TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF1FA85A),
-                      ),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          // ⚠️ 用**含备注加价**的单价：填了「换炒饭 +70」这里就该是 98，
+                          //    不是 28 —— 以前这里写的是基础价，看着像加价没生效
+                          item.hasUnit
+                              ? '${money(_unitPriceWithNotes, symbol)} / ${item.unit}'
+                              : money(_unitPriceWithNotes, symbol),
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF1FA85A),
+                          ),
+                        ),
+                        // 备注加了钱就把账拆开写一行小字：`28.00 +70`（一眼看出多在哪）
+                        if (_noteTotal.abs() >= 0.005)
+                          Text(
+                            '${money(_unitPrice, symbol)} ${signedAmount(_noteTotal)}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.grey.shade600,
+                            ),
+                          ),
+                      ],
                     ),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
@@ -388,37 +585,62 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                       ],
                     ),
                     const SizedBox(height: 8),
-                    // 已经加进去的备注（点 ✕ 去掉）
+                    // 已经加进去的备注（点 ✕ 去掉；带加价的一起显示成 `换炒饭 +70`）
                     if (_notes.isNotEmpty) ...[
                       Wrap(
                         spacing: 8,
                         runSpacing: 4,
                         children: [
-                          for (final n in _notes)
+                          for (var i = 0; i < _notes.length; i++)
                             InputChip(
-                              label: Text(n),
-                              onDeleted: () => setState(() => _notes.remove(n)),
+                              label: Text(
+                                '${_notes[i]}${_priceTag(_priceAt(i))}',
+                              ),
+                              onDeleted: () => _removeNote(i),
                             ),
                         ],
                       ),
                       const SizedBox(height: 8),
                     ],
-                    // 输入框 + 「加进备注」：填一条 → 保存 → 接着填下一条
+                    // 输入框 + 小金额框 + 「加进备注」：
+                    // 填一条 → 保存 → 接着填下一条。金额不填 = 这条备注不改价。
                     Row(
                       children: [
                         Expanded(
                           child: TextField(
+                            key: const ValueKey('itemNoteField'),
                             controller: _noteCtl,
                             focusNode: _noteFocus,
-                            textInputAction: TextInputAction.done,
+                            textInputAction: TextInputAction.next,
                             decoration: const InputDecoration(
                               border: OutlineInputBorder(),
                               isDense: true,
                             ),
+                            // 回车 = 跳到右边那个「加价」小框（填完再回车就存）
+                            onSubmitted: (_) => FocusScope.of(context).nextFocus(),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        // 备注的加价（右边这个小框，「换炒饭 +70」就填 70）
+                        SizedBox(
+                          width: 84,
+                          child: TextField(
+                            key: const ValueKey('itemNotePriceField'),
+                            controller: _notePriceCtl,
+                            keyboardType: const TextInputType.numberWithOptions(
+                                decimal: true, signed: true),
+                            textAlign: TextAlign.right,
+                            textInputAction: TextInputAction.done,
+                            decoration: InputDecoration(
+                              border: const OutlineInputBorder(),
+                              isDense: true,
+                              hintText: L10n.t('custom.note.price'),
+                              hintStyle: const TextStyle(fontSize: 12),
+                            ),
                             onSubmitted: (_) => _addNote(),
                           ),
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: 6),
                         FilledButton.tonal(
                           onPressed: _addNote,
                           child: Text(L10n.t('custom.note.add')),
@@ -435,14 +657,12 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                           for (final n in savedNotes)
                             FilterChip(
                               selected: _notes.contains(n),
-                              onSelected: (v) => setState(() {
-                                if (v) {
-                                  if (!_notes.contains(n)) _notes.add(n);
-                                } else {
-                                  _notes.remove(n);
-                                }
-                              }),
-                              label: Text(n),
+                              onSelected: (v) => _toggleSavedNote(
+                                  n, v, settings.notePriceFor(_categoryId, n)),
+                              // 标签上也把加价写出来，免得点了才知道加钱
+                              label: Text(
+                                '$n${_priceTag(settings.notePriceFor(_categoryId, n))}',
+                              ),
                               showCheckmark: true,
                               selectedColor: const Color(0xFF1FA85A),
                               checkmarkColor: Colors.white,
@@ -535,7 +755,7 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                         if (item != null)
                           Text(
                             '${L10n.t('cart.total')} '
-                            '${money(_unitPrice * _effectiveQty, symbol)}',
+                            '${money(_unitPriceWithNotes * _effectiveQty, symbol)}',
                             style: const TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.w700,

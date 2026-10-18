@@ -79,6 +79,7 @@ class UnifiedPrintService implements ReceiptPrintService {
     Order order,
     Settings settings, {
     bool isAppend = false,
+    int drinksFrom = -1,
   }) {
     final copies = settings.kitchenCopies < 1 ? 1 : settings.kitchenCopies;
     final bytes = <int>[];
@@ -90,6 +91,8 @@ class UnifiedPrintService implements ReceiptPrintService {
           isAppend: isAppend,
           copyIndex: i,
           copyTotal: copies,
+          // 饮料排在最后 + 前面一条虚线（行由 PosController 排好）
+          drinksFrom: drinksFrom,
         ),
         codec: settings.receiptCodec,
         fontA: settings.useFontA,

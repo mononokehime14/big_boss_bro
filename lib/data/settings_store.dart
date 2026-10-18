@@ -85,6 +85,17 @@ class Settings {
   /// 键 `''` 表示「通用」（所有菜都能用）。例如 Bebida 分类下有「加冰」。
   Map<String, List<String>> notesByCategory;
 
+  /// 常用备注的**加价**：`分类id → (备注文字 → 每份加价)`。
+  ///
+  /// 「换炒饭 +70」这种备注是要**改钱**的（跟点菜时右边那个小金额框同一个口径，
+  /// 按**每份**加，见 `OrderLine.notePrices`）。
+  ///
+  /// - 只存**不为 0** 的（0 = 这条备注不改价，不用记）；
+  /// - 键跟 [notesByCategory] 一致（`''` = 通用）；同一条备注在两个分类下
+  ///   可以是不同加价，查的时候**先看分类自己的、再看通用的**
+  ///   （见 [notePriceFor]）。
+  Map<String, Map<String, double>> notePricesByCategory;
+
   /// **自定义排序**的顺序表（点单页把「排序」选成「自定义」时用）：
   /// 里面是**种类 id 和菜品 id 混在一起**，按用户拖出来的先后排列。
   ///
@@ -208,11 +219,14 @@ class Settings {
     this.baseCurrency = kDefaultBaseCurrency,
     List<String>? tables,
     Map<String, List<String>>? notesByCategory,
+    Map<String, Map<String, double>>? notePricesByCategory,
     List<String>? menuOrder,
     Map<String, double>? exchangeRates,
     Map<String, double>? dailyExpenses,
   })  : tables = tables ?? List.of(defaultTables),
         notesByCategory = notesByCategory ?? <String, List<String>>{},
+        notePricesByCategory =
+            notePricesByCategory ?? <String, Map<String, double>>{},
         menuOrder = menuOrder ?? <String>[],
         exchangeRates = exchangeRates ?? <String, double>{},
         dailyExpenses = dailyExpenses ?? <String, double>{};
@@ -245,15 +259,39 @@ class Settings {
         ...(notesByCategory[categoryId] ?? const <String>[]),
       ];
 
-  void addNote(String categoryId, String note) {
+  /// 这条常用备注的**每份加价**（先看分类自己的，再看通用的；都没有 = 0）。
+  double notePriceFor(String categoryId, String note) {
+    final mine = notePricesByCategory[categoryId];
+    if (mine != null && mine.containsKey(note)) return mine[note] ?? 0;
+    return notePricesByCategory['']?[note] ?? 0;
+  }
+
+  /// 加一条常用备注（已经有了就是**改它的加价**）。
+  ///
+  /// [price] = 这条备注每份加多少钱（0 = 不改价；「换炒饭 +70」就传 70）。
+  void addNote(String categoryId, String note, {double price = 0}) {
     final v = note.trim();
     if (v.isEmpty) return;
     final list = notesByCategory.putIfAbsent(categoryId, () => <String>[]);
     if (!list.contains(v)) list.add(v);
+
+    final prices =
+        notePricesByCategory.putIfAbsent(categoryId, () => <String, double>{});
+    if (price.abs() < 0.005) {
+      prices.remove(v);
+      if (prices.isEmpty) notePricesByCategory.remove(categoryId);
+    } else {
+      prices[v] = price;
+    }
   }
 
   void removeNote(String categoryId, String note) {
     notesByCategory[categoryId]?.remove(note);
+    final prices = notePricesByCategory[categoryId];
+    if (prices != null) {
+      prices.remove(note);
+      if (prices.isEmpty) notePricesByCategory.remove(categoryId);
+    }
   }
 
   double expenseFor(String dateKey) => dailyExpenses[dateKey] ?? 0;
@@ -316,6 +354,8 @@ class SettingsStore {
   static const _kTables = 'tables';
   static const _kSavedNotes = 'saved_notes'; // 旧版（扁平列表），仅用于迁移
   static const _kNotesByCategory = 'notes_by_category';
+  // 常用备注的加价（「换炒饭 +70」里那个 70）。缺失 = 所有备注都不改价。
+  static const _kNotePricesByCategory = 'note_prices_by_category';
   static const _kReceiptCodec = 'receipt_codec';
   static const _kUseFontA = 'use_font_a';
   // 旧键 `kitchen_font_size`：厨师单菜品字号以前是个设置项，现在**写死在代码里**
@@ -394,6 +434,29 @@ class SettingsStore {
     return <String, List<String>>{};
   }
 
+  /// 常用备注的加价（`分类id → (备注 → 每份加价)`）；格式不对、缺失 → 空。
+  static Map<String, Map<String, double>> _decodeNotePrices(String? raw) {
+    if (raw == null) return <String, Map<String, double>>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final out = <String, Map<String, double>>{};
+        decoded.forEach((k, v) {
+          if (v is! Map) return;
+          final prices = <String, double>{};
+          v.forEach((note, price) {
+            if (price is num && price.toDouble().abs() >= 0.005) {
+              prices[note.toString()] = price.toDouble();
+            }
+          });
+          if (prices.isNotEmpty) out[k.toString()] = prices;
+        });
+        return out;
+      }
+    } catch (_) {}
+    return <String, Map<String, double>>{};
+  }
+
   static Map<String, double> _decodeExpenses(String? raw) {
     if (raw == null) return <String, double>{};
     try {
@@ -439,6 +502,8 @@ class SettingsStore {
       printerName: prefs.getString(_kPrinterName) ?? '',
       tables: tables,
       notesByCategory: notes,
+      notePricesByCategory:
+          _decodeNotePrices(prefs.getString(_kNotePricesByCategory)),
       receiptCodec: prefs.getString(_kReceiptCodec) ?? 'gbk',
       useFontA: prefs.getBool(_kUseFontA) ?? true,
       kitchenCopies: prefs.getInt(_kKitchenCopies) ?? 2,
@@ -489,6 +554,8 @@ class SettingsStore {
     await prefs.setString(_kTables, jsonEncode(settings.tables));
     await prefs.setString(
         _kNotesByCategory, jsonEncode(settings.notesByCategory));
+    await prefs.setString(
+        _kNotePricesByCategory, jsonEncode(settings.notePricesByCategory));
     await prefs.setString(_kReceiptCodec, settings.receiptCodec);
     await prefs.setBool(_kUseFontA, settings.useFontA);
     await prefs.setInt(_kKitchenCopies, settings.kitchenCopies);

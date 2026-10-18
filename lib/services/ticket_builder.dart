@@ -30,6 +30,32 @@ class TicketBuilder {
     }
   }
 
+  /// 厨师单**底部徽标**上那行字在 l10n 里的键（**短词**，跟 `order.*` 的长句分开）。
+  static String _badgeKey(OrderType type) {
+    switch (type) {
+      case OrderType.dineIn:
+        return 'kitchen.badgeDineIn';
+      case OrderType.takeaway:
+        return 'kitchen.badgeTakeaway';
+      case OrderType.phonecallTakeaway:
+        return 'kitchen.badgePhone';
+    }
+  }
+
+  /// 徽标上那行「**西文**」用哪门外语：
+  /// - 小票语言是西语 / 英语 → 就用它；
+  /// - 小票语言是**中文** → 用**西班牙语**（店在墨西哥，厨师看西文）。
+  ///
+  /// 想让中文票面上也永远打英语？把下面这个常量改成 `'en'`；
+  /// 想干脆只打一种语言（不要"西文 + 中文"两行）？把
+  /// [kitchenLines] 里的 `badgeChinese` 也改成 `''` 就行。
+  static const String kBadgeFallbackLang = 'es';
+
+  static String _badgeWesternLang(Settings s) {
+    final lang = _lang(s);
+    return (lang == 'es' || lang == 'en') ? lang : kBadgeFallbackLang;
+  }
+
   /// 顾客小票（结账时打）：版式照 `assets/receipt_print.jpg` ——
   /// 店头居中 → 「Fecha / Pedido / Empleado / TPV」单头 → 堂食外卖 →
   /// 每道菜「菜名(选项) 金额」+「数量 x 单价」→ 合计 → 支付方式/实收/找零 → 谢谢光临。
@@ -45,14 +71,20 @@ class TicketBuilder {
         .toList();
 
     // 单头：日期 / 单号（含桌号）/ 收银员 / 终端
+    // **分单**：单号后面挂上「-分单1」，收银员一看就知道这是分开付钱的那一份
+    final splitTag = order.isSplit
+        ? '-${_t(settings, 'split.suffix')}${order.splitNo}'
+        : '';
+
     final info = <ReceiptInfoRow>[
       ReceiptInfoRow(_t(settings, 'receipt.labelDate'),
           formatReceiptDateTime(order.createdAt, _lang(settings))),
       ReceiptInfoRow(
         _t(settings, 'receipt.labelOrder'),
         order.table.isEmpty
-            ? order.id
-            : '${order.id}  ${_t(settings, 'order.table')} ${order.table}',
+            ? '${order.id}$splitTag'
+            : '${order.id}$splitTag  '
+                '${_t(settings, 'order.table')} ${order.table}',
       ),
       if (order.cashier.isNotEmpty)
         ReceiptInfoRow(_t(settings, 'pay.cashier'), order.cashier),
@@ -105,8 +137,13 @@ class TicketBuilder {
       ),
     );
     // 小票也是「一行一个字号」：**合计那一行加大加粗**（见 buildReceiptRows）
+    // `raw` / `continueLine` 一起带过去（小票目前用不到，保持和厨房单一致）。
     return buildReceiptRows(data)
-        .map((row) => TicketLine(row.text, scale: row.scale, bold: row.bold))
+        .map((row) => TicketLine(row.text,
+            scale: row.scale,
+            bold: row.bold,
+            raw: row.raw,
+            continueLine: row.continueLine))
         .toList();
   }
 
@@ -143,15 +180,18 @@ class TicketBuilder {
     return rows;
   }
 
-  /// 厨房单（下单/追单时打）：**顶部标「厨师单 1 / 2」+ 桌号/外卖 + 时间，下面全是菜**。
+  /// 厨房单（下单/追单时打）：**顶部留白（别针区）+ 票号 + 时间 → 桌号/外卖名字
+  /// → 菜品 → 底部「西文 + 中文」的外卖 / 堂食徽标**。
   ///
-  /// **外卖 / 电话外卖**在标题下面多打一行**特大字**：外卖单的**名字**
-  /// （没起名字就打系统给的号 `#3`）；**电话外卖**再打一行**特大字**的等待时间。
-  /// 堂食没有这两行（有桌号就够了）。
-  ///
-  /// 每行带**自己的字号**（见 `receipt_layout.dart` 的 `buildKitchenRows`）：
-  /// 「地点 / 外卖 + 时间」、外卖的名字 / 号、电话外卖的等待时间都是**特大**，
-  /// 标题「厨师单 N」是**大**，**菜品行也是特大**（`kKitchenItemScale`，写死的，没有设置项）。
+  /// 厨房单的版式跟小票一样，是"**一行带自己的字号**"（见 `receipt_layout.dart`
+  /// 的 `buildKitchenRows`，那张图就是现在打出来的样子）。要点：
+  /// 1. **最上面先空 1 行**（`kKitchenTopBlankRows`）—— 厨师会把单子别在杆子上，
+  ///    顶上那点地方是看不见的，所以留给"票号 + 时间"这种不太要紧的信息；
+  /// 2. **门牌紧跟时间**：桌号 / 外卖的名字（没名字就是系统给的号 `#3`）/
+  ///    电话外卖的等待时间，全部**特大**、居中；
+  /// 3. **底部是徽标**：**西文 + 中文**两行大字（`badgeWestern` / `badgeChinese`），
+  ///    票面上最大的一块 —— 单子插在杆上时露出来的正是它
+  ///    （以前还有 ASCII 图案，实测厨师不看，已经去掉）。西文那行见 [_badgeWesternLang]。
   ///
   /// [copyIndex] / [copyTotal]：这是第几张 / 一共几张。
   /// 默认打两张（一张厨师、一张出餐服务员），份数见 `Settings.kitchenCopies`。
@@ -161,7 +201,9 @@ class TicketBuilder {
     bool isAppend = false,
     int copyIndex = 1,
     int copyTotal = 1,
+    int drinksFrom = -1,
   }) {
+    final badgeKey = _badgeKey(order.orderType);
     final data = KitchenData(
       table: order.table,
       orderId: order.id,
@@ -171,10 +213,20 @@ class TicketBuilder {
       isAppend: isAppend,
       copyIndex: copyIndex,
       copyTotal: copyTotal,
-      // 电话外卖填了「等待 N 分钟」→ 厨房单上单独打一行（见 buildKitchenRows）
+      // **饮料排在最后**：餐品打完打一条虚线，饮料在下面（见 buildKitchenRows ④段）。
+      // `-1` = 这张单没有饮料 / 调用方没算（比如测试直接构造 KitchenData）。
+      drinksFrom: drinksFrom,
+      // 电话外卖填了「等待 N 分钟」→ 厨房单上单独打一行（见 buildKitchenRows ③段）
       waitMinutes: order.waitMinutes,
+      // 门牌那行要用的类型叫法（外卖打「外卖 张三」，堂食只打桌号）
       typeLabel: _typeLabel(settings, order.orderType),
-      // 外卖 / 电话外卖：厨房单顶部要打**名字**（没名字就打系统给的号）——见 ③
+      // 底部徽标：**西文 + 中文**两行大字（谁都能认），见 receipt_layout.dart 的 _badgeRows
+      badgeWestern: L10n.tFor(_badgeWesternLang(settings), badgeKey),
+      // 中文那行是**固定要打的**：不管票面语言是西语还是英语，都出中文（店里有中国厨师）。
+      // 打的时候**自己进出中文模式**（escpos.dart 的 gbkLineBytes），所以哪怕整张票
+      // 设的是 `cp850` / `latin1`，这一行也不会变成 `?`。
+      badgeChinese: L10n.tFor('zh', badgeKey),
+      // 外卖 / 电话外卖：门牌那行打名字（没名字就打系统给的号）——见 ③段
       isTakeaway: order.isTakeaway,
       orderLabel: order.label,
       dailyNo: order.dailyNo,
@@ -183,19 +235,34 @@ class TicketBuilder {
         labelTable: _t(settings, 'order.table'),
         colName: _t(settings, 'kitchen.colName'),
         colQty: _t(settings, 'kitchen.colQty'),
+        // 表头最右边那一列：选项 / 特别备注打在这儿（见 buildKitchenRows ④段）
+        colNote: _t(settings, 'kitchen.colNote'),
         append: _t(settings, 'kitchen.append'),
         wait: _t(settings, 'kitchen.wait'),
         minutes: _t(settings, 'kitchen.minutes'),
       ),
     );
+    // `raw` / `continueLine` 必须带过去：
+    // - `raw`：厨师单的"空半行"是**只走纸的原始行**（`ESC J n`，见 kKitchenBlankRowDots）；
+    // - `continueLine`：菜品行 = 「数量+菜名」（加粗、不换行）紧跟「备注」（不加粗、同一行）。
     return buildKitchenRows(data)
-        .map((r) => TicketLine(r.text, scale: r.scale, bold: r.bold))
+        .map((r) => TicketLine(r.text,
+            scale: r.scale,
+            bold: r.bold,
+            raw: r.raw,
+            continueLine: r.continueLine))
         .toList();
   }
 
   /// 日结小票。
+  ///
+  /// ⚠️ **整张都是「特大」字号**（双倍宽 + 双倍高，跟厨师单的菜品一样大）——
+  /// 行宽已经由 `buildSummaryLines()` 按特大下的列数（58mm = 16 列）排好了，
+  /// 这里只负责把字号贴上去。
   static List<TicketLine> summaryLines(SummaryData data) =>
-      buildSummaryLines(data).map((l) => TicketLine(l)).toList();
+      buildSummaryLines(data)
+          .map((l) => TicketLine(l, scale: TicketScale.xlarge))
+          .toList();
 
   /// 测试页（内容已按需求固定）。
   ///

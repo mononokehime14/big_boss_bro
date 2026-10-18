@@ -227,7 +227,7 @@ void main() {
     expect(pos.cartTotal, 300);
   });
 
-  test('改已经下过厨房的行：内容变了就重新变回「未下厨」', () {
+  test('改已经下过厨房的行：内容变了整行重下厨房，只加份数就只补打多的', () {
     final pos = PosController();
     final beef = sampleMenu.firstWhere((m) => m.id == 'h1');
     pos.addToCart(beef);
@@ -240,13 +240,14 @@ void main() {
         selections: const [], notes: const [], quantity: 1);
     expect(pos.findOrder(order.id)!.lines.first.sentToKitchen, isTrue);
 
-    // 改份数 → 变回「未下厨」，金额也跟着变
+    // 只加一份 → 这一行不再是"整行已下厨"，但厨房只补打**多出来的那 1 份**
     pos.changeOrderLineQuantity(order.id, 0, 1);
     final after = pos.findOrder(order.id)!;
     expect(after.lines.first.quantity, 2);
     expect(after.lines.first.sentToKitchen, isFalse);
+    expect(after.lines.first.unsentQty, 1);
     expect(after.total, closeTo(56, 0.001));
-    expect(pos.unsentLines(order.id).length, 1);
+    expect(pos.unsentLines(order.id).single.quantity, 1);
   });
 
   test('删除菜品会把购物车里它的所有行一起删掉', () {
@@ -439,6 +440,95 @@ void main() {
     expect(pos.selectedType, OrderType.dineIn);
   });
 
+  // ---- 外卖单：点完厨房还在购物车 / 下拉列表里（有名字没名字都要能认回来）----
+  group('进行中的外卖单（openTakeawayOrders / focusOrder）', () {
+    test('没起名字的外卖单点完厨房也在列表里，靠单号认；结账后消失', () {
+      final pos = PosController();
+      pos.selectTable('', takeaway: true);
+      pos.addToCart(sampleMenu.first);
+      final o = pos.placeOrder()!; // 「保存」
+      pos.markOrderSent(o.id); // 「厨房」
+
+      final list = pos.openTakeawayOrders();
+      expect(list.length, 1, reason: '没起名字的外卖单也要留在列表里');
+      expect(list.single.dailyNo, greaterThan(0));
+      expect(list.single.takeawayTag, '#${o.dailyNo}',
+          reason: '没名字就显示单号');
+
+      // 从下拉 / 订单页把它调回购物车：之后「保存 / 厨房 / 结账」都算这张单
+      pos.focusOrder(list.single);
+      expect(pos.focusedOrder?.id, o.id);
+      expect(pos.openOrderForSelectedTable()?.id, o.id,
+          reason: '没名字的外卖单也要能认回来接着加菜');
+
+      // 结账之后它就不再是"进行中" → 自然从列表里消失
+      pos.closeOrder(o.id, PaymentMethod.cash);
+      expect(pos.openTakeawayOrders(), isEmpty);
+      expect(pos.focusedOrder, isNull);
+    });
+
+    test('列表按当天单号从小到大排（先开的在前），分单不算', () {
+      final pos = PosController();
+      pos.selectTable('', takeaway: true);
+      pos.addToCart(sampleMenu.firstWhere((m) => m.id == 'h1'));
+      pos.addToCart(sampleMenu.firstWhere((m) => m.id == 'd1')); // 两道菜才分得动
+      final a = pos.placeOrder()!;
+      pos.selectTable('', takeaway: true, type: OrderType.phonecallTakeaway);
+      pos.addToCart(sampleMenu.first);
+      final b = pos.placeOrder()!;
+
+      final list = pos.openTakeawayOrders();
+      expect(list.map((o) => o.id).toList(), [a.id, b.id]);
+      expect(list.first.dailyNo, lessThan(list.last.dailyNo));
+
+      // 分单不出现在列表里（它跟着母单走）
+      final split = pos.splitOrderLines(a.id, [0]);
+      expect(split, isNotNull);
+      expect(pos.openTakeawayOrders().any((o) => o.isSplit), isFalse);
+      expect(pos.openTakeawayOrders().length, 2);
+    });
+
+    test('有名字的外卖单：标签是「名字 #号」', () {
+      final pos = PosController();
+      pos.selectTable('', takeaway: true);
+      pos.addToCart(sampleMenu.first);
+      final o = pos.placeOrder()!;
+      pos.setOrderLabel(o.id, '张三');
+      final tagged = pos.openTakeawayOrders().single;
+      expect(tagged.takeawayTag, '张三 #${o.dailyNo}');
+    });
+
+    // 「保存」每次都会弹名字框 → 名字能改、能清、等待时间能改
+    test('每次保存都能改名 / 改等待时间（clearName 才真的清名字）', () {
+      final pos = PosController();
+      pos.selectTable('', takeaway: true);
+      pos.addToCart(sampleMenu.first);
+      final o = pos.placeOrder()!;
+
+      // 先起名 + 填等待时间
+      pos.setOrderLabel(o.id, '张三', waitMinutes: 15);
+      expect(pos.findOrder(o.id)!.label, '张三');
+      expect(pos.findOrder(o.id)!.waitMinutes, 15);
+
+      // 改名（名字框里预填着旧名字，改成新名字）
+      pos.setOrderLabel(o.id, '李四');
+      expect(pos.findOrder(o.id)!.label, '李四');
+      expect(pos.findOrder(o.id)!.waitMinutes, 15, reason: '没传就保持原来的等待时间');
+
+      // 只改等待时间、名字传空 → **不动名字**（老行为）
+      pos.setOrderLabel(o.id, '', waitMinutes: 30);
+      expect(pos.findOrder(o.id)!.label, '李四', reason: '空的 name 不等于要清掉');
+      expect(pos.findOrder(o.id)!.waitMinutes, 30);
+
+      // 「不用名字」= clearName：真的清掉，但等待时间留着
+      pos.setOrderLabel(o.id, '', waitMinutes: 30, clearName: true);
+      expect(pos.findOrder(o.id)!.label, '');
+      expect(pos.findOrder(o.id)!.waitMinutes, 30);
+      expect(pos.findOrder(o.id)!.takeawayTag, '#${o.dailyNo}',
+          reason: '没名字了还能靠单号认');
+    });
+  });
+
   test('电话外卖 / 外卖 / 堂食 的日结统计是分开的三行', () {
     final pos = PosController();
     // 堂食 28
@@ -513,8 +603,8 @@ void main() {
   });
 
   // 购物车下面两个按钮：左「保存」（只记单、不打单）/ 右「厨房」（记单 + 打厨房单）。
-  // 区分就靠 OrderLine.sentToKitchen 这个字段。
-  group('保存 / 厨房（sentToKitchen）', () {
+  // 区分靠 `OrderLine.sentQty`（厨房已经收到几份）→ `unsentQty`（还要补几份）。
+  group('保存 / 厨房（sentQty）', () {
     test('刚下单的菜都是「未下厨」，markOrderSent 之后全变「已下厨」', () {
       final pos = PosController();
       pos.addToCart(sampleMenu.firstWhere((m) => m.id == 'h1'));
@@ -531,23 +621,45 @@ void main() {
       expect(pos.markOrderSent(order.id)!.lines.length, 2);
     });
 
-    test('「保存」后再点的菜：不会并进已经下过厨房的那一行', () {
+    test('「保存」后再点的同款菜：**并进原来那一行**，厨房只补打多出来的份数', () {
       final pos = PosController();
       pos.addToCart(sampleMenu.firstWhere((m) => m.id == 'h1')); // 28
       final order = pos.placeOrder(table: '3')!;
       pos.markOrderSent(order.id); // 厨房已经收到这份了
 
-      // 客人再加一份同样的菜 → 必须另起一行（否则厨房对不上）
+      // 客人再点一份**一模一样**的菜 → 并进同一行（数量 2），不另起一行
       pos.addToCart(sampleMenu.firstWhere((m) => m.id == 'h1'));
       final after = pos.appendToOrder(order.id)!;
-      expect(after.lines.length, 2);
-      expect(after.lines[0].quantity, 1);
-      expect(after.lines[0].sentToKitchen, isTrue);
-      expect(after.lines[1].quantity, 1);
-      expect(after.lines[1].sentToKitchen, isFalse);
-      // 只有没下厨的那一行要打给厨房
-      expect(pos.unsentLines(order.id).length, 1);
+      expect(after.lines.length, 1);
+      expect(after.lines[0].quantity, 2);
+      // 厨房手上还是 1 份 → 这次只补打**多出来的那 1 份**
+      expect(after.lines[0].sentQty, 1);
+      expect(after.lines[0].unsentQty, 1);
+      final pending = pos.unsentLines(order.id);
+      expect(pending.length, 1);
+      expect(pending.single.quantity, 1);
       expect(after.total, closeTo(56, 0.001));
+
+      // 再点一次「厨房」→ 厨房手上就是 2 份了，不会再补打
+      final sent = pos.markOrderSent(order.id)!;
+      expect(sent.lines.single.sentQty, 2);
+      expect(pos.unsentLines(order.id), isEmpty);
+    });
+
+    test('只有「菜名 + 单价 + 定制项 + 特别备注」全一样才并（备注不同算两道菜）', () {
+      final pos = PosController();
+      final dish = sampleMenu.firstWhere((m) => m.id == 'h1');
+      pos.addToCart(dish);
+      final order = pos.placeOrder(table: '3')!;
+      pos.markOrderSent(order.id);
+
+      // 备注不一样 → 必须另起一行（厨房要分开做）
+      pos.addToCart(dish, notes: const ['不要洋葱']);
+      final after = pos.appendToOrder(order.id)!;
+      expect(after.lines.length, 2);
+      expect(after.lines[1].notes, const ['不要洋葱']);
+      expect(after.lines[1].sentQty, 0);
+      expect(pos.unsentLines(order.id).length, 1);
     });
 
     test('还没下过厨房的行照旧合并数量（同菜同选项同备注）', () {
@@ -560,27 +672,49 @@ void main() {
       expect(after.lines.length, 1);
       expect(after.lines.first.quantity, 2);
       expect(after.lines.first.sentToKitchen, isFalse);
+      expect(after.lines.first.sentQty, 0);
     });
 
-    test('sentToKitchen 能存住；老数据（没这个字段）当作已下厨', () {
+    test('只改份数：厨房只补打多出来的；减份数不补打', () {
+      final pos = PosController();
+      pos.addToCart(sampleMenu.firstWhere((m) => m.id == 'h1'));
+      final order = pos.placeOrder(table: '3')!;
+      pos.markOrderSent(order.id);
+      // 直接在「已在单上」那一行按 +
+      final plus = pos.changeOrderLineQuantity(order.id, 0, 1)!;
+      expect(plus.lines.single.quantity, 2);
+      expect(plus.lines.single.sentQty, 1);
+      final pending = pos.unsentLines(order.id);
+      expect(pending.single.quantity, 1); // 只打多出来的那一份
+
+      // 减一份：厨房已经做了，不用补打（账单少算就行）
+      final minus = pos.changeOrderLineQuantity(order.id, 0, -1)!;
+      expect(minus.lines.single.quantity, 1);
+      expect(pos.unsentLines(order.id), isEmpty);
+    });
+
+    test('sentQty 能存住；老数据（只有 sentToKitchen）当作已下厨', () {
       final o = Order(
         id: 'x2',
         createdAt: DateTime(2026, 1, 1, 12),
         lines: const [
           OrderLine(name: 'A', quantity: 1, unitPrice: 10),
-          OrderLine(name: 'B', quantity: 1, unitPrice: 20, sentToKitchen: true),
+          OrderLine(name: 'B', quantity: 1, unitPrice: 20, sentQty: 1),
         ],
         total: 30,
       );
       final back = Order.fromJson(o.toJson());
       expect(back.lines[0].sentToKitchen, isFalse);
       expect(back.lines[1].sentToKitchen, isTrue);
+      expect(back.lines[1].sentQty, 1);
 
-      // 老数据：JSON 里没有 sentToKitchen → 视为 true（那时候下单一律打厨房单）
+      // 老数据：JSON 里没有 sentToKitchen / sentQty → 视为 true
+      // （那时候下单一律打厨房单，所以老单的菜都是"厨房已经有了"）
       final legacy = Map<String, dynamic>.from(back.toJson());
-      final line = Map<String, dynamic>.from(
-          (legacy['lines'] as List).first as Map);
+      final line =
+          Map<String, dynamic>.from((legacy['lines'] as List).first as Map);
       line.remove('sentToKitchen');
+      line.remove('sentQty');
       legacy['lines'] = [line];
       expect(Order.fromJson(legacy).lines.first.sentToKitchen, isTrue);
     });

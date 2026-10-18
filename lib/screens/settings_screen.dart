@@ -40,6 +40,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _ipCtl = TextEditingController();
   final _portCtl = TextEditingController();
   final _noteCtl = TextEditingController();
+
+  /// 常用备注右边那个**小金额框**：这条备注每份加多少钱（空 = 不改价）。
+  final _notePriceCtl = TextEditingController();
   final _taxCtl = TextEditingController();
   // 后台同步（Supabase）
   final _supabaseUrlCtl = TextEditingController();
@@ -106,6 +109,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _ipCtl.dispose();
     _portCtl.dispose();
     _noteCtl.dispose();
+    _notePriceCtl.dispose();
     _taxCtl.dispose();
     _supabaseUrlCtl.dispose();
     _anonKeyCtl.dispose();
@@ -394,7 +398,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: Text(L10n.t('custom.category')),
                     ),
                   ],
-                  onChanged: (v) => setState(() => _noteCatId = v),
+                  // 换种类时把两个输入框清空：免得"上一条的文字/加价"被加到别的种类下
+                  onChanged: (v) => setState(() {
+                    _noteCatId = v;
+                    _noteCtl.clear();
+                    _notePriceCtl.clear();
+                  }),
                 ),
                 const SizedBox(height: 8),
                 // ① 还没选种类 → 空；② 选了但没有备注 → 也说一句；
@@ -417,7 +426,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       children: [
                         for (final n in list)
                           InputChip(
-                            label: Text(n),
+                            // 带加价的显示成 `换炒饭 +70`（跟点菜框、小票一个写法）
+                            label: Text(
+                              '$n${_notePriceTag(settings.notePriceFor(catId, n))}',
+                            ),
+                            // 点标签 = 把这条**填回下面的输入框**（改文字/改加价），
+                            // 改完再按一次「添加」就是改它（同名不会变成两条）
+                            tooltip: L10n.t('settings.notes.editHint'),
+                            onPressed: () => setState(() {
+                              _noteCtl.text = n;
+                              final price = settings.notePriceFor(catId, n);
+                              _notePriceCtl.text = price.abs() < 0.005
+                                  ? ''
+                                  : price.toStringAsFixed(
+                                      price == price.roundToDouble() ? 0 : 2);
+                            }),
                             // 把叉叉放大一点、加上提示：一眼看得出"点这里删"
                             deleteIcon: const Icon(Icons.close, size: 18),
                             deleteButtonTooltipMessage:
@@ -434,15 +457,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: TextField(
                         controller: _noteCtl,
                         enabled: _noteCatId != null,
+                        textInputAction: TextInputAction.next,
                         decoration: InputDecoration(
                           labelText: L10n.t('settings.notes.hint'),
                           border: const OutlineInputBorder(),
                           isDense: true,
                         ),
+                        // 回车 = 跳到右边那个「加价」小框
+                        onSubmitted: (_) => FocusScope.of(context).nextFocus(),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    // 这条备注的**加价**（跟点菜时一样的小框：「换炒饭 +70」就填 70；
+                    // 留空 = 这条备注不改价）
+                    SizedBox(
+                      width: 84,
+                      child: TextField(
+                        controller: _notePriceCtl,
+                        enabled: _noteCatId != null,
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true, signed: true),
+                        textAlign: TextAlign.right,
+                        decoration: InputDecoration(
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                          hintText: L10n.t('custom.note.price'),
+                          hintStyle: const TextStyle(fontSize: 12),
+                        ),
                         onSubmitted: (_) => _addNote(settingsCtl),
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 6),
                     FilledButton.tonal(
                       // 没选种类不能加（不然这条备注会存到"不知道哪个种类"下）
                       onPressed:
@@ -1105,12 +1150,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _tableCtl.clear();
   }
 
+  /// 常用备注后面的价签：` +70` / ` -60`（不改价 = 空串）。
+  ///
+  /// 跟点菜框、小票、下单行里的写法**完全一致**（都是 `signedAmount`），
+  /// 这样老板在设置里看到的和收银员看到的是同一个东西。
+  String _notePriceTag(double price) =>
+      price.abs() < 0.005 ? '' : ' ${signedAmount(price)}';
+
   void _addNote(SettingsController ctl) {
     final v = _noteCtl.text.trim();
     final catId = _noteCatId;
     if (v.isEmpty || catId == null) return; // 没选种类就不给加（按钮本来就是灰的）
-    ctl.addSavedNote(catId, v); // 存到当前选中的种类下
+    // 右边那个小金额框 = 这条备注**每份加多少钱**（空/0 = 不改价）
+    final price = double.tryParse(_notePriceCtl.text.trim().replaceAll(',', '.')) ?? 0;
+    ctl.addSavedNote(catId, v, price: price); // 存到当前选中的种类下
     _noteCtl.clear();
+    _notePriceCtl.clear();
   }
 
   // ---- 菜品管理 / Excel 导入：都要管理员权限 ----

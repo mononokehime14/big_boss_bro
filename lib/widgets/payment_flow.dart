@@ -289,13 +289,12 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                               children: [
                                 // ---------------- 应收（跟着收款币种变）----------------
                                 _dueBig(),
-                                const SizedBox(height: 12),
+                                const SizedBox(height: 10),
 
-                                // ---------------- 折扣 ----------------
-                                _label(L10n.t('checkout.discount')),
-                                Wrap(
-                                  spacing: 8,
-                                  children: [
+                                // ---------------- 折扣（说明文字在按钮右边，不占整行）----
+                                _inlineLabel(
+                                  label: L10n.t('checkout.discount'),
+                                  chips: [
                                     _chip(
                                       L10n.t('checkout.discount.none'),
                                       _discountType == DiscountType.none,
@@ -361,24 +360,21 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                                   ],
                                 ],
 
-                                // ---------------- 收款币种（只有币种码 + 汇率）------------
-                                const SizedBox(height: 14),
-                                _label(L10n.t('checkout.currency')),
-                                Wrap(
-                                  spacing: 8,
-                                  runSpacing: 8,
-                                  children: [
+                                // ---------------- 收款币种（说明文字在按钮右边）----
+                                const SizedBox(height: 10),
+                                _inlineLabel(
+                                  label: L10n.t('checkout.currency'),
+                                  chips: [
                                     for (final code in kCashCurrencies)
                                       _currencyChip(code),
                                   ],
                                 ),
 
-                                // ---------------- 支付方式 ----------------
-                                const SizedBox(height: 14),
-                                _label(L10n.t('checkout.payMethod')),
-                                Wrap(
-                                  spacing: 8,
-                                  children: [
+                                // ---------------- 支付方式（说明文字在按钮右边）----
+                                const SizedBox(height: 10),
+                                _inlineLabel(
+                                  label: L10n.t('checkout.payMethod'),
+                                  chips: [
                                     _chip(L10n.t('payment.cash'), isCash,
                                         () => _setMethod(PaymentMethod.cash)),
                                     _chip(
@@ -514,7 +510,8 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
   /// 电话外卖还带着客人说好的等待时间（跟厨房单上打的一致）。
   Widget _titleBar() {
     final tag = _order.takeawayTag; // `名字 #号` / `名字` / `#号` / ''（老数据没有）
-    final wait = (_order.isPhoneTakeaway && _order.waitMinutes > 0)
+    // 等待时间：外卖 / 电话外卖都能填（跟厨房单上打的那行一致）
+    final wait = _order.waitMinutes > 0
         ? '   ·   ${L10n.t('kitchen.wait')} ${_order.waitMinutes} '
             '${L10n.t('kitchen.minutes')}'
         : '';
@@ -628,7 +625,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
   Widget _lineTile(int index, String symbol) {
     final l = _order.lines[index];
     final detail = <String>[
-      '${l.quantity} × ${money(l.unitPrice, symbol)}'
+      '${l.quantity} × ${money(l.effectiveUnitPrice, symbol)}'
           '${l.unit.trim().isEmpty ? '' : ' / ${l.unit.trim()}'}',
       if (l.options.isNotEmpty) l.options.join(' / '),
       if (l.note.trim().isNotEmpty) l.note.trim(),
@@ -746,15 +743,31 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     );
   }
 
-  /// 要打出去的那张单：**把屏幕上刚设的折扣临时贴上去**。
+  /// 要打出去的那张单：**把屏幕上刚设的折扣 / 实收 / 找零临时贴上去**。
   ///
-  /// 折扣这时还没写进订单（要等收款成功才落账），所以临时造一张「带折扣的单」去打印，
-  /// 这样纸上的合计 = 屏幕上显示的合计 = 最后记账的金额。
-  Order _billToPrint() => _order.copyWith(
-        discountType: _discountType,
-        discountValue: _discountValue,
-        total: _price.total,
-      );
+  /// 折扣、实收、找零这时都还没写进订单（要等收款成功才落账），所以临时造一张
+  /// 「带这些数的单」去打印，这样**纸上的合计 = 屏幕上显示的合计 = 最后记账的金额**，
+  /// 而且**合计下面是实收、再下面是找零**（收银员/客人当场对账用）。
+  ///
+  /// 只有现金才打实收/找零；**钱还不够（找零是负数）时那两行不打** ——
+  /// 那时候还没谈妥怎么付，纸上写个负数反而让人糊涂。
+  Order _billToPrint() {
+    final isCash = _method == PaymentMethod.cash;
+    final change = _change;
+    final paid = isCash && change >= 0;
+    return _order.copyWith(
+      discountType: _discountType,
+      discountValue: _discountValue,
+      total: _price.total,
+      // 支付方式（现金 / 刷卡）也打上，纸上才看得懂下面那两行是哪来的
+      paymentMethod: _method,
+      currencyCode: _currency,
+      // 本位币传 0（不需要换算），外币才传真实汇率 —— 跟 `_finish` 一个口径
+      exchangeRate: _currency == widget.settings.baseCurrency ? 0 : _rate,
+      receivedAmount: paid ? (_received ?? _dueForeign) : null,
+      changeAmount: paid ? change : null,
+    );
+  }
 
   /// ① 的「打印单子 / 再打一张」：打纸，**留在本界面**。
   ///
@@ -928,16 +941,31 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
         ),
       );
 
-  Widget _label(String text) => Padding(
-        padding: const EdgeInsets.only(bottom: 6),
-        child: Text(
-          text,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w700,
-            color: Colors.grey.shade600,
+  /// 一行「选项按钮 + **右边**那行小字说明」。
+  ///
+  /// 为什么说明文字**不再独占一行**（窄平板实测）：结账窗口在 10 寸安卓平板上
+  /// 高度本来就紧，三组选项（折扣 / 收款币种 / 支付方式）各占一行说明就是
+  /// 白白吃掉三行，**大字「找零」得往下拖才看得见** —— 收钱时最不该藏起来的就是它。
+  /// 现在说明文字放到按钮**右边**（贴着行尾），省下来的高度全给「找零」。
+  ///
+  /// 按钮放不下时 [Wrap] 自己换行，说明文字始终在右边不动。
+  Widget _inlineLabel({required String label, required List<Widget> chips}) =>
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Wrap(spacing: 8, runSpacing: 8, children: chips),
           ),
-        ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: Colors.grey.shade600,
+            ),
+          ),
+        ],
       );
 
   Widget _chip(String label, bool selected, VoidCallback onTap) => ChoiceChip(
@@ -1031,20 +1059,28 @@ Future<Order?> _submitOrder(
     if (saved == null) return null;
     // 记下来"刚动过的是哪张单"：「结账」按钮靠它兜底（尤其是没名字的外卖单）
     pos.markTouchedOrder(saved.id);
+    // **外卖单：把它钉成"购物车里当前这张"** —— 点完「保存 / 厨房」之后它不会消失，
+    // 收银员可以直接在购物车里接着加菜、改单、或者按「结账」收钱。
+    // 没起名字的外卖单也一样：它既没桌号也没名字，只能靠 id 认（见 `focusOrder`）。
+    if (saved.isTakeaway) pos.focusOrder(saved);
     // 「保存」到此为止：只记单，不打印。
     //
-    // 外卖单顺手问一句"要不要起个名字"：**起名 = 把这张外卖单存进下拉列表**，
-    // 之后随时能选回来接着加菜/改单（结账后自动从列表消失）。
-    // 点「不用名字」也没关系 —— 那就是一张点完厨房直接结账的普通外卖单。
+    // **外卖单每次「保存」都问一次名字 / 等待时间**（保存本来就不限次数）：
+    // - 还没起名的 → 可以补上（起名 = 下拉列表里认得出这张单）；
+    // - 已经起名的 → 可以把名字改掉（重名由弹窗自己拦，`exceptOrderId` 不会跟自己撞）；
+    // - 电话外卖（现在普通外卖也一样）→ 等待时间随时能改，厨房单跟着变；
+    // - 点「不用名字」= **不要名字了**（原来有名字的会被清掉，靠 `#号` 继续认）。
     if (!toKitchen) {
-      if (askName &&
-          saved.isTakeaway &&
-          saved.label.trim().isEmpty &&
-          context.mounted) {
-        // 外卖 / 电话外卖：「保存这张外卖单」= 起名（可不填）+ 电话外卖的等待时间
+      if (askName && saved.isTakeaway && context.mounted) {
         final r = await showTakeawayNameDialog(context, saved);
         if (r != null) {
-          pos.setOrderLabel(saved.id, r.label, waitMinutes: r.waitMinutes);
+          pos.setOrderLabel(
+            saved.id,
+            r.label,
+            waitMinutes: r.waitMinutes,
+            // 名字清空 = 真的清掉（不然"不用名字"按了跟没按一样）
+            clearName: true,
+          );
         }
       }
       return saved;
@@ -1052,9 +1088,40 @@ Future<Order?> _submitOrder(
     order = saved;
   } else {
     // ---- 1') 购物车是空的 ----
-    // 「保存」没东西可存；「厨房」仍然要能打：把这张单上**还没下厨的菜**补打给厨房
+    // 「厨房」仍然要能打：把这张单上**还没下厨的菜**补打给厨房
     // （比如先点了「保存」，或者上一次厨房单没打成功、失败被跳过）
-    if (!toKitchen) return null;
+    //
+    // 「保存」**不限次数**：购物车空着再按一次就是"这次没有新菜"，单子本来就在。
+    //
+    // ⚠️ 但**外卖单空着购物车按「保存」也要弹名字框** —— 现实里最常见的用法就是
+    // "单子已经保存了，现在只想补个名字 / 改个名字 / 改等待时间"。
+    // （以前这里直接 return + 弹一句"没有新菜要保存"，于是改名完全没入口 —— 真实反馈过）
+    if (!toKitchen) {
+      if (askName && context.mounted) {
+        // 当前这张单：先按桌号/名字找，找不到就用"刚动过的那一张"兜底
+        final open = pos.openOrderForSelectedTable() ?? pos.lastTouchedOrder;
+        if (open != null && open.isTakeaway) {
+          final r = await showTakeawayNameDialog(context, open);
+          if (r != null) {
+            pos.setOrderLabel(
+              open.id,
+              r.label,
+              waitMinutes: r.waitMinutes,
+              clearName: true,
+            );
+          }
+          return open;
+        }
+        // 不是外卖单（或者这张桌压根没有进行中的单）→ 只是"没有新菜"
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(L10n.t('cart.nothingNew')),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      return null;
+    }
     final open = pos.openOrderForSelectedTable();
     if (open == null) return null; // 这桌没有进行中的单 → 没东西可打
     pos.markTouchedOrder(open.id);
@@ -1062,7 +1129,11 @@ Future<Order?> _submitOrder(
   }
 
   // ---- 2) 厨房单：这张单上所有还没下厨的菜 ----
-  final pending = pos.unsentLines(order.id);
+  // **菜没变化就不出纸**（一行都没多、也没改过 → 直接返回，不浪费纸）
+  // 行由 `kitchenTicketLines` 排过：**餐品在前、饮料在最后**（饮料前面打一条虚线，
+  // 见 `receipt_layout.dart` ④段），[drinksFrom] 就是饮料的起点。
+  final kitchen = pos.kitchenTicketLines(order.id);
+  final pending = kitchen.lines;
   if (pending.isEmpty) return order;
 
   final ticket = Order(
@@ -1072,18 +1143,23 @@ Future<Order?> _submitOrder(
     total: 0,
     table: order.table,
     orderType: order.orderType,
-    // 外卖那三样要**跟着票走**，否则厨房单顶部打不出「名字 / 号 / 等待时间」
-    // （见 `receipt_layout.dart` 的 buildKitchenRows ①b / ②b）
+    // 外卖那三样要**跟着票走**，否则厨房单的"门牌"打不出「名字 / 号 / 等待时间」
+    // （见 `receipt_layout.dart` 的 buildKitchenRows ③段）
     label: order.label,
     dailyNo: order.dailyNo,
     waitMinutes: order.waitMinutes,
     status: OrderStatus.inProgress,
   );
-  // 这张单之前已经下过厨房 → 票上标「（追加）」
-  final isAppend = order.lines.any((l) => l.sentToKitchen);
+  // 这张单之前已经有菜下过厨房 → 票上标「（追加）」
+  // （用 sentQty 判断：并单之后可能只是**这一行的部分份数**已经下过厨房）
+  final isAppend = order.lines.any((l) => l.sentQty > 0);
 
-  Future<PrintError?> printTicket() =>
-      service.printKitchenTicket(ticket, settings, isAppend: isAppend);
+  Future<PrintError?> printTicket() => service.printKitchenTicket(
+        ticket,
+        settings,
+        isAppend: isAppend,
+        drinksFrom: kitchen.drinksFrom,
+      );
 
   final err = await printTicket();
   if (!context.mounted) return order;

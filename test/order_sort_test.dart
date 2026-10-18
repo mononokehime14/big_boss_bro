@@ -294,4 +294,38 @@ void main() {
       expect(ids(filterOrdersOnDate(orders, '2026-10-09')), ['10-09']);
     });
   });
+
+  group('进行中：现在固定**按单号从小到大**（排序开关已经去掉）', () {
+    test('号小的在前；不同天的话旧的在前；没号的排最前', () {
+      final orders = [
+        order(id: 'no3', dailyNo: 3),
+        order(id: 'none'), // 老数据没号
+        order(id: 'no1', dailyNo: 1),
+        order(id: 'no2', dailyNo: 2),
+      ];
+      expect(ids(sortOpenOrdersByNumber(orders)), ['none', 'no1', 'no2', 'no3']);
+    });
+
+    test('跨天：昨天那张排今天前面（先开先收）', () {
+      final orders = [
+        order(id: 'today', dailyNo: 1, created: DateTime(2026, 10, 12, 9, 0)),
+        order(
+          id: 'yesterday',
+          dailyNo: 9,
+          created: DateTime(2026, 10, 11, 21, 0),
+        ),
+      ];
+      expect(ids(sortOpenOrdersByNumber(orders)), ['yesterday', 'today']);
+    });
+
+    test('号一样时按开单时间，顺序永远确定（不会乱跳）', () {
+      final orders = [
+        order(id: 'b', dailyNo: 5, created: DateTime(2026, 10, 12, 9, 30)),
+        order(id: 'a', dailyNo: 5, created: DateTime(2026, 10, 12, 9, 0)),
+      ];
+      expect(ids(sortOpenOrdersByNumber(orders)), ['a', 'b']);
+      // 传进去的顺序反过来，结果不变
+      expect(ids(sortOpenOrdersByNumber(orders.reversed.toList())), ['a', 'b']);
+    });
+  });
 }

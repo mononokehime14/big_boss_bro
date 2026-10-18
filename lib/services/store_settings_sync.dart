@@ -41,6 +41,8 @@ class StoreSettingsSync {
         'notesByCategory': s.notesByCategory,
         'dailyExpenses': s.dailyExpenses,
         'menuPassword': s.menuPassword,
+        // 常用备注的加价（「换炒饭 +70」）—— 加在**末尾**（见上面那条说明）
+        'notePricesByCategory': s.notePricesByCategory,
       };
 
   /// 稳定的 JSON 字符串：本机有没有改过，就靠「现在这份」和「上次同步的那份」比。
@@ -98,6 +100,10 @@ class StoreSettingsSync {
 
     final notes = _notes(data['notesByCategory']);
     if (notes != null) s.notesByCategory = notes;
+
+    // 常用备注的加价（老数据/字段缺失 → 保持本机原值，不把加价清空）
+    final notePrices = _notePrices(data['notePricesByCategory']);
+    if (notePrices != null) s.notePricesByCategory = notePrices;
 
     final expenses = _numMap(data['dailyExpenses']);
     if (expenses != null) s.dailyExpenses = expenses;
@@ -164,6 +170,24 @@ class StoreSettingsSync {
           .where((e) => e.trim().isNotEmpty)
           .toList();
       if (list.isNotEmpty) out[key.toString()] = list;
+    });
+    return out;
+  }
+
+  /// 常用备注的加价：`分类id → (备注 → 每份加价)`。
+  /// 不是 Map（老数据没这个字段）→ **null**（调用方保持本机原值）。
+  static Map<String, Map<String, double>>? _notePrices(dynamic v) {
+    if (v is! Map) return null;
+    final out = <String, Map<String, double>>{};
+    v.forEach((key, value) {
+      if (value is! Map) return;
+      final prices = <String, double>{};
+      value.forEach((note, price) {
+        if (price is num && price.toDouble().abs() >= 0.005) {
+          prices[note.toString()] = price.toDouble();
+        }
+      });
+      if (prices.isNotEmpty) out[key.toString()] = prices;
     });
     return out;
   }

@@ -1,4 +1,4 @@
-# kitchen_ticket.md — 厨师单怎么改（版式 / 排列 / 字体 / 大小 / 份数）
+﻿# kitchen_ticket.md — 厨师单怎么改（版式 / 排列 / 字体 / 大小 / 份数）
 
 > 这份文档回答一个问题：**厨师单长什么样，我自己能不能改？**
 > 答案：**能**，而且 90% 的改动只在一个文件里。下面把"改哪儿、怎么改、什么改不了"讲清楚。
@@ -7,57 +7,149 @@
 
 ## 0. 现在的样子（默认打 **2 张**）
 
+> 想先看一眼顺序又不浪费纸：在项目根目录跑 `dart run tool/preview_kitchen.dart`
+> （加 `80` 就是 80mm）—— 终端里按纸宽把每一行都画出来，**顺序 / 列宽 / 每行字号**一目了然。
+
 **堂食**
-```
-         厨师单 1                 ← 大（双倍高）：分票用的编号
-   桌号 5 · 堂食   10-10 13:45    ← 特大（双倍宽高）：票面上最大的一行
-                                  ← 空一行，分块（参考图也是这么排的）
+```text
+                                 ← 空 1 行：**别针区**（厨师把单子别/插在杆子上，这里会被挡住）
+          厨师单 1                ← 大（双倍高）：分票用的编号，居中
+        10-10 13:45               ← 大：时间，居中
+           桌号 8                 ← **特大**：门牌（堂食**只打桌号**，不写「堂食」）
+                                 ← 空一行，分块
 - - - - - - - - - - - - - - - -  ← 虚线（普通字号、整张纸宽）
-数量  菜名                        ← 普通（表头）
-2      Lonche #14                 ← 菜品行：**加粗** + 设置里的字号（默认**特大**）+ **菜名居中**
-  加辣                            ← 普通（选项，缩进）
-  不要洋葱                        ← 普通（备注，**一条一行**；太长自动折行，绝不截断）
+   数量      菜名          备注     ← 普通（表头：数量**贴左**、菜名居中、**备注贴右**）
+  2    牛肉炒饭          加辣      ← 菜品行（**特大**）：数量(**贴最左**·加粗) | 菜名(居中·加粗) | **第一个**定制项/备注(大·不加粗、**贴最右**)
+ 不要香菜                          ← 剩下的备注：**一条一行、从最左边**（大、不加粗）
+ 少放盐                            ← （再来一条就再来一行）
+                                 ← 空一行（一道菜一块）
 - - - - - - - - - - - - - - - -
+                                 ← 空一行
+             AQUI                ← **最大**字号：西文
+             堂食                ← **最大**字号：中文（⚠️ 强制中文模式，见 §3.5）
 ```
 
-**外卖 / 电话外卖**（桌号那行变成「外卖 + 时间」，名字 / 号单独一行特大字）
-```
-         厨师单 1                 ← 大
-   外卖 10-10 13:45               ← 特大：票面上最大的一行
-           张三                   ← 特大：**外卖单的名字**（没起名字就打系统给的号 `#3`）
+**外卖 / 电话外卖**（"门牌"变成「外卖 + 名字 / 号」）
+```text
+                                 ← 别针区（空 1 行）
+          厨师单 1                ← 大
+        10-10 13:45               ← 大
+          外卖 张三               ← 特大：**类型 + 名字**（没起名字就是 `外卖 #3`）
         等待 20 分钟               ← 特大：**电话外卖**填了等待时间才有这一行
-                                  ← 空一行，分块
+                                 ← 空一行
 - - - - - - - - - - - - - - - -
-数量  菜名
-1     牛肉炒饭
+   数量      菜名          备注
+  1    牛肉炒饭          加辣
 - - - - - - - - - - - - - - - -
+                                 ← 空一行
+            LLEVAR               ← 西文
+             外卖                ← 中文
 ```
 
 第 2 张除了顶部是「厨师单 2」以外完全一样。两张是**一次连接、一次发出去**的，
 每张末尾走纸 + 切一刀（见 `print_service.dart` 的 `printKitchenTicket`）。
 
-规则（`buildKitchenRows` ③④）：
+**备注怎么排**（第一个上排贴右、其余一条一行）：
 
-| 单子类型 | 名字 / 号那行 |
+```text
+  2    牛肉炒饭          加辣      ← 第一个（定制项优先；没有定制项就是第一条特别备注）：**贴纸的右边缘**
+ 不要香菜                          ← 第二个：单独一行、从最左边
+ 少放盐                            ← 第三个：再一行
+```
+
+规则（`_noteItems()`）：备注先拆成**一条一条**（定制项在前，然后每条特别备注）。
+**第一个**贴在菜品那一行的**右边缘**（58mm 备注列默认 8 列，大字号）；
+其余每条**单独一行**从最左边打。
+第一个比默认备注列宽 → **从菜名那一列借地方**（菜名最少留 `kKitchenMinNameColumns` = 4 个特大列），
+借完还是贴右边缘；再长（58mm 超过 16 列）才整条落到下面（不劈字、不丢字）。
+
+**饮料排在最后，前面一条虚线**（`KitchenData.drinksFrom`）：
+
+```text
+   1    牛肉炒饭
+  ─────────────────────────────  ← 虚线：上面是餐品、下面是饮料
+   2    可乐
+   1    橙汁
+```
+
+- 哪些算饮料 = **种类的名字**里带饮料的词（`饮料`/`饮品`/`酒水`/`Bebida`/`Jugo`/`Drink`…），
+  见 `lib/utils/drink_category.dart` 的 `isDrinkCategory()`（想加词就往
+  `kDrinkCategoryHints` 里加）；
+- 排序在 `PosController.kitchenTicketLines()`：**餐品在前、饮料在后**，各自保持点单的先后；
+  它同时返回 `drinksFrom`（第一道饮料的下标），排版在那一行**前面**插一条虚线；
+- 没有饮料（或全是饮料）就不插那条线 —— 跟原来的票面一模一样。
+
+规则（`_noteItems()`）：备注先拆成**一条一条**（定制项在前，然后每条特别备注）。
+**第一个**贴在菜品那一行的**右边缘**（58mm 备注列默认 8 列，大字号）；
+其余每条**单独一行**从最左边打。
+第一个比默认备注列宽 → **从菜名那一列借地方**（菜名最少留 `kKitchenMinNameColumns` = 4 个特大列），
+借完还是贴右边缘；再长（58mm 超过 16 列）才整条落到下面（不劈字、不丢字）。
+
+**为什么这么排**（厨师的实际用法）：
+
+1. **最上面是别针区**（`kKitchenTopBlankRows`，默认空 **1** 行）：单子要别 / 插在杆子上，
+   顶上那点地方看不见 —— 所以那儿只放**不太要紧**的东西（票号 + 时间）；
+2. **门牌紧跟时间**：堂食只打桌号（`桌号 3`）、外卖打「**外卖** 名字 / `#号`」、
+   电话外卖再多一行等得多久，**特大**居中；中间**不再空行**（票面上半截要短）；
+3. **中间全是菜**：一行三列「数量 | 菜名 | 备注」—— 第一条备注跟在菜名右边，
+   剩下的**一条一行**从最左边（备注都**不加粗**、比菜名小一档：**大**）；
+4. **最下面是徽标**：**西文一行 + 中文一行**，票面上最大的字 ——
+   插在杆上时露在外面的就是这一块。**中文那行是固定的**：哪怕票面语言选的是
+   西语 / 英语、哪怕整张票的编码是 `cp850`，也照打中文（店里有中国厨师）——
+   靠"这一行自己进出中文模式"实现，见 **§3.5**。
+   > ⚠️ 这里以前还画过 ASCII 图案（堂食画桌子、外卖画打包袋），**实测厨师不看**、
+   > 还白占三四行纸，已经去掉了。想加回来见 §5 例④。
+
+规则（`buildKitchenRows` ③段「门牌」）：
+
+| 单子类型 | "门牌"那行（特大、居中） |
 | --- | --- |
-| 堂食 | **没有**（「桌号 5 · 堂食」里已经有桌号） |
-| 外卖（有名字） | 名字，例如 `张三` |
-| 外卖（没起名字） | 系统给的号，例如 `#3`（`Order.dailyNo`，当天第几号外卖） |
-| 外卖（老数据既没名字也没号） | 这行不打 |
-| 电话外卖 | 同外卖（名字 / 号），**再加一行**「等待 N 分钟」 |
+| 堂食 | `桌号 8`（= `KitchenLabels.labelTable` + 桌号）—— **不写「堂食」** |
+| 外卖（有名字） | `外卖 张三`（类型 + 名字） |
+| 外卖（没起名字） | `外卖 #3`（`Order.dailyNo`，当天第几号外卖） |
+| 外卖（老数据既没名字也没号） | 只打「外卖」两个字 |
+| 电话外卖 | 同外卖（`电话外卖 张三`），**再加一行**「等待 N 分钟」 |
 
 > 「等待 N 分钟」填在**保存电话外卖单**那个框里（点桌号下面的「等待时间」小标签也能改）。
 
-**字号规则**（`_headline()` / `_headlineScale()`）：
+**徽标打哪门语言**（`ticket_builder.dart`）：
 
-| 行 | 字号 |
-| --- | --- |
-| 「厨师单 1 / 2」 | **大**（双倍高） |
-| 「哪桌 / 外卖 + 时间」 | **特大**（双倍宽高）；那行字太长（电话外卖、堂食带桌号）**自动退回「大」**，不会被切 |
-| 外卖的名字 / 号 | **特大**，同上会自动退回 |
-| 电话外卖的等待时间 | **特大** |
-| 菜品行 | **特大**（写死在代码里，见下面第 86 行那格）；58mm = 16 列 |
-| 虚线 / 表头 / 选项 / 备注 | 普通字号，**整张纸宽**（借用半宽就白瞎了） |
+| 行 | 打什么 | 想改就看 |
+| --- | --- | --- |
+| 西文 | 西语 / 英语票面 → 那门语言的短词（`AQUI` / `LLEVAR` / `TELEFONO`、`DINE IN` / `TAKE AWAY` / `PHONE`）；**中文票面 → 西班牙语** | `TicketBuilder.kBadgeFallbackLang`（改成 `'en'` 就是中文票面配英语） |
+| 中文 | `堂食` / `外卖` / `电话外卖` —— **固定打，跟票面语言无关**，而且**跟小票编码也无关**（`cp850` 下照样出中文，见 §3.5） | `kitchenLines()` 里的 `badgeChinese`（传 `''` 才不打） |
+
+> 一句话：**中文那行永远在**（这一行自己进出中文模式，不看整张票的编码设置）。
+
+这两行字的来源：`app_strings.dart` 里的
+`kitchen.badgeDineIn` / `kitchen.badgeTakeaway` / `kitchen.badgePhone`
+（三语都有，故意用**短词** —— 特大一行只有 16 列）。
+
+**字号规则**（`receipt_layout.dart` 顶部那几个常量）：
+
+| 行 | 字号 | 常量 |
+| --- | --- | --- |
+| 「厨师单 1 / 2」 | **大**（双倍高） | `kKitchenTitleScale` |
+| 时间「10-10 13:45」 | **大** | `kKitchenTimeScale` |
+| 桌号 / 名字 / 号 / 等待时间 | **特大**（双倍宽高） | `kKitchenWhoScale` |
+| 菜品行：数量（右对齐）+ 菜名（居中） | **特大** + **加粗** | `kKitchenItemScale` |
+| 备注（第一条跟在菜名右边 / 其余一条一行） | **大**（双倍高、单倍宽），**不加粗** | `kKitchenDetailScale` |
+| 底部徽标（西文 + 中文） | **最大**（= 特大） | `kKitchenBadgeScale` |
+| 虚线 / 表头 | 普通字号，**整张纸宽** | — |
+
+> 放大的行**放不下会自动降一档**（特大 → 大 → 普通），所以**任何一行都不会被切字**，
+> 也不会被打印机自己折成两行（见 `_headline()` / `_headlineScale()`）。
+>
+> 菜品那一行是**同一行混字号 + 混字重**：前半段（数量+菜名）特大加粗、后半段（第一条备注）
+> **大、不加粗**。靠的是 `escpos.dart` 的 `TicketLine.continueLine`（打完**不换行**，
+> 下一段接着同一行打）。
+>
+> 💡 备注是**大**（单倍宽），所以备注列能用的列数是**普通列数**：
+> 58mm = 32 - 2×(4+8) = **8 列**、80mm = 48 - 2×(4+14) = **12 列**
+> （数量+菜名是特大，占的普通列要 ×2）。
+
+**"空一行"有多高？能不能空半行？** —— 见 §3.4，一个常量就能调。
+
 
 ---
 
@@ -75,24 +167,36 @@
 
 | 想改的东西 | 改哪里 | 怎么改 |
 | --- | --- | --- |
+| **客户小票上「定制项 / 特别备注」怎么排** | `buildReceiptRows()`（菜品那个 for 循环） | 现在**一条一行**打在菜品下面（缩进两格），不再塞进菜名后面的括号里（括号一长就被截断）；带加价的备注写成 `换炒饭 +70`。想改回括号形式：把那段 for 循环换回 `final opt = ' (${l.options.join(' / ')})'` 拼在菜名后面 |
+| **日结的字号** | `TicketBuilder.summaryLines()` + `buildSummaryLines()` | 整张日结按**特大**打（跟厨师单菜品一样大）。特大 = 双倍宽 → 排版用的是**一半的列数**（58mm 16 列 / 80mm 24 列）；金额列 58mm 8 列、80mm 10 列，放不下就标签一行、金额另起一行靠右（绝不切数字） |
+| **厨房单打哪几道菜（只打没打过的）** | `payment_flow.dart` 的 `_submitOrder()` → `pos.kitchenTicketLines(order.id)` | 每行记了「厨房已经收到几份」（`OrderLine.sentQty`），这里只取 **`quantity - sentQty`** 那几份：加一份就打 `1` 份，不会整行重打；改过选项/备注的行才会整行重打。想改成"每次都打整张单"就把 `unsentLines(...)` 换成 `order.lines` |
+| **饮料排最后 / 那条分隔虚线** | `PosController.kitchenTicketLines()` + `KitchenData.drinksFrom` + `buildKitchenRows` ④段 | 想让饮料不算饮料（或再加个种类）：改 `lib/utils/drink_category.dart` 的 `kDrinkCategoryHints`；不想要那条虚线：`buildKitchenRows` 里 `if (i == k.drinksFrom && i > 0)` 那个 if 删掉（饮料还是排在最后） |
 | 顶部那行字（「厨师单」） | `lib/l10n/app_strings.dart` 的 `kitchen.title`（zh / es / en 各一条） | 想叫「厨房单」「COMANDA」都行 |
-| 第几张的编号（1 / 2） | `receipt_layout.dart` 的 `buildKitchenRows` ①段 | `copyTotal > 1` 时才会拼上编号；想永远显示就改这个条件 |
+| **顶部留白几行（别针区）** | `receipt_layout.dart` 的 **`kKitchenTopBlankRows`**（当前 1） | 厨师别单子的地方占多高就留几行（0 = 不留）；每行约 4~5mm |
+| 第几张的编号（1 / 2） | `buildKitchenRows` **①段** | `copyTotal > 1` 时才会拼上编号；想永远显示就改这个条件 |
 | **时间格式** | `receipt_layout.dart` 的 `kitchenTime()` | 现在 `MM-DD HH:MM`。只要时:分 → 把日期那半行删掉；要秒 → 加 `:${_two(dt.second)}` |
-| 桌号/外卖那行 | `buildKitchenRows` ②段（`whereScale`） | 「堂食/外卖/电话外卖」来自 `typeLabel`；**字号是特大**，太长会自动退回「大」 |
-| **外卖那行大字打什么** | `buildKitchenRows` **③段**（`k.orderLabel` / `k.dailyNo`） | 现在是「**有名字打名字，没名字打 `#号`**」。想**两个都打**就改成 `k.takeawayTag` 那种 `名字 #号`（`Order.takeawayTag` 已经拼好了）；想连堂食也打就把 `if (k.isTakeaway)` 去掉 |
-| **各行的字号** | `receipt_layout.dart` 的 `_headline()` / `_headlineScale()` | 标题固定「大」（`preferred: TicketScale.large`）；名字 / 时间 / 等待时间要**特大**，放不下自动退回「大」。想永远特大就把 `_headlineScale` 直接 `return TicketScale.xlarge;`（长名字会被截断） |
-| **电话外卖的等待时间** | `buildKitchenRows` **④段** | 只有 `waitMinutes > 0` 才打；不想要就删掉这一段 |
+| **"门牌"那几行打什么** | `buildKitchenRows` **③段** + `_whoText()` | 堂食打 `桌号 8`、外卖打名字 / `#号`、电话外卖多一行等待时间。想改文案就改 `_whoText()` |
+| **外卖那行大字打什么** | `buildKitchenRows` **③段**（`k.orderLabel` / `k.dailyNo`） | 现在是「**有名字打名字，没名字打 `#号`**」。想**两个都打**就在 `_whoText()` 里改成 `k.takeawayTag` 那种 `名字 #号`（`Order.takeawayTag` 已经拼好了）；想连堂食也打名字就改 `_whoText()` 的 `if (k.isTakeaway)` |
+| **徽标上的字（西文 / 中文）** | `app_strings.dart` 的 `kitchen.badgeDineIn` / `.badgeTakeaway` / `.badgePhone`（三语） | 故意用短词（`AQUI` / `LLEVAR` / `TELEFONO`）。想让中文票面配英语 → `ticket_builder.dart` 的 `kBadgeFallbackLang` 改成 `'en'`；不要中文那行 → `kitchenLines()` 里 `badgeChinese` 传 `''` |
+| **徽标的字号 / 加粗** | `receipt_layout.dart` 的 **`kKitchenBadgeScale`**（当前 `TicketScale.huge` = 2 倍宽 + **3 倍高**）、`_badgeRows()` | 徽标那两行现在是**加粗**的（西文行用 `TicketRow.bold`，中文行把 `ESC E 1` 编进 `gbkLineBytes` 的原始字节里）。**想让徽标回到「特大」（2×2）**：把 `kKitchenBadgeScale` 改成 `TicketScale.xlarge`。⚠️ 三倍高要靠打印机 `GS !` 支持，个别机器不认就退回 2×2 |
+| **徽标要不要打 / 打在哪** | `buildKitchenRows` **⑤段** + `_badgeRows()` | 不想打徽标就把 ⑤段 删掉；想挪到顶上就是搬这几行 |
+| **想给徽标加回图案**（ascii 画） | `_badgeRows()` | 在那两行字前面插 `out.add(TicketRow(padCenter(图案行, artCols), kKitchenBadgeScale))` 就行，见 §5 例④ |
+| **"空一行"空多高（能不能空半行）** | `receipt_layout.dart` 的 **`kKitchenBlankRowDots`**（当前 **20** ≈ 半行） | `0` = 打一个普通空行（≈5mm）；**`20` ≈ 半行、`10` ≈ 1/4 行、`30` ≈ 3/4 行**。见 §3.4 |
+| **各行的字号** | `receipt_layout.dart` 的 `kKitchenTitleScale` / `kKitchenTimeScale` / `kKitchenWhoScale` / `kKitchenDetailScale` / `kKitchenBadgeScale` | 直接改常量（`TicketScale.normal` / `.large` / `.xlarge`）。放不下会**自动降一档**（见 `_headlineScale()`），所以不会切字 |
+| **电话外卖的等待时间** | `buildKitchenRows` **③段** 最后那个 `if` | 只有 `waitMinutes > 0` 才打；不想要就删掉那个 `if` |
 | 菜名里的 `#`（`Lonche14` → `Lonche #14`） | `receipt_layout.dart` 的 `kitchenItemName()` | 不想用就 `return name;`；想改规则（比如只对某些分类生效）也在这里 |
 | **菜品字号** | `receipt_layout.dart` 的 **`kKitchenItemScale`**（= `TicketScale.xlarge` 特大） | **写死的，设置页里已经没有这一项**（`GS ! n` 放大指令）。想让菜品变小 / 变大就改这一行；58mm 特大 = 16 列、80mm = 24 列 |
-| **数量 / 菜名怎么排** | `buildKitchenRows` ⑤段（`qtyW` / `nameW`） | 现在是**数量在左、菜名在它右边居中**。想改成左对齐 → 把 `padCenter(name.first, nameW)` 换成 `padRight(...)`；想换菜名在左 → 对调拼接顺序。数量列宽度改 `qtyW` |
+| **数量 / 菜名 / 备注 三列各占多宽** | `receipt_layout.dart` 的 **`kKitchenQtyColumns`**（数量，4 个**特大**列）、**`kKitchenNoteColumnsDivisor`**（决定菜名多宽）和 **`kKitchenMinNameColumns`**（菜名最少留几列，默认 4） | 数量**贴最左**、备注**贴最右**、菜名居中。58mm：数量 4 + 菜名 8（特大列）→ 剩下 **8 个普通列**给备注（大字号、单倍宽）；80mm：4 + 14 → 备注 12 列。**想让菜名更宽** → 除数调大；**想让备注更宽** → 除数调小；第一个定制项/备注太长时会自动从菜名那列借地方（最多借到 `kKitchenMinNameColumns`） |
 | **菜名太长怎么办** | `receipt_layout.dart` 的 `_wrapToWidth()` | 现在**折到下一行**（整行居中），一个字都不丢。想改成截断就用 `_truncateToWidth()` |
-| **选项 / 备注怎么打** | `buildKitchenRows` ⑤段 + `_detailLines()` | 现在是**一条一行**（选项一行、每条备注一行），缩进 2 列、太长自动折行。以前拼成一行再截断 → 备注会被 cut |
+| **选项 / 备注怎么打** | `buildKitchenRows` **④段** + `_noteItems()` | 拆成**一条一条**：**第一个**（定制项优先，没有定制项就是第一条特别备注）打在菜品那一行、**贴右边缘**；其余**一条一行**从最左边（大·不加粗）。第一个比默认备注列宽时**从菜名那列借地方**，再长才整条落到下面。想**加粗** → 把 ④段里 `TicketRow(noteHead, kKitchenDetailScale)` 换成 `.bold(...)`；想**换字号** → 改 `kKitchenDetailScale` |
+| **菜品之间要不要空行** | `buildKitchenRows` ④段最后那个 `if (i != k.lines.length - 1)` | 不想要空行就删掉它 |
 | **行距** | `escpos.dart` 的 `kKitchenExtraFeedDots`（默认 16 点） | **每行之后再走纸 n 点**（`ESC J`）。0 = 不加；**16 = 当前**；24 = 很宽松。见 3.1 |
 | **打几张** | 设置页「厨师单打印份数」（`Settings.kitchenCopies`，默认 2） | 1~3；票面自动标 1/2/3 |
 | **菜品加粗** | `escpos.dart` 的 `kKitchenBoldItemNames`（默认 true） | 改成 `false` 就是普通字重（有些机型加粗会发糊） |
-| 分隔线的样子 | `buildKitchenRows` 里的 `'- ' * (cols ~/ 2)` | 想要实线就换成 `'=' * cols` |
+| 分隔线的样子 | `buildKitchenRows` 里的 `_dash(cols)` | 想要实线就换成 `'=' * cols` |
 | 厨房单底部留白 / 切纸 | `escpos.dart` 的 `buildEscPosBytes` 最后两行 | `0x0A,0x0A` 是留白，`1D 56 42 00` 是半切；不想要切纸就删掉后 4 个字节 |
 | 打印机测试页 | `ticket_builder.dart` 的 `testLines()` | 加一行就会打在测试页上，用来试字号/编码很方便 |
+| **先看版式（不浪费纸）** | 项目根目录跑 `dart run tool/preview_kitchen.dart [80]` | 终端里按纸宽把整张票画出来（含每行字号、超宽警告） |
 
 > 小票（顾客单）的版式在同一个文件里：`buildReceiptRows()`（`buildReceiptLines()` 是它的纯文本版）；
 > 小票上只有**合计那一行**放大加粗（特大放不下就退回「大」）。日结在 `buildSummaryLines`。
@@ -107,7 +211,7 @@
 | 能控制 | 怎么控制 |
 | --- | --- |
 | Font A（12×24，大一点）/ Font B（9×17，小一点、更密） | 设置页「铺满纸宽（Font A）」开关（`ESC M`） |
-| 倍宽 / 倍高（1×1、1×2、2×2） | 代码里定死：菜品行 `kKitchenItemScale`、顶部各行见 `_headline()`（`GS ! n`） |
+| 倍宽 / 倍高（1×1、1×2、2×2） | 代码里定死：`receipt_layout.dart` 的 `kKitchenItemScale`（菜品）、`kKitchenTitleScale` / `kKitchenTimeScale` / `kKitchenWhoScale` / `kKitchenDetailScale` / `kKitchenBadgeScale`（其他各段），都走 `GS ! n` |
 | 加粗 | `kKitchenBoldItemNames`（菜品行默认开）；指令是 `ESC E 1` / `ESC E 0` |
 | **要不要进中文模式** | 设置页「小票编码」：`gbk` = 进中文模式；`cp850`/`latin1` = 不进 |
 
@@ -190,9 +294,56 @@ ESC/POS 热敏机**没有可替换的字体文件**：Arial 这类 TrueType 字�
 ⚠️ 代价：这条路之后**中文菜名会变成 `?`**（因为没进中文模式）。你的菜单如果是西语/英语，完全没问题；
 如果菜单里有中文菜名，就只能二选一：中文名 → 保留 `gbk`（继续"宋体感"）。
 
+> 例外：**厨师单底部那行「堂食 / 外卖」的中文不受影响** —— 它自己进出中文模式，
+> 在 `cp850` 下照样是中文（见 **§3.5**）。
+
+### 3.4 **空行能不能空半行？行距能自由调吗？** —— 能，而且都是点数级的
+
+热敏机的"空一行"其实由三件事决定，**这三件都能单独调**：
+
+| 你想要 | 用哪个旋钮 | 怎么调 |
+| --- | --- | --- |
+| **每行之间松一点 / 紧一点**（全局行距） | `escpos.dart` 的 **`kKitchenExtraFeedDots`**（默认 16 点 ≈ 2mm） | 每行打完再走纸 n 点（`ESC J n`）。0 = 打印机默认（最紧）、8 = 略松、**16 = 当前**、24 = 很松、32 = 非常松 |
+| **"空一行"空半行 / 1/4 行**（分块用的空行） | `receipt_layout.dart` 的 **`kKitchenBlankRowDots`**（当前 **20**） | `0` = 打一个**普通空行**（≈5mm）；**`20` ≈ 半行**、`10` ≈ 1/4 行、`30` ≈ 3/4 行。填了大于 0 的数之后，厨师单里所有"空一行"都改成**只走纸这么多点**（一个字都不打，`ESC J n`） |
+| 传统行距指令 | `escpos.dart` 的 `kKitchenLineSpacingDots`（`ESC 3 n`，默认不用） | ⚠️ **你这台机器忽略它**（放大字行的行高由固件按"字高 × 倍数"算），所以才改用上面两个"直接走纸"的旋钮。换成认 `ESC 3` 的机器才需要它 |
+
+要点：
+
+- **1 点 = 1/203 英寸 ≈ 0.125mm**（203dpi 的机器）。所以 `20 点 ≈ 2.5mm`、`40 点 ≈ 5mm`。
+- `kKitchenBlankRowDots > 0` 时用的是**原始字节行**（`TicketRow.feed(feedDots(n))` →
+  最终变成 `TicketLine(raw: …)`），它绕过"打一个字 + 换行"，所以**想空多少点就空多少点**，
+  不受字高影响。
+- 只想把**某一处**空行变半行（比如菜品之间），把那一处的 `_blankRow()` 换成
+  `TicketRow.feed(feedDots(20))` 就行 —— 别处不受影响。
+- 这两处改动都**只影响厨师单**，顾客小票 / 日结不动。
+
+### 3.5 底部那行**中文**：为什么选了 `cp850` 也照样打得出来
+
+票面语言选 Español / English、或者把小票编码设成 `cp850`（西文更漂亮）之后，
+**底部的西文那行正常、中文那行"消失"** —— 不是打印机吞了，是**以前代码故意没发**：
+
+> 那时 `kitchenLines()` 里写着 `badgeChinese: 编码 == gbk ? 中文 : ''`，
+> 因为 `cp850` 模式没进中文模式，硬发 GBK 会变成一串 `?`。
+
+现在改成**这一行自己进出中文模式**（`escpos.dart` 的 **`gbkLineBytes()`**）：
+
+```
+ESC 3 n（行距）→ GS ! n（放大）→ 居中用的空格（正常模式打）→
+FS & → [GS ! n] → GBK 字节 → FS . → 换行 → GS ! 0 → ESC 2
+```
+
+- 前面那串空格在**正常模式**里打，所以不会被当成双宽字、位置不会跑偏；
+- `FS &` … `FS .` 只包住那几个汉字，**其它行照旧用你设的编码**（西文还是漂亮的字体）；
+- 所以：**中文那行永远是中文**，跟票面语言、跟小票编码都无关。
+- 想让这行变大 / 变小：`kKitchenBadgeScale`；想**干脆不要**：把
+  `ticket_builder.dart` 里 `badgeChinese` 改成 `''`。
+
+> 这也顺便回答了"是不是打印机吞了"：打印机没吞，是发出去的字节里**本来就没有中文**。
+> 现在真的发了，而且是用它认得的编码（GBK + 中文模式）发的。
+
 ---
 
-## 4. 自己动手改版式的三条规矩
+## 4. 自己动手改版式的四条规矩
 
 1. **一行的宽度是按"显示列数"算的**：58mm = 32 列、80mm = 48 列（Font A）。
    中文/全角字符算 **2 列**，其余算 1 列 —— 工具函数都在 `receipt_layout.dart`：
@@ -200,21 +351,24 @@ ESC/POS 热敏机**没有可替换的字体文件**：Arial 这类 TrueType 字�
    `_truncateToWidth()`（超宽就截断）、`_wrapToWidth()`（超宽就**折行**，不丢字）。
 2. **一行放大（双倍宽）时列数要减半**：用 `TicketScale.columnsFor(cols)` 换算，
    忘了换 → 那一行会被切一半。注意**是每一行按自己的字号换算**：
-   - 普通字号的行（虚线 / 表头 / 选项 / 备注）= 纸张原始列数（`receiptColumns()`，58mm = 32）；
-   - 放大的行 = `TicketScale.columnsFor()`（特大 → 16）；
+   - **普通字号**的行（虚线 / 表头）= 纸张原始列数（`receiptColumns()`，58mm = 32）；
+   - **放大**的行 = `TicketScale.columnsFor()`（特大 → 16；时间那种"大"只加高、列数不变）；
    - **不要**先按菜品字号把整张票的列数缩一遍再给菜品行用（那会缩两次，
      菜名只剩 3 列 —— 这就是以前"餐品挤成一团"的原因）。
 3. **每行可以有自己的字号和字重**：`TicketRow(text, scale)` / `TicketRow.bold(text, scale)`；
    `escpos.dart` 会在这一行前后自动加 `GS ! n`（放大）、行距、`ESC E`（加粗）指令，你不用管。
 4. **要紧的字宁可折行也不要截断**：菜名、选项、备注都用 `_wrapToWidth()`；
-   `_truncateToWidth()` 只留给"长一点也没关系"的地方（标题、名字那种一行标题）。
+   `_truncateToWidth()` 只留给"长一点也没关系"的地方（标题、名字那种一行标题）——
+   而且大字行会**先自动降一档**（`_headlineScale()`），降到底才可能被截。
 
-**改完怎么看效果**：没有预览功能，只能真打 —— 建议先按「打测试页」确认编码/字体，再点「厨房」打单。
-一次只改一处，改完 `flutter run` 重跑（热重载对打印代码是生效的，但要**重新点一次「厨房」**才会重新排版）。
+**改完怎么看效果**：建议先用 `dart run tool/preview_kitchen.dart` 看**顺序 / 列宽**
+（不出纸），确认没问题再按「打测试页」验编码/字体，最后点「厨房」打一张真的。
+一次只改一处，改完 `flutter run` 重跑（热重载对打印代码是生效的，
+但要**重新点一次「厨房」**才会重新排版）。
 
 ---
 
-## 5. 举例：三个常见的改法
+## 5. 举例：五个常见的改法
 
 **① 时间只要「13:45」**（`receipt_layout.dart`）：
 
@@ -223,14 +377,17 @@ String kitchenTime(DateTime dt) =>
     '${_two(dt.hour)}:${_two(dt.minute)}';   // 原来是 '${_two(dt.month)}-${_two(dt.day)} ...'
 ```
 
-**② 外卖那行想「名字 + 号」两个都打**（`buildKitchenRows` ③段，现在是"有名字打名字、没名字打 `#号`"）：
+**② 外卖那行想「名字 + 号」两个都打**（`buildKitchenRows` ③段 / `_whoText()`，
+现在是"有名字打名字、没名字打 `#号`"）：
 
 ```dart
-// 把那三行 who = … 换成：
-final who = <String>[
-  if (k.orderLabel.trim().isNotEmpty) k.orderLabel.trim(),
-  if (k.dailyNo > 0) '#${k.dailyNo}',
-].join(' ');   // ← 例如 "张三 #3"；太长会自动退回「大」字号
+// _whoText() 里那两行换成：
+if (k.isTakeaway) {
+  return <String>[
+    if (k.orderLabel.trim().isNotEmpty) k.orderLabel.trim(),
+    if (k.dailyNo > 0) '#${k.dailyNo}',
+  ].join(' ');   // ← 例如 "张三 #3"；太长会自动退回「大」字号
+}
 ```
 
 （`Order.takeawayTag` 拼的就是这个，也可以直接用。）
@@ -240,6 +397,34 @@ final who = <String>[
 ```dart
 String kitchenItemName(String name) => name;
 ```
+
+**④ 想给徽标加回一块图案**（`_badgeRows()` 里，在那两行字前面插）：
+
+```dart
+// 图案只是一个字符串数组，每行一个；用同样的"最大"字号居中打出来
+const List<String> dineInArt = <String>[
+  r'  (^o^)   ',   // 纯 ASCII；宽度 ≤ 16 列；每行一样宽（短的用空格补齐）
+  r'|________|',
+  r' |      | ',
+];
+final artCols = kKitchenBadgeScale.columnsFor(cols); // 58mm 特大 = 16 列
+for (final line in dineInArt) {
+  out.add(TicketRow(padCenter(line, artCols), kKitchenBadgeScale));
+}
+```
+
+⚠️ 加图案的三条硬要求：**纯 ASCII**（`cp850` / `gbk` 都不乱码）、**宽度 ≤ 16 列**
+（58mm 特大一行只有 16 列，超了打印机会自己折行、图案就散了）、
+**每行一样宽**（不然整块居中时会歪）。
+
+**⑤ 空半行 / 更紧凑**（`receipt_layout.dart`）：
+
+```dart
+const int kKitchenBlankRowDots = 20;   // 0 = 普通空行；20 ≈ 半行；10 ≈ 1/4 行
+```
+
+再配上 `escpos.dart` 的 `kKitchenExtraFeedDots = 8`（原来是 16），整张票会明显短一截。
+详见 §3.4。
 
 ---
 

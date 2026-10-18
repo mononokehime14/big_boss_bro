@@ -150,8 +150,11 @@ class SettingsController extends ChangeNotifier {
   // ---- 常用「其他备注」标签（按菜品分类分组）----
 
   /// [categoryId] 为 '' 表示「通用」（所有菜都能用）。
-  void addSavedNote(String categoryId, String note) {
-    _settings.addNote(categoryId, note);
+  ///
+  /// [price] = 这条备注**每份加多少钱**（0 = 不改价；「换炒饭 +70」就传 70）。
+  /// 点菜时点这个标签，加价会跟着进购物车（见 `item_customize_dialog.dart`）。
+  void addSavedNote(String categoryId, String note, {double price = 0}) {
+    _settings.addNote(categoryId, note, price: price);
     notifyListeners();
     _store.save(_settings);
   }

@@ -17,14 +17,18 @@ class TakeawayNameResult {
   const TakeawayNameResult({required this.label, this.waitMinutes = 0});
 }
 
-/// 给外卖单**起名 / 改名** —— 起名就等于"把这张外卖单保存起来"。
+/// 给外卖单**起名 / 改名** —— 起名 = 给它一个人看得懂的名字（不起名也能认）。
 ///
-/// 起过名的外卖单会出现在**桌号下拉列表**里（`PosController.openTakeawayOrders`），
-/// 随时能选回来接着加菜、改单；**结账确认之后它就不再是"进行中"，自动从列表消失**。
+/// 外卖单**有没有名字都会**出现在**桌号下拉列表**里（`PosController.openTakeawayOrders`）：
+/// 有名字显示 `张三 #3`，没名字显示单号 `#3`，随时能选回来接着加菜、改单；
+/// **结账确认之后它就不再是"进行中"，自动从列表消失**。
 ///
-/// 电话外卖（`order.isPhoneTakeaway`）会**多一个「等待时间（分钟）」**输入框：
-/// 客人在电话里说"20 分钟后来拿"就填 20，**厨房单会跟着打出来**。
-/// 只想填等待时间、不想起名也可以（点「不用名字」或直接点保存）。
+/// **每次「保存」都会弹这个框**（保存不限次数）：没名字的可以补上、有名字的可以改，
+/// 名字框里预先填着现在的名字（直接按「保存」就是不改）。
+/// 点「不用名字」= **清掉名字**（这张单继续用 `#号` 认，不会丢）。
+///
+/// **等待时间（分钟）**：外卖单都有这一栏 —— 客人说"20 分钟后来拿"就填 20，
+/// **厨房单会跟着打出来**（`等待 20 分钟`）。只填等待时间、不起名也可以。
 ///
 /// 返回值：
 /// - [TakeawayNameResult]：用户确认了（名字和/或等待时间，由调用方写进订单）；
@@ -73,8 +77,11 @@ class _TakeawayNameDialogState extends State<_TakeawayNameDialog> {
     super.dispose();
   }
 
-  /// 电话外卖才问"等多久"。
-  bool get _askWait => widget.order.isPhoneTakeaway;
+  /// 要不要问「等多久」：**所有外卖单都问**（普通外卖也常有"20 分钟后来拿"）。
+  bool get _showWait => widget.order.isTakeaway;
+
+  /// 标题用哪种叫法（电话外卖 / 普通外卖）—— 跟"要不要问等待时间"是两件事。
+  bool get _isPhone => widget.order.isPhoneTakeaway;
 
   /// 输入框里的等待时间（空的 = 0）。
   int get _waitMinutes => int.tryParse(_waitCtl.text.trim()) ?? 0;
@@ -98,13 +105,11 @@ class _TakeawayNameDialogState extends State<_TakeawayNameDialog> {
   /// 名字被占了（非空但不可用）时才提示，别一打开就红着。
   bool get _nameTaken => _nameCtl.text.trim().isNotEmpty && !_nameOk;
 
-  /// 能不能按「保存」：
-  /// - 电话外卖：**起了名** 或 **填了等待时间** 都行（只填等待时间也是合法的保存）；
-  /// - 其它外卖：必须起名。
+  /// 能不能按「保存」：**起了名** 或 **填了等待时间** 都行
+  /// （只填等待时间也是合法的保存；两个都没有就没意义了）。
   bool get _canSave {
     if (_waitInvalid) return false;
-    if (_askWait) return _nameOk || _waitMinutes > 0;
-    return _nameOk;
+    return _nameOk || _waitMinutes > 0;
   }
 
   void _save() {
@@ -113,19 +118,19 @@ class _TakeawayNameDialogState extends State<_TakeawayNameDialog> {
       context,
       TakeawayNameResult(
         label: _nameOk ? _nameCtl.text.trim() : '',
-        waitMinutes: _askWait ? _waitMinutes : 0,
+        waitMinutes: _showWait ? _waitMinutes : 0,
       ),
     );
   }
 
-  /// 「不用名字」：名字留空，但**等待时间照存**
-  /// （电话外卖常见：不想给单子起名，只想告诉厨房"等 20 分钟"）。
+  /// 「不用名字」：名字留空（**原来有名字的会被清掉**），但**等待时间照存**
+  /// （常见：不想给单子起名，只想告诉厨房"等 20 分钟"）。
   void _skipName() {
     Navigator.pop(
       context,
       TakeawayNameResult(
         label: '',
-        waitMinutes: (_askWait && !_waitInvalid) ? _waitMinutes : 0,
+        waitMinutes: (_showWait && !_waitInvalid) ? _waitMinutes : 0,
       ),
     );
   }
@@ -133,7 +138,7 @@ class _TakeawayNameDialogState extends State<_TakeawayNameDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(_askWait
+      title: Text(_isPhone
           ? L10n.t('takeaway.name.titlePhone')
           : L10n.t('takeaway.name.title')),
       content: SingleChildScrollView(
@@ -151,7 +156,7 @@ class _TakeawayNameDialogState extends State<_TakeawayNameDialog> {
                 isDense: true,
               ),
               onSubmitted: (_) {
-                if (_askWait) {
+                if (_showWait) {
                   _waitFocus.requestFocus();
                 } else {
                   _save();
@@ -169,8 +174,8 @@ class _TakeawayNameDialogState extends State<_TakeawayNameDialog> {
                 ),
               ),
             ],
-            // ---- 电话外卖：等待时间（分钟）----
-            if (_askWait) ...[
+            // ---- 等待时间（分钟）：外卖单都有（厨房单上会打「等待 N 分钟」）----
+            if (_showWait) ...[
               const SizedBox(height: 14),
               TextField(
                 controller: _waitCtl,

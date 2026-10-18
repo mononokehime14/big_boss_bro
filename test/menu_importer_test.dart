@@ -295,11 +295,29 @@ void main() {
         expect(it.displayName, it.name, reason: '没昵称就应该显示全名');
       }
 
-      // 定制项**不止一组**：样例里有定制项 1/2/3（三组），解析器要能全认出来
-      expect(r.data.items.any((it) => it.options.length >= 2), isTrue,
-          reason: '样例里有带多组定制项的菜');
-      expect(r.data.items.any((it) => it.options.length == 3), isTrue,
-          reason: '样例里有带三组定制项的菜（Size + con Noodle + con Hefen）');
+      // 定制项：**组数跟着 Excel 数据走，不写死**。
+      // 2026-10 这版样例里「定制项 1/2/3」三组**表头都在，但数据只填了第 1 组**
+      // （以前 Combinacion China 那种 "Size + con Noodle + con Hefen" 的三组菜被删了），
+      // 所以这里不再断言"必须有多组"。多组解析由上面那条 `fromRows` 的
+      // 「定制项**可以有三组**」守着（那条不依赖这个文件）。
+      final withOptions =
+          r.data.items.where((it) => it.options.isNotEmpty).toList();
+      expect(withOptions, isNotEmpty, reason: '样例里有带定制项的菜');
+      for (final it in withOptions) {
+        for (final g in it.options) {
+          expect(g.name.trim(), isNotEmpty,
+              reason: '${it.name} 的定制项没有名字');
+          expect(g.options, isNotEmpty,
+              reason: '${it.name} 的「${g.name}」一个选项都没有');
+          // 价格要么跟选项一一对应，要么整组没价格（两列一组那种老表）
+          expect(g.prices.isEmpty || g.prices.length == g.options.length, isTrue,
+              reason: '${it.name} 的「${g.name}」价格和选项数量对不上：'
+                  '${g.options} / ${g.prices}');
+        }
+        // 表里最多就三组定制项：解析器**不能凭空造出第 4 组**空组来
+        expect(it.options.length, lessThanOrEqualTo(3),
+            reason: '${it.name} 解析出了 ${it.options.length} 组定制项');
+      }
 
       // 「基础数量」列：每道菜至少 1 份起（没这一列时默认也是 1）
       for (final it in r.data.items) {

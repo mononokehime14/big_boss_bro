@@ -13,6 +13,7 @@ import '../models/cart_item.dart';
 import '../models/category.dart';
 import '../models/menu_item.dart';
 import '../models/order.dart';
+import '../utils/drink_category.dart';
 import '../utils/menu_sort.dart';
 import '../utils/pricing.dart';
 
@@ -306,6 +307,43 @@ class PosController extends ChangeNotifier {
   List<MenuItem> get menuWithCustom =>
       <MenuItem>[..._menu, customMenuItem(L10n.t('custom.item'))];
 
+  // ---- 菜品搜索（点单区右上角那个放大镜）----
+
+  /// 搜索框里现在打的字（空 = 没在搜）。
+  String _menuSearch = '';
+  String get menuSearchQuery => _menuSearch;
+
+  /// 是不是正在搜（有字才算；只开了搜索框还没打字 → false，下面照常显示种类/菜品）。
+  bool get menuSearching => _menuSearch.trim().isNotEmpty;
+
+  void setMenuSearchQuery(String query) {
+    if (query == _menuSearch) return;
+    _menuSearch = query;
+    notifyListeners();
+  }
+
+  /// 关掉搜索框（顺便清掉搜索词）。
+  void clearMenuSearch() {
+    if (_menuSearch.isEmpty) return;
+    _menuSearch = '';
+    notifyListeners();
+  }
+
+  /// **搜索结果**：全部种类里，菜名 / 菜品昵称包含搜索词的菜（按 [mode] 排好）。
+  ///
+  /// 不分种类 —— 收银员搜「可乐」时不该关心它在哪个种类下。
+  /// 搜不到返回空列表（界面自己会在空的时候说一句）。
+  List<MenuItem> searchItems(MenuSort mode, {List<String> order = const []}) {
+    final q = _menuSearch.trim().toLowerCase();
+    if (q.isEmpty) return const <MenuItem>[];
+    final hits = _menu.where((m) {
+      if (m.name.toLowerCase().contains(q)) return true;
+      final nick = m.nickName.toLowerCase();
+      return nick.isNotEmpty && nick.contains(q);
+    }).toList();
+    return sortMenuItems(hits, mode, _itemSales, order: order);
+  }
+
   /// 点「自定义」那道菜：把「金额 + 备注」变成购物车里的一行。
   ///
   /// 备注会**当菜名**（小票/厨房单上直接显示备注内容），金额当单价，数量 1。
@@ -389,10 +427,16 @@ class PosController extends ChangeNotifier {
     MenuItem item, {
     List<String> selections = const [],
     List<String> notes = const [],
+    List<double> notePrices = const [],
     int quantity = 1,
   }) {
     final qty = quantity < 1 ? 1 : quantity;
-    final key = CartItem(menuItem: item, selections: selections, notes: notes).key;
+    final key = CartItem(
+      menuItem: item,
+      selections: selections,
+      notes: notes,
+      notePrices: notePrices,
+    ).key;
     final existing = _cart[key];
     if (existing != null) {
       existing.quantity += qty;
@@ -401,6 +445,7 @@ class PosController extends ChangeNotifier {
         menuItem: item,
         selections: List.of(selections),
         notes: List.of(notes),
+        notePrices: List.of(notePrices),
         quantity: qty,
       );
     }
@@ -415,6 +460,7 @@ class PosController extends ChangeNotifier {
     String oldKey, {
     required List<String> selections,
     required List<String> notes,
+    List<double> notePrices = const [],
     required int quantity,
   }) {
     final old = _cart.remove(oldKey);
@@ -427,6 +473,7 @@ class PosController extends ChangeNotifier {
       menuItem: old.menuItem,
       selections: List.of(selections),
       notes: List.of(notes),
+      notePrices: List.of(notePrices),
       quantity: qty,
     );
     final existing = _cart[item.key];
@@ -509,6 +556,10 @@ class PosController extends ChangeNotifier {
             unitPrice: c.unitPrice,
             options: List.of(c.selections),
             notes: List.of(c.notes),
+            // 备注加价跟着走（「换炒饭 +70」的钱记在这一行上）
+            notePrices: [
+              for (var i = 0; i < c.notes.length; i++) c.notePriceAt(i),
+            ],
             unit: c.menuItem.unit,
             // 昵称快照：点单界面 / 厨师单显示它，顾客小票还是打全名（name）
             nickName: c.menuItem.nickName,
@@ -547,7 +598,7 @@ class PosController extends ChangeNotifier {
       label: isTakeaway ? _selectedTakeawayLabel : '',
       // **所有单**都拿一个"当天从 1 开始"的号（堂食 / 外卖 / 电话外卖**共用**一条序列）：
       // 订单页的**默认排序**就是按它从大到小排；外卖单没起名字时，
-      // 厨房单顶上打的那行大字也是它（见 Order.dailyNo）。
+      // 厨房单中上部（"门牌"）那行大字也是它（见 Order.dailyNo）。
       dailyNo: _nextDailyNo(),
       orderType: _selectedType,
       status: OrderStatus.inProgress,
@@ -657,9 +708,10 @@ class PosController extends ChangeNotifier {
   /// 当前桌/外卖**已经下单、还没结账**的那张单（没有就 null）。
   ///
   /// - **堂食**：找这个桌号最新的一张进行中的单（可以继续加单）；
-  /// - **外卖 / 电话外卖**：只有**起过名（= 保存过）**的外卖单才认得回来 ——
-  ///   名字就是它的"位置"（见 [openTakeawayOrders]）。没起名的外卖单每单独立，
-  ///   点完厨房直接结账就行（这里返回 null）。
+  /// - **外卖 / 电话外卖**：先用 [focusOrder] 钉住的那张（点过「保存 / 厨房」的单，
+  ///   **起没起名字都能认回来**，见 [openTakeawayOrders]）；
+  ///   没钉住的就按**名字**找（起过名 = 保存过）；没名字又没钉住的外卖单每单独立，
+  ///   这里返回 null（那是故意的：外卖不能像堂食那样"同名字就并单"）。
   Order? openOrderForSelectedTable() {
     // ① 从「订单」页调出来改的那张单优先（它可能既没桌号也没名字）
     if (_focusedOrderId.isNotEmpty) {
@@ -667,14 +719,19 @@ class PosController extends ChangeNotifier {
         if (o.id == _focusedOrderId && o.isInProgress) return o;
       }
       // 那张单已经结账 / 被删了 → 忘掉它，回到按桌号/名字找
+      // （名字也一起清掉：不然下一张新开的外卖单会莫名其妙继承上一个客人名字）
       _focusedOrderId = '';
+      _selectedTakeawayLabel = '';
     }
     if (!hasTableSelected) return null;
     if (isTakeaway) {
       final label = _selectedTakeawayLabel.trim();
       if (label.isEmpty) return null;
       for (final o in _orders) {
-        if (o.isInProgress && o.isTakeaway && o.label.trim() == label) {
+        if (o.isInProgress &&
+            !o.isSplit && // 分单不算"这张桌/这个外卖单"的当前单
+            o.isTakeaway &&
+            o.label.trim() == label) {
           return o;
         }
       }
@@ -682,6 +739,7 @@ class PosController extends ChangeNotifier {
     }
     for (final o in _orders) {
       if (o.isInProgress &&
+          !o.isSplit && // 分单不算（选桌要打开的是**母单**）
           o.orderType == OrderType.dineIn &&
           o.table == _selectedTable) {
         return o;
@@ -690,12 +748,35 @@ class PosController extends ChangeNotifier {
     return null;
   }
 
-  /// **已保存的外卖单**（进行中 + 起过名的）：桌号下拉列表用它们"回到那张单接着改"。
+  /// **进行中的外卖单**（外卖 + 电话外卖，**有没有名字都算**）：桌号下拉列表用它们
+  /// "回到那张单接着改 / 结账"。
+  ///
+  /// 没起名字的外卖单也有**当天从 1 开始的单号**（`Order.dailyNo`，显示成 `#3`），
+  /// 所以照样能在这儿认回来 —— 不会点完厨房就在购物车里"消失"。
+  /// 按单号从小到大排（先开的在前）。
   ///
   /// 结账确认之后它就不是「进行中」了 → 自然从列表里消失（这是需求里要的行为）。
-  List<Order> openTakeawayOrders() => _orders
-      .where((o) => o.isInProgress && o.isTakeaway && o.label.trim().isNotEmpty)
-      .toList();
+  List<Order> openTakeawayOrders() {
+    final out = _orders
+        .where((o) =>
+            o.isInProgress &&
+            !o.isSplit && // 分单不出现在下拉里（它们跟着母单走）
+            o.isTakeaway)
+        .toList();
+    out.sort((a, b) => a.dailyNo.compareTo(b.dailyNo));
+    return out;
+  }
+
+  /// **从订单页 / 下拉调出来改的那张单**（没有 / 已经结账 → null）。
+  ///
+  /// 下拉列表要用它把"当前选中的是哪个外卖单"显示出来（没起名字的外卖单靠 id 认）。
+  Order? get focusedOrder {
+    if (_focusedOrderId.isEmpty) return null;
+    for (final o in _orders) {
+      if (o.id == _focusedOrderId && o.isInProgress) return o;
+    }
+    return null;
+  }
 
   /// **刚「保存 / 厨房 / 结账」动过的那张单**的 id（本地状态，不落盘）。
   ///
@@ -747,24 +828,34 @@ class PosController extends ChangeNotifier {
   /// 给一张**外卖单起名 / 改名**（= 保存进下拉列表），顺便可以存「要等多久」。
   ///
   /// - [label]：名字（空 = 不起名，但下面 [waitMinutes] 填了就仍然算"保存"）；
-  /// - [waitMinutes]：要等几分钟（**电话外卖**用；0 = 不打这一行）。
+  /// - [waitMinutes]：要等几分钟（外卖单都可能有；0 = 不打这一行）；
+  /// - [clearName]：名字传空时**是否真的把原来的名字清掉**
+  ///   （点菜页「保存」弹窗里点「不用名字」就是这个意思）；
+  ///   不传 = 老行为（空名字啥也不改）。
   ///
-  /// 两个都没填就返回 null（没什么可保存的）；重名要先自己用 [canUseTakeawayLabel] 检查。
+  /// 什么都没变就返回 null（没什么可保存的）；重名要先自己用 [canUseTakeawayLabel] 检查。
   Order? setOrderLabel(
     String orderId,
     String label, {
     int? waitMinutes,
+    bool clearName = false,
   }) {
     final i = _orders.indexWhere((o) => o.id == orderId);
     if (i < 0) return null;
+    final old = _orders[i];
     final v = label.trim();
-    final wait = waitMinutes ?? _orders[i].waitMinutes;
-    if (v.isEmpty && wait <= 0) return null;
-    _orders[i] = _orders[i]
-        .copyWith(label: v, waitMinutes: wait < 0 ? 0 : wait)
+    final wait = waitMinutes ?? old.waitMinutes;
+    final hadName = old.label.trim().isNotEmpty;
+    // 名字传空 = **不改名字**（老行为）；只有明确 `clearName` 才真的清掉
+    final nextLabel = v.isNotEmpty ? v : (clearName ? '' : old.label);
+    // 没名字 + 没等待时间 + 原来也没名字 → 真的没什么可保存的
+    if (v.isEmpty && wait <= 0 && !(clearName && hadName)) return null;
+    _orders[i] = old
+        .copyWith(label: nextLabel, waitMinutes: wait < 0 ? 0 : wait)
         .touch(deviceId: deviceId);
     // 刚起名的这张单，顺手选中它 —— 免得用户以为还要再点一次下拉
-    if (v.isNotEmpty && _orders[i].isTakeaway) selectTakeawayOrder(_orders[i]);
+    // （用 focusOrder：它按 **id** 钉住这张单，比按名字认更准；分单/重名都不会认错）
+    if (_orders[i].isTakeaway) focusOrder(_orders[i]);
     notifyListeners();
     _persistOrders();
     return _orders[i];
@@ -777,7 +868,7 @@ class PosController extends ChangeNotifier {
   ///
   /// 为什么从订单本身推、而不是存个计数器：重启/换设备都不会把号弄乱，也不占存储。
   /// 代价是"当天删掉最后一张单之后号会被复用"—— 无所谓，这个号只是给人看的
-  /// （外卖单**没起名字**时，厨房单顶上那行大字打的就是它，见 Order.dailyNo）。
+  /// （外卖单**没起名字**时，厨房单"门牌"那行大字打的就是它，见 Order.dailyNo）。
   int _nextDailyNo() {
     final today = _dayKey(DateTime.now());
     var max = 0;
@@ -820,9 +911,11 @@ class PosController extends ChangeNotifier {
 
   /// 追单：把购物车里的菜追加进一张**进行中**的订单。
   ///
-  /// 合并规则：只有「菜名 + 单价 + 选项 + 备注」全都一样、而且**还没下过厨房**
-  /// 的行才会合并数量 —— 已经打过厨房单的行（`sentToKitchen == true`）保持原样，
-  /// 新加的菜另起一行（否则厨房会对不上账）。
+  /// **合并规则**（"一模一样"才算同一行）：**菜名 + 单价 + 定制项 + 特别备注**（含备注加价）
+  /// 全都一样就**并进那一行**（份数相加）—— 跟他是不是已经下过厨房无关。
+  ///
+  /// 已经打给厨房的行被合并之后，`sentQty`（厨房收到几份）**保持不变**，
+  /// 所以下一次点「厨房」只会打**多出来的那几份**，厨房不会重复做。
   Order? appendToOrder(String orderId) {
     final i = _orders.indexWhere((o) => o.id == orderId);
     if (i < 0 || cartEmpty) return null;
@@ -830,11 +923,13 @@ class PosController extends ChangeNotifier {
     final merged = List<OrderLine>.from(_orders[i].lines);
     for (final c in cartItems) {
       final idx = merged.indexWhere((l) =>
-          !l.sentToKitchen &&
           l.name == c.menuItem.name &&
           l.unitPrice == c.unitPrice &&
           _sameList(l.options, c.selections) &&
-          _sameList(l.notes, c.notes));
+          _sameList(l.notes, c.notes) &&
+          _samePrices(l.notePrices, [
+            for (var i = 0; i < c.notes.length; i++) c.notePriceAt(i),
+          ]));
       if (idx >= 0) {
         merged[idx] =
             merged[idx].copyWith(quantity: merged[idx].quantity + c.quantity);
@@ -846,10 +941,13 @@ class PosController extends ChangeNotifier {
           unitPrice: c.unitPrice,
           options: List.of(c.selections),
           notes: List.of(c.notes),
+          // 备注加价跟着走（「换炒饭 +70」的钱记在这一行上）
+          notePrices: [
+            for (var i = 0; i < c.notes.length; i++) c.notePriceAt(i),
+          ],
           unit: c.menuItem.unit,
           nickName: c.menuItem.nickName, // 昵称跟着走（厨师单要显示）
-          // 新加的菜**还没下厨房**：等「厨房」按钮打成功了才置 true
-          sentToKitchen: false,
+          // 新加的菜**一份都还没给厨房**（sentQty 默认 0）
         ));
       }
     }
@@ -873,31 +971,288 @@ class PosController extends ChangeNotifier {
 
   // ---------------- 下厨房（厨房单）----------------
 
-  /// 这张单上**还没下过厨房**的行（= 下一张厨房单要打的菜）。
+  /// 这张单上**还要打给厨房**的行（= 下一张厨房单要打的菜）。
+  ///
+  /// ⚠️ 份数已经换成 **`unsentQty`（要补几份）**：追单把同样的菜并进已经下过厨的行之后，
+  /// `quantity` 是总数、`sentQty` 是厨房已经收到的份数，所以厨房单只打**多出来的**那几份。
   ///
   /// 「保存」过的菜也算在这里：它们记在单上、但厨房还没收到，所以要打给厨房。
   List<OrderLine> unsentLines(String orderId) {
     final o = findOrder(orderId);
     if (o == null) return const <OrderLine>[];
-    return o.lines.where((l) => !l.sentToKitchen).toList();
+    return [
+      for (final l in o.lines)
+        if (l.unsentQty > 0) l.copyWith(quantity: l.unsentQty),
+    ];
+  }
+
+  /// 这一行是不是**饮料**（咖啡、可乐、果汁…）。
+  ///
+  /// 怎么判断：这行的菜在菜单里属于哪个种类 → 那个种类的**名字**像不像饮料
+  /// （见 `utils/drink_category.dart` 的 [isDrinkCategory]）。
+  /// 菜单里找不到这道菜（老单 / 换过菜单）→ 当餐品处理（不会打错，只是不排序）。
+  bool isDrinkLine(OrderLine line) {
+    final item = menuItemForLine(line);
+    if (item == null) return false;
+    for (final c in _categories) {
+      if (c.id == item.categoryId) return isDrinkCategory(c.name);
+    }
+    return false;
+  }
+
+  /// 厨房单**要打的行**：餐品在前、**饮料排在最后**，各自保持原来的先后。
+  ///
+  /// 返回的 [drinksFrom] 是**第一道饮料的下标**（没有饮料 = -1）——
+  /// 排版时在它前面插一条虚线，厨师一眼看出"下面是饮料"（见 `receipt_layout.dart`）。
+  ({List<OrderLine> lines, int drinksFrom}) kitchenTicketLines(String orderId) {
+    final pending = unsentLines(orderId);
+    final dishes = <OrderLine>[];
+    final drinks = <OrderLine>[];
+    for (final l in pending) {
+      (isDrinkLine(l) ? drinks : dishes).add(l);
+    }
+    return (
+      lines: <OrderLine>[...dishes, ...drinks],
+      drinksFrom: drinks.isEmpty ? -1 : dishes.length,
+    );
   }
 
   /// 把这张单上所有行标成「**已下厨房**」（厨房单**打成功之后**才调，见 `kitchenOrderFlow`）。
   ///
+  /// 具体是把每一行的 `sentQty` 记成它**当前的份数**（= 厨房手上就是这么多）。
   /// 打失败就不标，这样收银员还能再点一次「厨房」重打，不会漏菜。
   Order? markOrderSent(String orderId) {
     final i = _orders.indexWhere((o) => o.id == orderId);
     if (i < 0) return null;
     final o = _orders[i];
-    if (!o.lines.any((l) => !l.sentToKitchen)) return o; // 都已经下过了
+    if (!o.lines.any((l) => l.unsentQty > 0)) return o; // 都已经下过了
     _orders[i] = o
         .copyWith(
-          lines: o.lines.map((l) => l.copyWith(sentToKitchen: true)).toList(),
+          lines:
+              o.lines.map((l) => l.copyWith(sentQty: l.quantity)).toList(),
         )
         .touch(deviceId: deviceId);
     notifyListeners();
     _persistOrders();
     return _orders[i];
+  }
+
+  // ---------------- 移动单子 / 分单 ----------------
+
+  /// **进行中的单**（母单，含堂食 / 外卖 / 电话外卖；**不含分单**）。
+  ///
+  /// 「移动单子」那个窗口左边列的就是它。
+  List<Order> get inProgressParents =>
+      _orders.where((o) => o.isInProgress && !o.isSplit).toList();
+
+  /// 这张母单**分出来的分单**（进行中的，按分单号排）。
+  List<Order> splitsOf(String parentId) {
+    final out = _orders
+        .where((o) => o.isInProgress && o.parentId == parentId)
+        .toList();
+    out.sort((a, b) => a.splitNo.compareTo(b.splitNo));
+    return out;
+  }
+
+  /// 这条线（母单 + 分单）的**根母单 id**：传母单给母单自己的 id，传分单给它的 `parentId`。
+  String rootIdOf(String orderId) {
+    final o = findOrder(orderId);
+    if (o == null) return '';
+    return o.isSplit ? o.parentId : o.id;
+  }
+
+  /// **一整条线**（分单界面用）：母单 + 它的所有进行中的分单，按顺序排好。
+  ///
+  /// 母单可能已经结账（只剩分单要收钱），那就只返回还在进行中的那几张。
+  List<Order> familyOrders(String orderId) {
+    final rootId = rootIdOf(orderId);
+    if (rootId.isEmpty) return const [];
+    final root = findOrder(rootId);
+    final out = <Order>[];
+    if (root != null && root.isInProgress) out.add(root);
+    out.addAll(splitsOf(rootId));
+    return out;
+  }
+
+  /// **移动单子**：把一张进行中的单挪到别的桌号（员工选错桌时用）。
+  ///
+  /// - 目标桌**空着** → 直接改桌号；
+  /// - 目标桌**已经有进行中的单** → 把菜**并进那张单**，然后把这张单删掉
+  ///   （保持"一张桌只有一张单"的规矩，不然桌号下拉会认错单）；
+  /// - 这张单的分单**跟着一起换桌**（它们的显示也带桌号）。
+  ///
+  /// 返回移动后的那张单（并单时是**目标桌那张**）；失败返回 null。
+  Order? moveOrderToTable(String orderId, String table) {
+    final to = table.trim();
+    if (to.isEmpty) return null;
+    final from = _orderAt(orderId); // 必须是进行中的
+    if (from == null) return null;
+    if (!from.isTakeaway && from.table == to) return from; // 已经在这桌
+
+    // 目标桌当前那张进行中的母单（分单不算）
+    Order? target;
+    for (final o in _orders) {
+      if (o.isInProgress &&
+          !o.isSplit &&
+          o.id != from.id &&
+          o.orderType == OrderType.dineIn &&
+          o.table == to) {
+        target = o;
+        break;
+      }
+    }
+
+    Order result;
+    if (target == null) {
+      // ---- 目标桌空着：直接改桌号（外卖单挪到桌上 → 顺便变成堂食）----
+      final i = _indexOfOrder(from.id);
+      _orders[i] = from
+          .copyWith(
+            table: to,
+            orderType: OrderType.dineIn,
+            // 变成堂食之后，外卖的名字 / 等待时间就没意义了
+            label: '',
+            waitMinutes: 0,
+          )
+          .touch(deviceId: deviceId);
+      result = _orders[i];
+    } else {
+      // ---- 目标桌已经有单：并进去，然后把这张删掉 ----
+      final ti = _indexOfOrder(target.id);
+      final merged = <OrderLine>[...target.lines, ...from.lines];
+      _orders[ti] = _withLines(target, merged).touch(deviceId: deviceId);
+      result = _orders[ti];
+      // 源单删掉（后台也删：进待删除名单）
+      _orders.removeWhere((o) => o.id == from.id);
+      if (!_pendingDeleted.contains(from.id)) _pendingDeleted.add(from.id);
+      unawaited(_persistDeleted());
+      // 源单的分单改成挂在目标单下（不然它们认不到母单）
+      for (var k = 0; k < _orders.length; k++) {
+        final s = _orders[k];
+        if (s.isInProgress && s.parentId == from.id) {
+          _orders[k] = s
+              .copyWith(parentId: result.id, table: to)
+              .touch(deviceId: deviceId);
+        }
+      }
+    }
+
+    // 分单跟着换桌（它们的显示带桌号）
+    for (var k = 0; k < _orders.length; k++) {
+      final s = _orders[k];
+      if (s.isInProgress && s.parentId == result.id && s.table != to) {
+        _orders[k] = s.copyWith(table: to).touch(deviceId: deviceId);
+      }
+    }
+
+    notifyListeners();
+    _persistOrders();
+    return result;
+  }
+
+  /// **分单**：把 [sourceId] 这张单里 [indexes] 这几行挪到分单里（客人分开付钱）。
+  ///
+  /// [sourceId] 可以是**母单**，也可以是**某张分单**（分单还能再往下分）。
+  /// 不管从谁身上分出来，新分单一律挂在**同一个母单**下、分单号接着往后排
+  /// （所以界面上永远是「母单 + 分单1 + 分单2 …」一排）。
+  ///
+  /// - [intoSplitId] 空 = **新建**一个分单；非空 = 挪进那张**已有的**分单；
+  /// - **出手的那张单至少留一道菜**（`indexes` 不能是它的全部行）→ 否则返回 null；
+  /// - 两边（源单 / 目标分单）的总计都按各自的折扣 / 税重算；
+  ///   分单**单独结账**，母单不受影响。
+  ///
+  /// 返回分单那张单；失败（没选行 / 全选了 / 单不存在）返回 null。
+  Order? splitOrderLines(
+    String sourceId,
+    List<int> indexes, {
+    String intoSplitId = '',
+  }) {
+    final source = _orderAt(sourceId);
+    if (source == null) return null;
+    // 这条线（母单 + 它的所有分单）的根：从分单分出去，也挂回同一个母单
+    final rootId = source.isSplit ? source.parentId : source.id;
+    final picked = indexes.toSet().toList()..sort();
+    if (picked.isEmpty) return null;
+    if (picked.any((i) => i < 0 || i >= source.lines.length)) return null;
+    // 出手的那张单必须留至少一道菜，不然它就成了空单
+    if (picked.length >= source.lines.length) return null;
+
+    final moved = <OrderLine>[for (final i in picked) source.lines[i]];
+    final kept = <OrderLine>[
+      for (var i = 0; i < source.lines.length; i++)
+        if (!picked.contains(i)) source.lines[i],
+    ];
+
+    // ---- 目标分单：已有的，还是新建一个 ----
+    Order split;
+    if (intoSplitId.isNotEmpty) {
+      final si = _indexOfOrder(intoSplitId);
+      if (si < 0) return null;
+      final s = _orders[si];
+      // 只能挪进**同一条线**的分单里，而且不能挪回自己
+      if (!s.isInProgress || s.parentId != rootId || s.id == source.id) {
+        return null;
+      }
+      _orders[si] =
+          _withLines(s, [...s.lines, ...moved]).touch(deviceId: deviceId);
+      split = _orders[si];
+    } else {
+      final nextNo = _nextSplitNo(rootId);
+      final lines = <OrderLine>[...moved];
+      final price = PriceBreakdown.of(
+        subtotal: round2(lines.fold<double>(0, (sum, l) => sum + l.subtotal)),
+        taxRate: source.taxRate,
+        taxIncluded: source.taxIncluded,
+      );
+      split = Order(
+        id: _nextOrderId(),
+        createdAt: DateTime.now(),
+        lines: lines,
+        total: price.total,
+        // 税跟母单一致（快照），折扣结账时再说
+        taxRate: source.taxRate,
+        taxIncluded: source.taxIncluded,
+        table: source.table,
+        label: source.label,
+        orderType: source.orderType,
+        status: OrderStatus.inProgress,
+        cashier: source.cashier,
+        parentId: rootId,
+        splitNo: nextNo,
+        deviceId: deviceId,
+      );
+      _orders.insert(0, split);
+    }
+
+    // ---- 出手的那张单留下剩下的菜 ----
+    final pi = _indexOfOrder(sourceId);
+    _orders[pi] = _withLines(_orders[pi], kept).touch(deviceId: deviceId);
+
+    notifyListeners();
+    _persistOrders();
+    return split;
+  }
+
+  /// 这张母单下一个分单号（1 起，取已有最大值 +1；已结账的分单号也会占位，不会重号）。
+  int _nextSplitNo(String parentId) {
+    var max = 0;
+    for (final o in _orders) {
+      if (o.parentId == parentId && o.splitNo > max) max = o.splitNo;
+    }
+    return max + 1;
+  }
+
+  /// 换掉一张单的行并按**这张单自己的**折扣 / 税重算应收（不落盘，调用方负责）。
+  Order _withLines(Order o, List<OrderLine> lines) {
+    final sub = round2(lines.fold<double>(0, (sum, l) => sum + l.subtotal));
+    final price = PriceBreakdown.of(
+      subtotal: sub,
+      discountType: o.discountType,
+      discountValue: o.discountValue,
+      taxRate: o.taxRate,
+      taxIncluded: o.taxIncluded,
+    );
+    return o.copyWith(lines: lines, total: price.total);
   }
 
   // ---------------- 结账 / 收款 ----------------
@@ -1001,6 +1356,7 @@ class PosController extends ChangeNotifier {
     int index, {
     required List<String> selections,
     required List<String> notes,
+    List<double> notePrices = const [],
     required int quantity,
   }) {
     final o = _orderAt(orderId);
@@ -1012,10 +1368,13 @@ class PosController extends ChangeNotifier {
     final item = menuItemForLine(old);
     final unitPrice =
         item == null ? old.unitPrice : item.unitPriceFor(selections);
-    final changed = old.quantity != quantity ||
-        !_sameList(old.options, selections) ||
+    final prices = [for (var i = 0; i < notes.length; i++) _priceAt(notePrices, i)];
+    // **内容**（选项 / 备注 / 备注加价 / 单价）有没有变 —— 变了厨房手上那份就不对了
+    final contentChanged = !_sameList(old.options, selections) ||
         !_sameList(old.notes, notes) ||
+        !_samePrices(old.notePrices, prices) ||
         (old.unitPrice - unitPrice).abs() > 0.001;
+    final changed = old.quantity != quantity || contentChanged;
     if (!changed) return o; // 什么都没改：不动它，保持原状态
 
     final lines = List<OrderLine>.from(o.lines);
@@ -1023,10 +1382,28 @@ class PosController extends ChangeNotifier {
       quantity: quantity,
       options: List.of(selections),
       notes: List.of(notes),
+      notePrices: prices,
       unitPrice: unitPrice,
-      sentToKitchen: false,
+      // 只改了份数 → 厨房手上那几份不用重打，补打**多出来的**就行（sentQty 不动）；
+      // 内容变了 → 整行重新打给厨房（sentQty 归 0）
+      sentQty: contentChanged ? 0 : old.sentQty,
     );
     return _replaceLines(_indexOfOrder(orderId), lines);
+  }
+
+  /// 第 [i] 条备注的加价（越界 = 0）。
+  static double _priceAt(List<double> prices, int i) =>
+      i < prices.length ? prices[i] : 0;
+
+  /// 两个加价列表是否一致（长度按 [b] 算，缺的当 0）。
+  static bool _samePrices(List<double> a, List<double> b) {
+    for (var i = 0; i < b.length; i++) {
+      if ((_priceAt(a, i) - b[i]).abs() > 0.001) return false;
+    }
+    for (var i = b.length; i < a.length; i++) {
+      if (a[i].abs() > 0.001) return false;
+    }
+    return true;
   }
 
   /// 改「已在单上」的一条**自定义行**（金额 / 备注 —— 备注就是菜名）。
@@ -1052,14 +1429,18 @@ class PosController extends ChangeNotifier {
       name: name,
       itemId: kCustomItemId,
       unitPrice: amount,
-      sentToKitchen: false,
+      sentQty: 0,
     );
     return _replaceLines(_indexOfOrder(orderId), lines);
   }
 
   /// 加减一份已经记在单上的菜（购物车里的 +/- 按钮）。
   ///
-  /// 减到 0 就删掉这一行（只剩一行时不给删）；改完同样标回「未下厨」。
+  /// 减到 0 就删掉这一行（只剩一行时不给删）。
+  ///
+  /// **只动份数，不动 `sentQty`（厨房手上那份数）**：
+  /// - 加一份 → `unsentQty` 自然变成 1，下次「厨房」**只补打多出来的那 1 份**；
+  /// - 减一份 → `unsentQty` 是 0，厨房已经做了，不再补打（账单少算就行）。
   Order? changeOrderLineQuantity(String orderId, int index, int delta) {
     final o = _orderAt(orderId);
     if (o == null) return null;
@@ -1075,7 +1456,7 @@ class PosController extends ChangeNotifier {
     }
 
     final lines = List<OrderLine>.from(o.lines);
-    lines[index] = line.copyWith(quantity: qty, sentToKitchen: false);
+    lines[index] = line.copyWith(quantity: qty);
     return _replaceLines(_indexOfOrder(orderId), lines);
   }
 
@@ -1132,7 +1513,10 @@ class PosController extends ChangeNotifier {
     final now = DateTime.now();
     final dateStr =
         '${now.year}${_two(now.month)}${_two(now.day)}${_two(now.hour)}${_two(now.minute)}${_two(now.second)}';
-    // 加毫秒，保证重启后也不会撞号（避免持久化合并时误丢订单）
+    // ⚠️ 自增序号**每次都要进位**：只靠"秒 + 毫秒"不够 —— 同一个毫秒里连开两张单
+    //    （分单、并单、测试里连开好几张单）会**撞号**，而 `findOrder` / 持久化合并 /
+    //    后台同步全是靠 id 认单的，撞号就会改错单（真实踩过：分单结账把母单结了）。
+    _orderCounter++;
     return '$dateStr-${_orderCounter.toString().padLeft(3, '0')}-${now.millisecond}';
   }
 
@@ -1148,6 +1532,24 @@ class PosController extends ChangeNotifier {
     unawaited(_persistDeleted());
     notifyListeners();
     _persistOrders();
+  }
+
+  /// 购物车「⋮ → 清空」和「删掉最后一道菜」用的：把这张桌/外卖**当前这张单整张删掉**，
+  /// 购物车也一起清空。
+  ///
+  /// 跟 [deleteOrder] 的区别：它还会把「当前盯着的单 / 外卖名字 / 刚动过的单」都清掉 ——
+  /// 否则下一张新开的外卖单会继承上一位客人的名字、或者「结账」还指着已经删掉的单。
+  void clearOrderAndCart(String orderId) {
+    clearCart();
+    if (orderId.isEmpty) return;
+    final i = _indexOfOrder(orderId);
+    if (i < 0 || !_orders[i].isInProgress) return;
+    if (_focusedOrderId == orderId) {
+      _focusedOrderId = '';
+      _selectedTakeawayLabel = '';
+    }
+    if (_lastTouchedOrderId == orderId) _lastTouchedOrderId = '';
+    deleteOrder(orderId);
   }
 
   void _persistOrders({bool notifySync = true}) {

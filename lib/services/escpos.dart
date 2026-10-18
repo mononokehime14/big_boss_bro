@@ -5,15 +5,26 @@ import 'package:gbk_codec/gbk_codec.dart';
 /// 一行文字的放大方式 —— 直接对应 ESC/POS 的 `GS ! n`（0x1D 0x21 n）。
 ///
 /// 厨师单上三档都用到了：
-/// - [normal]：1×1，58mm 32 列 / 80mm 48 列（虚线 / 表头 / 选项 / 备注）；
-/// - [large]：1×2（**只加高**）—— 列数不变，排版不会错位（标题「厨师单 N」）；
+/// - [normal]：1×1，58mm 32 列 / 80mm 48 列（虚线 / 表头）；
+/// - [large]：1×2（**只加高**）—— 列数不变，排版不会错位（「厨师单 N」和**时间**）；
 /// - [xlarge]：2×2（双倍宽 + 双倍高）—— 每行列数**减半**（58mm 只剩 16 列），
 ///   所以排版要用 [TicketScale.columnsFor] 换算，否则右边会被切掉
-///   （地点/外卖+时间、外卖名字、等待时间、**菜品行**）。
+///   （桌号 / 名字 / 等待时间、**菜品行**、选项 / 备注、**底部徽标**）。
+///
+/// 哪一段用哪一档，全在 `receipt_layout.dart` 顶部那几个 `kKitchen*Scale` 常量里。
 enum TicketScale {
   normal(1, 1),
   large(1, 2),
-  xlarge(2, 2);
+  xlarge(2, 2),
+
+  /// **特大再高一档**（双倍宽 + **三倍**高）：厨师单最底下那两行徽标专用。
+  ///
+  /// 只加高、**不加宽** —— 所以列数跟 [xlarge] **完全一样**（58mm = 16 列），
+  /// 排版一个字都不用改。`GS ! n` 的高位/低位各自能到 8 倍，
+  /// 绝大多数 58/80mm 热敏机支持到 4 倍；万一哪台机器不认三倍高
+  /// （打出来跟 [xlarge] 一样、或者变回单倍），把 `kKitchenBadgeScale`
+  /// 改回 [xlarge] 就行。
+  huge(2, 3);
 
   /// 宽度倍数（1 或 2）。
   final int width;
@@ -36,6 +47,8 @@ enum TicketScale {
 /// - 原始行：给 [raw]（已经是最终字节），用于需要精确控制指令的场景（如中文能力探测）。
 /// - [scale] 不是 [TicketScale.normal] 时，这一行前后会包上 `GS ! n`（放大）/ 复原指令。
 /// - [bold] 为 true 时，这一行前后包上 `ESC E 1` / `ESC E 0`（加粗）。
+/// - [continueLine] 为 true 时**不换行**：下一行接着打在同一行上 ——
+///   这样同一行里可以混字重（厨师单的菜品行就是"数量+菜名加粗、备注不加粗"）。
 class TicketLine {
   final String text;
   final String? codec;
@@ -47,12 +60,19 @@ class TicketLine {
   /// 这一行要不要加粗（默认不加粗）。
   final bool bold;
 
+  /// true = **这一行打完不换行**，下一行接着打在同一行上（同一行混字号 / 字重时用）。
+  ///
+  /// 用处：厨师单的一行 = 「数量 + 菜名」（**加粗**）紧接着「备注」（**不加粗**）。
+  /// 用它的行**不要再改字号**（后半段会按前半段的字号继续打）。
+  final bool continueLine;
+
   const TicketLine(
     this.text, {
     this.codec,
     this.raw,
     this.scale = TicketScale.normal,
     this.bold = false,
+    this.continueLine = false,
   });
 }
 
@@ -89,11 +109,62 @@ List<int> gbkProbeEscT(String text) => <int>[
 /// - `gbk_bytes.encode(text)` → 这才是把码点拆成两个字节的正确字节流（`中` → `0xD6 0xD0`）。
 ///
 /// 已验证的真值（来自该包的数据表）：中=D6D0、恭=B9A7、，=A3AC、！=A3A1；ASCII 不在表里、原样单字节。
+///
+/// ⚠️ **为什么套了 try/catch**（2026-10-18）：`gbk_codec` 里那张 GBK 映射表是一个**巨大的
+/// const map 字面量**，在 `flutter test` 的 JIT VM 里偶尔会加载失败（实测报
+/// `type '_Type' is not a subtype of type 'String'`，而且会**把整个测试进程带崩**，
+/// 同批其它测试全变成 `did not complete`）。真机（AOT 编译）不会这样。
+/// 所以这里兜一手：真编不出来就退化成"ASCII 能打的照打、中文一律 `?`"，
+/// 宁可那一行出问号也不要把收银/测试整挂。第一次失败后记下来，后面直接走兜底。
 List<int> gbkBytes(String text) {
-  final raw = gbk_bytes.encode(text);
-  // 兜底：万一有字符不在表里、码点 > 255 被直接塞进来，替换成 '?'，避免被截断成乱码字节。
-  return raw.map((b) => (b >= 0 && b <= 0xFF) ? b : 0x3F).toList();
+  if (_gbkBroken) return _asciiFallback(text);
+  try {
+    final raw = gbk_bytes.encode(text);
+    // 兜底：万一有字符不在表里、码点 > 255 被直接塞进来，替换成 '?'，避免被截断成乱码字节。
+    return raw.map((b) => (b >= 0 && b <= 0xFF) ? b : 0x3F).toList();
+  } catch (_) {
+    _gbkBroken = true;
+    return _asciiFallback(text);
+  }
 }
+
+/// GBK 编不出来过（见 [gbkBytes]）：之后一律走 [_asciiFallback]，不再重试。
+bool _gbkBroken = false;
+
+/// GBK 不可用时的退化字节：ASCII 原样、其余一律 `?`（0x3F）。
+List<int> _asciiFallback(String text) => <int>[
+      for (final r in text.runes) (r >= 0x20 && r <= 0x7E) ? r : 0x3F,
+    ];
+
+/// **强制中文模式**的一整行字节（无视当前编码设置，中文一定打得出来）。
+///
+/// 为什么需要它：厨师单底部那行中文是**固定要打的**（店里中国厨师要看），
+/// 可整张票的编码可能设成 `cp850`（西文更漂亮）—— 那种模式下直接发 GBK 会变成 `?`。
+/// 所以这一行**自己进出中文模式**：前面的空格在正常模式打（不会被当成双宽字），
+/// 只有中文那几个字包在 `FS &` … `FS .` 里。
+///
+/// 字号走 `GS ! n`、行距走 `ESC 3`，打完都复原 —— 跟普通放大行一样。
+List<int> gbkLineBytes(
+  String text, {
+  TicketScale scale = TicketScale.xlarge,
+  int leadingSpaces = 0,
+  bool bold = false,
+}) =>
+    <int>[
+      ...lineSpacing(scale, baseDots: null), // ESC 3 n：行距撑到字高
+      ...gsBang(scale), // GS ! n：放大
+      if (bold) ...[0x1B, 0x45, 0x01], // ESC E 1：加粗（徽标那两行）
+      ...ascii.encode(' ' * (leadingSpaces < 0 ? 0 : leadingSpaces)),
+      0x1C, 0x26, // FS & 进中文模式
+      ...gsBang(scale), // 再发一次放大（有的固件切中文模式会把 GS ! 复位）
+      if (bold) ...[0x1B, 0x45, 0x01], // 切中文模式后再来一次，保险
+      ...gbkBytes(text),
+      0x1C, 0x2E, // FS . 退出中文模式
+      0x0A, // 换行
+      if (bold) ...[0x1B, 0x45, 0x00], // ESC E 0：取消加粗
+      ...gsBang(TicketScale.normal), // 字号复原
+      0x1B, 0x32, // ESC 2：行距复位
+    ];
 
 /// 双倍宽高的一行 —— 用来验证 **ESC/POS 指令到底有没有生效**。
 ///
@@ -168,7 +239,10 @@ List<int> feedDots(int dots) => <int>[0x1B, 0x4A, dots];
 ///   [TicketLine.scale] 非正常时，行首发 `ESC 3 n`（把行距撑到字高，否则下一行会
 ///   压在放大后的字上）+ `GS ! n` 放大，换行后发 `GS ! 0` 复原 + 行距复位
 ///   （**复原一定要在换行之后**，否则这一行会按原大小打出来）；
-///   [TicketLine.bold] 时行首 `ESC E 1`、换行后 `ESC E 0`。
+///   [TicketLine.bold] 时行首 `ESC E 1`、换行后 `ESC E 0`；
+///   [TicketLine.continueLine] 时**不发换行**（也不复原字号 / 加粗），
+///   让下一行接着打在同一行上 —— 厨师单的菜品行用它把「备注」（不加粗）
+///   接在「数量 + 菜名」（加粗）后面。
 /// - `1D 56 42 00`  半切纸
 List<int> buildEscPosBytes(
   List<TicketLine> lines, {
@@ -200,6 +274,12 @@ List<int> buildEscPosBytes(
     }
     if (line.bold) out.addAll(emphasize(true));
     out.addAll(encodeText(line.text, line.codec ?? codec));
+    if (line.continueLine) {
+      // **这段不换行**：字重复原（加粗只作用于本段），下一行接着打在同一行上。
+      // 字号故意保持不动 —— 后半段要接着同一行打，改字号会错位。
+      if (line.bold) out.addAll(emphasize(false));
+      continue;
+    }
     out.addAll([0x0A]); // 换行
     if (line.bold) out.addAll(emphasize(false));
     if (scale != TicketScale.normal) {

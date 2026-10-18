@@ -10,8 +10,9 @@ import '../state/settings_controller.dart';
 import '../utils/format.dart';
 // 桌号 / 外卖标签、支付方式文字（跟「日结」明细共用同一份写法）
 import '../utils/order_label.dart';
-// 进行中 / 已结单两种排法 + 已结单"只看某一天"的筛选
+// 已结单的「按什么排」+「只看某一天」；进行中是固定按单号从小到大
 import '../utils/order_sort.dart';
+import '../utils/pricing.dart';
 import '../widgets/account_menu.dart';
 import '../widgets/admin_gate.dart';
 // 「已结单」点开：看明细 + 补打小票
@@ -20,17 +21,22 @@ import '../widgets/payment_flow.dart';
 import 'daily_summary_screen.dart';
 
 /// 订单页：分「进行中」和「已结单」两个标签页。
-/// - 进行中：可点「结账」（折扣/税 + 收款 → 打顾客小票 → 转成已结单）；
-///   一单一行：[桌号/名字] [金额大字] [餐品] [删除] [结账]。
-/// - 已结单：**一天一天看**（跟「日结」一样的日期按钮，默认今天），两种排法
-///   （按结账时间由近到远 / 按金额由大到小）；**点一张单**会打开明细，
-///   可以核对、可以**补打小票**（不再有「结账」—— 钱早就收过了）；
-///   删除**需要管理员权限**。
+///
+/// **进行中**（改版后）：
+/// - 上面三个按钮：**外卖 / 电话外卖 / 堂食**（默认堂食）—— 只看那一类；
+///   以前那三个排序按钮删掉了（实际没用），**永远按单号从小到大**排；
+/// - 界面**一分为二**：**左边是单子列表**（桌号/名字 + 金额 + 删除 + 编辑 + 结账），
+///   **右边是选中那张单的菜品明细 + 合计**；
+/// - **点单子 = 在右边看明细**（不再跳去点单页）；
+///   要点菜 / 改单就点那一行的**编辑**按钮 → 跳到点单页、并把这张单调进购物车。
+///
+/// **已结单**：**一天一天看**（跟「日结」一样的日期按钮，默认今天），三种排法；
+/// 点一张单打开明细，可以核对、可以**补打小票**；删除需要管理员权限。
 /// 「日结」按钮在这一页的**最右边**（也要管理员权限）。
 ///
 /// 注：切到这一页时 `HomeShell` 会顺手同步一次（多设备一个单池，看到的就是最新的）。
 class OrdersScreen extends StatefulWidget {
-  /// **点一张「进行中」的单时要做的事**：调回「点单」页（`HomeShell` 传进来）。
+  /// **点「编辑」时要做的事**：调回「点单」页（`HomeShell` 传进来）。
   ///
   /// 真正的"把这张单调出来"由 `PosController.focusOrder` 完成，这里只负责切标签页。
   final VoidCallback? onOpenPos;
@@ -92,13 +98,8 @@ class _OrdersScreenState extends State<OrdersScreen> {
   Widget build(BuildContext context) {
     final pos = context.watch<PosController>();
     final settings = context.watch<SettingsController>().settings;
-    // 「进行中」按用户选的方式排：默认 = 外卖 → 电话外卖 → 桌子（桌号清单顺序）；
-    // 另一种 = 最近保存 / 下厨房的在最上面（见 `utils/order_sort.dart`）
-    final open = sortInProgressOrders(
-      pos.inProgressOrders,
-      OrderSort.fromId(settings.orderSort),
-      settings.tables,
-    );
+    // 「进行中」：全部（按类型筛选在 _InProgressTab 里做，因为它要记住选的是哪一类）
+    final open = pos.inProgressOrders;
     // 「已结单」：只看**这一天**（跟「日结」同一套"哪一天"），再按选的排法排
     final day = _pickedDay ?? _todayKey;
     final closed = sortClosedOrders(
@@ -127,16 +128,9 @@ class _OrdersScreenState extends State<OrdersScreen> {
         ),
         body: TabBarView(
           children: [
-            _OrderList(
-              orders: open,
-              inProgress: true,
-              onOpenPos: widget.onOpenPos,
-              header: const _InProgressSortBar(),
-            ),
-            _OrderList(
+            _InProgressTab(orders: open, onOpenPos: widget.onOpenPos),
+            _ClosedList(
               orders: closed,
-              inProgress: false,
-              onOpenPos: widget.onOpenPos,
               header: _ClosedFilterBar(
                 day: day,
                 today: _todayKey,
@@ -153,7 +147,449 @@ class _OrdersScreenState extends State<OrdersScreen> {
   }
 }
 
-/// 两个列表共用的**小圆片**（排序 / 筛选用）。
+/// **「进行中」这一页**：上面是类型筛选，下面**左列表 / 右明细**。
+///
+/// 选中的单子存在这里（`_selectedId`）：切类型、单子被结掉之后会自动落到第一张上。
+class _InProgressTab extends StatefulWidget {
+  /// 全部「进行中」的单（不筛类型 —— 筛选在这里做）。
+  final List<Order> orders;
+
+  /// 点「编辑」：切回点单页。
+  final VoidCallback? onOpenPos;
+
+  const _InProgressTab({required this.orders, this.onOpenPos});
+
+  @override
+  State<_InProgressTab> createState() => _InProgressTabState();
+}
+
+class _InProgressTabState extends State<_InProgressTab> {
+  /// 看哪一类（默认**堂食**）。
+  OrderType _type = OrderType.dineIn;
+
+  /// 左边选中的那张单（空 = 没选，会自动落到第一张）。
+  String _selectedId = '';
+
+  /// 点「编辑」：把这张单调进点单页的购物车。
+  void _edit(Order order) {
+    context.read<PosController>().focusOrder(order);
+    widget.onOpenPos?.call();
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text(L10n.t('order.editHint')),
+        duration: const Duration(milliseconds: 1600),
+      ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.watch<SettingsController>().settings;
+    final symbol = settings.currencySymbol;
+
+    // 只看选中的那一类；**永远按单号从小到大**（排序开关已经去掉）
+    final list = sortOpenOrdersByNumber(
+      widget.orders.where((o) => o.orderType == _type).toList(),
+    );
+
+    // 选中的那张不在这个列表里（切了类型 / 刚被结账 / 被删）→ 先显示第一张
+    Order? selected;
+    for (final o in list) {
+      if (o.id == _selectedId) {
+        selected = o;
+        break;
+      }
+    }
+    selected ??= list.isEmpty ? null : list.first;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // ---- 上面：外卖 / 电话外卖 / 堂食 ----
+        _Bar(
+          children: [
+            _SortChip(
+              selected: _type == OrderType.takeaway,
+              label: L10n.t('order.takeaway'),
+              icon: Icons.shopping_bag_outlined,
+              onTap: () => setState(() => _type = OrderType.takeaway),
+            ),
+            _SortChip(
+              selected: _type == OrderType.phonecallTakeaway,
+              label: L10n.t('order.phonecallTakeaway'),
+              icon: Icons.phone_in_talk_outlined,
+              onTap: () => setState(() => _type = OrderType.phonecallTakeaway),
+            ),
+            _SortChip(
+              selected: _type == OrderType.dineIn,
+              label: L10n.t('order.dineIn'),
+              icon: Icons.table_restaurant_outlined,
+              onTap: () => setState(() => _type = OrderType.dineIn),
+            ),
+          ],
+        ),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, box) {
+              // 宽屏：左右两栏；窄屏（手机）：上下两栏
+              final wide = box.maxWidth >= 760;
+              final left = _openList(list, selected, symbol);
+              final right = _OrderLinesPane(order: selected, symbol: symbol);
+              if (wide) {
+                return Row(
+                  children: [
+                    Expanded(flex: 5, child: left),
+                    const VerticalDivider(width: 1),
+                    Expanded(flex: 4, child: right),
+                  ],
+                );
+              }
+              return Column(
+                children: [
+                  Expanded(flex: 5, child: left),
+                  const Divider(height: 1),
+                  Expanded(flex: 4, child: right),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 左边：单子列表（一行 = 桌号/名字 + 金额 + 删除 + 编辑 + 结账）。
+  Widget _openList(List<Order> list, Order? selected, String symbol) {
+    if (list.isEmpty) return _EmptyOrders(text: L10n.t('cart.noOrders'));
+    return ListView.separated(
+      padding: const EdgeInsets.all(12),
+      itemCount: list.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 6),
+      itemBuilder: (context, i) => _OpenOrderRow(
+        order: list[i],
+        symbol: symbol,
+        selected: list[i].id == selected?.id,
+        onTap: () => setState(() => _selectedId = list[i].id),
+        onEdit: () => _edit(list[i]),
+      ),
+    );
+  }
+}
+
+/// **进行中的一行**：左边桌号/名字，右边金额 + 删除 + 编辑 + 结账。
+///
+/// 点这一行 = **在右边看明细**（不跳页）；要改单就点「编辑」。
+class _OpenOrderRow extends StatelessWidget {
+  final Order order;
+  final String symbol;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onEdit;
+
+  const _OpenOrderRow({
+    required this.order,
+    required this.symbol,
+    required this.selected,
+    required this.onTap,
+    required this.onEdit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const accent = Color(0xFF1FA85A);
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 4),
+      clipBehavior: Clip.antiAlias,
+      color: selected ? const Color(0xFFEDF7F1) : Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: selected ? accent : Colors.grey.shade300,
+          width: selected ? 2 : 1,
+        ),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+          child: LayoutBuilder(builder: (context, box) {
+            // 名字/单号最多占一半，右边那一组永远贴着右边缘（金额一列对齐）。
+            // 左边用 `Expanded` 包住：屏幕很窄时它自己换行，不会把右边挤出去。
+            final tagWidth = box.maxWidth * 0.5;
+            return Row(
+              children: [
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: _PlaceTag(order: order, maxWidth: tagWidth),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  money(order.total, symbol),
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF232829),
+                  ),
+                ),
+                const SizedBox(width: 2),
+                IconButton(
+                  onPressed: () => _confirmDelete(context),
+                  tooltip: L10n.t('order.delete'),
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 20,
+                  icon: const Icon(Icons.delete_outline, color: Colors.grey),
+                ),
+                IconButton(
+                  onPressed: onEdit,
+                  tooltip: L10n.t('order.edit'),
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 20,
+                  icon: const Icon(Icons.edit_outlined, color: Color(0xFF1565C0)),
+                ),
+                FilledButton(
+                  onPressed: () => settleOrderFlow(context, order),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 40),
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                  ),
+                  child: Text(L10n.t('order.settle')),
+                ),
+              ],
+            );
+          }),
+        ),
+      ),
+    );
+  }
+
+  /// 删除订单：**要管理员权限**（删掉就没有记录，是危险操作）。
+  Future<void> _confirmDelete(BuildContext context) async {
+    final ok = await requireAdmin(
+      context,
+      reason: L10n.t('auth.deleteNeeded'),
+    );
+    if (!ok || !context.mounted) return;
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(L10n.t('order.delete.confirm')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(L10n.t('common.cancel')),
+          ),
+          TextButton(
+            onPressed: () {
+              context.read<PosController>().deleteOrder(order.id);
+              Navigator.pop(dialogContext);
+            },
+            child: Text(
+              L10n.t('common.delete'),
+              style: const TextStyle(color: Colors.redAccent),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 右边：选中那张单的**菜品明细 + 合计**（样式跟结账窗口左边那份一样）。
+class _OrderLinesPane extends StatelessWidget {
+  final Order? order;
+  final String symbol;
+
+  const _OrderLinesPane({required this.order, required this.symbol});
+
+  @override
+  Widget build(BuildContext context) {
+    final o = order;
+    if (o == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.receipt_long, size: 44, color: Colors.grey),
+              const SizedBox(height: 10),
+              Text(
+                L10n.t('order.pickHint'),
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey.shade600),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final price = PriceBreakdown.of(
+      subtotal: o.subtotal,
+      discountType: o.discountType,
+      discountValue: o.discountValue,
+      taxRate: o.taxRate,
+      taxIncluded: o.taxIncluded,
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // ---- 标题：哪张单 + 几件 ----
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  orderPlaceLabel(o),
+                  maxLines: 2,
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w700),
+                ),
+              ),
+              Text(
+                '${o.itemCount}${L10n.t('cart.items')}',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        // ---- 菜品明细 ----
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            itemCount: o.lines.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (_, i) => _lineTile(o.lines[i]),
+          ),
+        ),
+        // ---- 底部：小计 / 折扣 / 税 / 合计 ----
+        const Divider(height: 1),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          child: _breakdown(o, price),
+        ),
+      ],
+    );
+  }
+
+  /// 明细里的一道菜（只读）：菜名 + 数量×单价 · 选项 · 备注 + 金额。
+  Widget _lineTile(OrderLine l) {
+    final detail = <String>[
+      '${l.quantity} × ${money(l.effectiveUnitPrice, symbol)}'
+          '${l.unit.trim().isEmpty ? '' : ' / ${l.unit.trim()}'}',
+      if (l.options.isNotEmpty) l.options.join(' / '),
+      if (l.note.trim().isNotEmpty) l.note.trim(),
+    ].join(' · ');
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 10, 8, 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  // 这页是**给收银员看的**：跟点单页一样显示昵称
+                  l.displayName,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  detail,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            money(l.subtotal, symbol),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 金额明细（小计 / 折扣 / 税 / 合计）。
+  Widget _breakdown(Order o, PriceBreakdown price) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F6F5),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          _row(L10n.t('receipt.labelSubtotal'), money(price.subtotal, symbol)),
+          if (price.discount != 0)
+            _row(
+              L10n.t('receipt.labelDiscount'),
+              '-${money(price.discount, symbol)}',
+              color: const Color(0xFFEF6C00),
+            ),
+          if (price.tax != 0)
+            _row(
+              '${L10n.t('receipt.labelTax')}'
+              '${o.taxRate == 0 ? '' : ' ${o.taxRate.toStringAsFixed(0)}%'}'
+              '${o.taxIncluded ? ' (${L10n.t('tax.included')})' : ''}',
+              money(price.tax, symbol),
+            ),
+          const Divider(height: 12),
+          _row(L10n.t('receipt.labelTotal'), money(price.total, symbol),
+              bold: true, big: true),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(String label, String value,
+      {Color? color, bool bold = false, bool big = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: big ? 16 : 13,
+                fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+                color: color ?? const Color(0xFF232829),
+              ),
+            ),
+          ),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: big ? 22 : 14,
+              fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
+              color: color ?? const Color(0xFF232829),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 两个列表共用的**小圆片**（类型筛选 / 已结单的排序用）。
 ///
 /// 选中就是绿底白字，没选中是灰字 —— 一眼看出现在是哪一种。
 class _SortChip extends StatelessWidget {
@@ -190,42 +626,6 @@ class _SortChip extends StatelessWidget {
           color: selected ? Colors.white : const Color(0xFF232829),
         ),
       ),
-    );
-  }
-}
-
-/// 「进行中」列表上面那个排序开关：**默认（按单号）** / **按位置** / **按时间**。
-///
-/// 选择存在设置里（`Settings.orderSort`），本机记住、不上云。
-class _InProgressSortBar extends StatelessWidget {
-  const _InProgressSortBar();
-
-  @override
-  Widget build(BuildContext context) {
-    final ctl = context.watch<SettingsController>();
-    final current = OrderSort.fromId(ctl.settings.orderSort);
-
-    return _Bar(
-      children: [
-        _SortChip(
-          selected: current == OrderSort.number,
-          label: L10n.t('order.sort.number'),
-          icon: Icons.tag,
-          onTap: () => ctl.setOrderSort(OrderSort.number.id),
-        ),
-        _SortChip(
-          selected: current == OrderSort.position,
-          label: L10n.t('order.sort.position'),
-          icon: Icons.table_restaurant_outlined,
-          onTap: () => ctl.setOrderSort(OrderSort.position.id),
-        ),
-        _SortChip(
-          selected: current == OrderSort.time,
-          label: L10n.t('order.sort.time'),
-          icon: Icons.schedule,
-          onTap: () => ctl.setOrderSort(OrderSort.time.id),
-        ),
-      ],
     );
   }
 }
@@ -420,49 +820,32 @@ class _SyncButton extends StatelessWidget {
   }
 }
 
-class _OrderList extends StatelessWidget {
+/// **「已结单」列表**：只有一列，点一张单 → 明细窗口（可补打小票）。
+class _ClosedList extends StatelessWidget {
   final List<Order> orders;
-  final bool inProgress;
-  final VoidCallback? onOpenPos;
 
-  /// 列表上面的东西（排序 / 日期筛选那条）。
-  ///
-  /// **一张单都没有时也留着**：筛了日期什么都没筛出来，得能改回来。
+  /// 列表上面的东西（日期筛选 + 排序那条）。**一张单都没有时也留着**。
   final Widget? header;
 
-  const _OrderList({
-    required this.orders,
-    required this.inProgress,
-    this.onOpenPos,
-    this.header,
-  });
+  const _ClosedList({required this.orders, this.header});
 
   @override
   Widget build(BuildContext context) {
-    final emptyText = inProgress
-        ? L10n.t('cart.noOrders')
-        : L10n.t('order.history.empty');
-
     return Column(
       // ⚠️ 必须 `stretch`：排序 / 筛选那一条里面是 `Wrap`（会收缩到内容宽度），
-      // 不拉伸的话会被 Column 默认的 `center` 摆到**中间**去 ——
-      // 「进行中」的排序按钮以前就是这么被居中了的（要它贴着最左边）。
+      // 不拉伸的话会被 Column 默认的 `center` 摆到**中间**去。
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (header != null) header!,
         Expanded(
           child: orders.isEmpty
-              ? _EmptyOrders(text: emptyText)
+              ? _EmptyOrders(text: L10n.t('order.history.empty'))
               : ListView.separated(
                   padding: const EdgeInsets.all(12),
                   itemCount: orders.length,
-                  // 一条单只有一行了，间距也收紧一点 —— 一屏能放下更多张
                   separatorBuilder: (_, __) => const SizedBox(height: 6),
-                  itemBuilder: (context, i) => _OrderCard(
-                    order: orders[i],
-                    inProgress: inProgress,
-                    onOpenPos: onOpenPos,
-                  ),
+                  itemBuilder: (context, i) =>
+                      _ClosedOrderCard(order: orders[i]),
                 ),
         ),
       ],
@@ -470,70 +853,36 @@ class _OrderList extends StatelessWidget {
   }
 }
 
-class _OrderCard extends StatelessWidget {
+/// 「已结单」的一行：点开看明细 + 补打小票；删除要管理员权限。
+class _ClosedOrderCard extends StatelessWidget {
   final Order order;
-  final bool inProgress;
-  final VoidCallback? onOpenPos;
 
-  const _OrderCard({
-    required this.order,
-    required this.inProgress,
-    this.onOpenPos,
-  });
-
-  /// 点这张**进行中**的单 → 调回「点单」页，购物车面板里就是它：
-  /// 可以继续加菜、改份数、改备注、删菜，点「保存 / 厨房」都回到这张单上。
-  void _openInPos(BuildContext context) {
-    context.read<PosController>().focusOrder(order);
-    onOpenPos?.call();
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(
-        content: Text(L10n.t('order.tapToEdit')),
-        duration: const Duration(milliseconds: 1400),
-      ));
-  }
+  const _ClosedOrderCard({required this.order});
 
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsController>().settings;
-
     // 右边那点小字：**有才显示** —— 已结单显示支付方式。
-    // 单号、时间、折扣税、外币明细**都不显示了** —— 一条单就是一行，一屏能扫很多张
-    // （这些明细纸上（小票）和「日结」里都有）。
-    final extras = inProgress ? '' : orderPaymentLabel(order);
+    final extras = orderPaymentLabel(order);
 
     return Card(
       color: Colors.white,
       margin: const EdgeInsets.symmetric(horizontal: 4),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        // **进行中**：点一下就调回「点单」页，购物车面板里就是它
-        // （加菜 / 改份数 / 改备注 / 删菜）。
-        // **已结单**：点开**明细**（可以核对、可以**补打小票**，没有"结账"）。
-        onTap: inProgress
-            ? () => _openInPos(context)
-            : () => showClosedOrderDetail(context, order),
+        onTap: () => showClosedOrderDetail(context, order),
         child: Padding(
-          // 一条单**只有一行**：上下各留 8（字放大了，留点余地）
           padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
-          // 布局（一句话）：**左边桌号/名字/单号（最多半行）· 中间菜名 · 右边一组**
-          // 右边那一组（支付方式 / 金额 / 删除 / 结账）**都没有弹性**，
-          // 所以永远贴着卡片右边缘，金额的右边缘每张单都对齐。
           child: LayoutBuilder(builder: (context, box) {
             // 窗口宽（收银台 / 平板）才显示右边那些"有就有、没有也行"的小字；
             // 窄的时候（手机）先让位给桌号和菜名，免得把右边的按钮挤出去。
             final roomy = box.maxWidth >= 700;
-            // 名字 / 单号最多占**一半**宽度（从最左边开始），
-            // 再长也只是在这一半里折行，不会把整行撑得很难看。
             final tagWidth = box.maxWidth * 0.5;
             return Row(
               children: [
-                // 桌号 / 名字 / 单号：**完整显示，不省略**
-                _placeTag(order, tagWidth),
+                _PlaceTag(order: order, maxWidth: tagWidth),
                 const SizedBox(width: 12),
-                // 餐品：**一行搞定**，太长就省略号（`…`）
-                // （要看全就点开这张单：明细里一道菜一行）
+                // 餐品：**一行搞定**，太长就省略号
                 Expanded(
                   child: Text(
                     order.lines.map((l) => '${l.name}×${l.quantity}').join('，'),
@@ -542,10 +891,8 @@ class _OrderCard extends StatelessWidget {
                     style: TextStyle(fontSize: 15, color: Colors.grey.shade700),
                   ),
                 ),
-                // ---- 右边这一组：支付方式 → 金额 → 删除 →（结账）----
                 if (roomy && extras.isNotEmpty) ...[
                   const SizedBox(width: 8),
-                  // 给它一个**宽度上限**：内容再长也不会把右边的按钮挤出去
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 170),
                     child: Text(
@@ -557,7 +904,7 @@ class _OrderCard extends StatelessWidget {
                     ),
                   ),
                 ],
-                // 还没推上后台的单：橙色小标记（一眼看出后台可能还没收到）
+                // 还没推上后台的单：橙色小标记
                 if (roomy && order.dirty && settings.syncEnabled) ...[
                   const SizedBox(width: 8),
                   Container(
@@ -575,8 +922,6 @@ class _OrderCard extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(width: 12),
-                // **金额（大字）**：放在最右边（完整显示，绝不省略）。
-                // 它的右边缘在每张单上都在同一个位置 → 一列数字对齐，扫起来舒服。
                 Text(
                   money(order.total, settings.currencySymbol),
                   style: const TextStyle(
@@ -593,64 +938,9 @@ class _OrderCard extends StatelessWidget {
                   iconSize: 22,
                   icon: const Icon(Icons.delete_outline, color: Colors.grey),
                 ),
-                if (inProgress)
-                  FilledButton(
-                    onPressed: () => settleOrderFlow(context, order),
-                    child: Text(L10n.t('order.settle')),
-                  ),
               ],
             );
           }),
-        ),
-      ),
-    );
-  }
-
-  /// 左边的标记：**桌号 / 外卖名字（含单号）**，电话外卖的等待时间也跟在这里面。
-  ///
-  /// ⚠️ 这里**绝对不省略**（你要求的）：桌号 / 名字 / 单号是"这单是谁的"，
-  /// 省了就认不出单子（菜名反而可以省 —— 点开明细能看全）。
-  /// 做法是**折行显示完整**，而不是打省略号。
-  ///
-  /// [maxWidth] 是它的宽度上限（调用方给的是**整行宽度的一半**：
-  /// 名字长的单子能占半行，而不是挤在一小块里）。
-  Widget _placeTag(Order order, double maxWidth) {
-    final wait = order.waitMinutes;
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxWidth),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1FA85A).withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Text(
-                orderPlaceLabel(order),
-                // 放不下就折行 —— **不打省略号**（内容必须看全）
-                softWrap: true,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF1FA85A),
-                ),
-              ),
-            ),
-            if (wait > 0) ...[
-              const SizedBox(width: 6),
-              Text(
-                '$wait ${L10n.t('kitchen.minutes')}',
-                style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFFEF6C00),
-                ),
-              ),
-            ],
-          ],
         ),
       ),
     );
@@ -683,6 +973,61 @@ class _OrderCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 左边的标记：**桌号 / 外卖名字（含单号）**，电话外卖的等待时间也跟在这里面。
+///
+/// ⚠️ 这里**绝对不省略**（你要求的）：桌号 / 名字 / 单号是"这单是谁的"，
+/// 省了就认不出单子。做法是**折行显示完整**，而不是打省略号。
+class _PlaceTag extends StatelessWidget {
+  final Order order;
+
+  /// 宽度上限（调用方给的是**整行宽度的一半**）。
+  final double maxWidth;
+
+  const _PlaceTag({required this.order, required this.maxWidth});
+
+  @override
+  Widget build(BuildContext context) {
+    final wait = order.waitMinutes;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1FA85A).withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(
+                orderPlaceLabel(order),
+                softWrap: true,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1FA85A),
+                ),
+              ),
+            ),
+            if (wait > 0) ...[
+              const SizedBox(width: 6),
+              Text(
+                '$wait ${L10n.t('kitchen.minutes')}',
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFFEF6C00),
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

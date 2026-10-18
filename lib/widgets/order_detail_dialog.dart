@@ -189,8 +189,9 @@ class _DetailBody extends StatelessWidget {
             ],
           ),
           // 单价 + 选项 / 备注（备注可能很长 → 折行，不省略）
+          // 单价用**实收单价**（含备注加价），跟右边的小计对得上
           Text(
-            '${money(l.unitPrice, symbol)} / $qty'
+            '${money(l.effectiveUnitPrice, symbol)} / $qty'
             '${detail.isEmpty ? '' : '   ·   $detail'}',
             style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600),
           ),

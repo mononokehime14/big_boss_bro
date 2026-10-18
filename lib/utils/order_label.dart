@@ -6,24 +6,31 @@ import '../models/order.dart';
 ///
 /// - 堂食 → `桌号 4  #12`（没桌号写 `-`）；
 /// - 外卖 → `外卖 #3`，起了名字就是 `外卖 张三 #3`；
-/// - 电话外卖 → `电话外卖 张三 #3`。
+/// - 电话外卖 → `电话外卖 张三 #3`；
+/// - **分单** → 上面那串后面加 `-分单1`（例：`桌号 4-分单1`，分单不带 `#号`）。
 ///
 /// `#N` 是**当天从 1 开始**的单号（堂食 / 外卖 / 电话外卖**共用一条序列**，
 /// 见 `PosController._nextDailyNo`）—— 订单页的默认排序就按它从大到小。
 String orderPlaceLabel(Order order) {
   // 外卖 / 电话外卖：名字和号都已经在 `takeawayTag` 里（`名字 #号`）
+  final String base;
   if (order.isPhoneTakeaway) {
-    return '${L10n.t('order.phonecallTakeaway')}'
+    base = '${L10n.t('order.phonecallTakeaway')}'
         '${order.takeawayTag.isEmpty ? '' : ' ${order.takeawayTag}'}';
-  }
-  if (order.isTakeaway) {
-    return '${L10n.t('order.takeaway')}'
+  } else if (order.isTakeaway) {
+    base = '${L10n.t('order.takeaway')}'
         '${order.takeawayTag.isEmpty ? '' : ' ${order.takeawayTag}'}';
+  } else {
+    // 堂食：桌号 + 单号（老数据没有号 → dailyNo = 0，那就不显示）
+    final table =
+        '${L10n.t('order.table')} ${order.table.isEmpty ? '-' : order.table}';
+    // 分单不再带母单的单号（`桌号 4  #12-分单1` 太长太乱）
+    base = (!order.isSplit && order.dailyNo > 0)
+        ? '$table  #${order.dailyNo}'
+        : table;
   }
-  // 堂食：桌号 + 单号（老数据没有号 → dailyNo = 0，那就不显示）
-  final table =
-      '${L10n.t('order.table')} ${order.table.isEmpty ? '-' : order.table}';
-  return order.dailyNo > 0 ? '$table  #${order.dailyNo}' : table;
+  if (!order.isSplit) return base;
+  return '$base-${L10n.t('split.suffix')}${order.splitNo}';
 }
 
 /// 支付方式的显示文字：混付（老数据里的 AA）写「混合」，
