@@ -241,12 +241,16 @@ void main() {
       expect(data['deviceId'], '收银台A');
     });
 
-    test('外卖 / 电话外卖的类型也会送对', () {
+    test('外卖 / 电话外卖 / 平台外卖的类型也会送对', () {
       final t = order(id: 't1').copyWith(orderType: OrderType.takeaway);
       final p = order(id: 'p1').copyWith(orderType: OrderType.phonecallTakeaway);
+      final pl =
+          order(id: 'pl1').copyWith(orderType: OrderType.platformTakeaway);
       expect(OrderSync.toRow(t, deviceId: 'A')['order_type'], 'takeaway');
       expect(OrderSync.toRow(p, deviceId: 'A')['order_type'],
           'phonecall_takeaway');
+      expect(OrderSync.toRow(pl, deviceId: 'A')['order_type'],
+          'platform_takeaway');
     });
 
     test('closed_at 必须是**带 Z 的 UTC**（跟打卡时间同一个坑）', () {

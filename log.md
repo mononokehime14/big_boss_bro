@@ -3045,3 +3045,206 @@ const TicketRow.bytes(this.text, this.raw,
 `first`（`Sin cebolla`）后面紧跟的其实是**菜名的折行续行**「饭」，不是「少辣」。
 改成从 `first` 往后按内容找：`rows.skip(indexOf(first)).firstWhere((r) => r.text.trim() == '少辣')`，
 再断言它从最左边开始（不加前导空格）。
+
+---
+
+## 本轮改动（2026-10-18）：新增第四种单子类型 **「平台外卖」**（Uber / DiDi 这种 App 来的单）
+
+**你要的**：
+
+1. 点单界面「桌号 / 外卖」下拉里多一个 **平台外卖**；**所有流程跟电话外卖完全一致**
+   （不用桌号、能起名字、能填等待时间、点完厨房留在下拉里能调回来、能分单 / 移动 / 结账）；
+2. **厨师单上不区分**：最下面那行（徽标）**直接打「外卖」**；
+3. **日结分开算**：
+   - **左侧**（堂食 / 外卖这些营业额明细）**单独列一行「平台外卖」**；
+   - **右侧**（现金 / 卡数）：平台外卖收**现金 → 并进「现金」**；
+     平台外卖收**刷卡 → 单独列「平台刷卡」**（「刷卡」那一行里**不含**它，不重复算）。
+
+### 怎么实现的（一句话版）
+
+- 类型就是一个新枚举值 `OrderType.platformTakeaway('platform_takeaway')`；
+- **厨房单**：`TicketBuilder._kitchenTypeLabel()` 把平台外卖当普通外卖（门牌 `外卖 张三`），
+  `_badgeKey()` 也用 `kitchen.badgeTakeaway`（`LLEVAR` / `外卖`）——
+  想改成"厨房也看得出是平台单"，改这两个方法里的那一行就行；
+- **日结**：`computeSalesTotals()` 里平台外卖的营业额进 `platformTakeaway`；
+  收款时**现金照旧**进 `cashByCurrency`，**刷卡**进 `platformCard`（不进 `card`）；
+- 顾客小票（`typeLine`）照实打「平台外卖」，方便跟日结对上。
+
+### 主要改动文件
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `lib/models/order.dart` | `OrderType` 加 `platformTakeaway('platform_takeaway')` + `Order.isPlatformTakeaway`；`isTakeaway`（不用桌号）自动包含它 |
+| `lib/l10n/app_strings.dart` | 三语新增 `order.platformTakeaway`、`summary.platformTakeaway`、`summary.platformCard`、`takeaway.name.titlePlatform`（中：平台外卖 / 平台刷卡；西：Plataforma / Tarjeta plataforma；英：Platform Delivery / Platform card） |
+| `lib/state/pos_controller.dart` | `isPlatformTakeaway`、`openPlatformTakeawayCount`（`selectTable(..., takeaway: true, type: OrderType.platformTakeaway)` 走原来那套，不用改） |
+| `lib/widgets/cart_panel.dart` | 下拉顺序 = **外卖 → 电话外卖 → 平台外卖 → 各桌 → 进行中的外卖单**；已保存单那一行用 `orderTypeLabel(o.orderType)` 显示各自类型 |
+| `lib/screens/orders_screen.dart` | 「进行中」上面多一个 **平台外卖** 筛选按钮 |
+| `lib/utils/order_label.dart` | 新增 `orderTypeLabel()`（界面统一叫法）；`orderPlaceLabel()` 平台单显示「平台外卖 张三 #3」 |
+| `lib/utils/order_sort.dart` | 「按位置」排序：外卖 → 电话外卖 → **平台外卖** → 桌子 |
+| `lib/screens/pos_screen.dart`、`lib/widgets/payment_flow.dart`、`lib/widgets/takeaway_name_dialog.dart` | 标题栏 / 结账窗口 / 保存名字框都用平台外卖的叫法（流程不变） |
+| `lib/services/ticket_builder.dart` | `_typeLabel()` 加平台外卖（**顾客小票**用）；新增 `_kitchenTypeLabel()`（**厨房单**里平台外卖 → 外卖）；`_badgeKey()` 平台外卖 → `kitchen.badgeTakeaway` |
+| `lib/services/sales_totals.dart` | `SalesTotals` 加 `platformTakeaway`（左侧营业额）与 `platformCard`（右侧平台刷卡）；**平台刷卡不再算进 `card`**；平台现金照旧进 `cashByCurrency`；`nonCashTotal` 含平台刷卡 |
+| `lib/services/receipt_layout.dart` | `SummaryData/SummaryLabels` 加 `platformTakeawayTotal` / `platformCardTotal`（及对应文案）；日结小票：左侧多一行「平台外卖」、右侧多一行「平台刷卡」（都是非 0 才打） |
+| `lib/screens/daily_summary_screen.dart` | 屏幕上的日结同步：左侧平台外卖一行、右侧平台刷卡一行；打印时把两个数带进 `SummaryData` |
+| `supabase/admin.html` | 后台网页：类型映射 / 颜色加 `platform_takeaway`；日结 KPI 加「平台外卖」「平台刷卡」（刷卡不含平台） |
+| `supabase/schema.sql` | `orders.order_type` 注释补上 `platform_takeaway`（**类型是 text，不用改表结构、不用迁移**） |
+| `README.md`、`kitchen_ticket.md` | 顺手把「下拉顺序 / 订单页按钮 / 厨房单不区分 / 日结平台那两行」写进文档 |
+
+### 测试（**已在代码里补好，但沙盒里没跑** —— 按你的要求留给你跑）
+
+- `test/pos_controller_test.dart`：新增「平台外卖：流程跟电话外卖一样，但日结单独一行、平台刷卡单列」
+  （含起名 / 等待时间 / 计数器 / 现金并进现金 / 刷卡不重复算 / 四行加起来 = 总营业额）；
+- `test/receipt_layout_test.dart`：新增「平台外卖：小票打平台外卖、厨房单只打外卖（跟普通外卖的厨房单完全一样）」
+  「平台外卖带名字 + 等待时间」「日结小票：左侧平台外卖、右侧平台刷卡」；
+- `test/order_sort_test.dart`：「按位置」用例补上平台外卖（外卖 → 电话外卖 → 平台外卖 → 桌子）；
+- `test/order_sync_test.dart`：`platform_takeaway` 能正确推到 Supabase。
+
+建议跑：
+
+```bash
+flutter test
+flutter analyze
+```
+
+### 你要试的（真机）
+
+1. 点单页下拉选 **平台外卖** → 点菜 → 「保存」→ 弹框标题应是 **保存这张平台外卖单**，
+   起个名字（例 `Uber 张三`）、等待时间填 `20`；
+2. 点「厨房」→ 厨房单：门牌 `外卖 Uber 张三`、下面 `等待 20 分钟`，
+   **最下面两行大字是 `LLEVAR` + `外卖`**（不该出现「平台外卖」四个字）；
+3. 这张单刷**卡**结账 → 日结：左边多一行「平台外卖」，右边「刷卡」不含它、
+   多一行「平台刷卡」= 这笔钱；
+4. 再开一张平台外卖收**现金** → 日结右边「现金」里**包含**这笔（没有单独的「平台现金」）；
+5. 订单页「进行中」→ 上面应有四个按钮（外卖 / 电话外卖 / 平台外卖 / 堂食），平台外卖那格能看到这张单；
+6. 日结右下角「打印日结」→ 纸上同样有「平台外卖」「平台刷卡」两行。
+
+### 复核（同一轮）：`did not complete` 的**真正原因**找到了（`gbk_codec` 的 JIT 毛病）
+
+你贴的那次运行里有 4 个 `did not complete`（都在 `test/currency_test.dart` 末尾）。实测：
+
+- `flutter test test/currency_test.dart` → **17 个全过**；
+- 整轮 `flutter test` → 第一次 **399 个全过**；后来又跑一次，整轮在
+  `receipt_layout_test.dart` 的「厨房单上也打『电话外卖』」那里**整个 isolate 没了**，
+  后面的用例全被记成 `did not complete`（跟你那次一模一样，**没有任何失败详情**）。
+
+原因不是用例写错，是 **`gbk_codec` 那张巨大的 GBK const 表在 `flutter test` 的 JIT VM 里
+偶尔加载失败、把整个测试进程带崩** —— `escpos.dart` 的 `gbkBytes()` 注释里
+（2026-10-18）就记过：报 `type '_Type' is not a subtype of type 'String'`，catch 不住。
+所以是**偶发**的：同一份代码重跑就可能全绿；跑**整轮**（很多测试文件并发，
+每个「厨房单」用例都会碰一次 GBK）更容易撞上。
+
+> 想让测试彻底不偶发：把「中文徽标的 GBK 字节」从**排版时**挪到**真打印时**再编
+> （测试只查文字、完全不碰 gbk_codec）。这会动到打印那一段，等你点头再做。
+
+你贴的两行「跳过」是**预期内的诊断输出**，来自 `test/sync_service_test.dart` 的**反向用例**
+（故意让假服务器返回 404 / 不认识的路径，验证「后台没建表也不能拖累收银」）：
+`考勤同步跳过：relation "public.attendance_staff" does not exist`、
+`店级配置同步跳过：unexpected GET /rest/v1/store_settings` —— 它们上面一行就是
+`+… : 后台还没建考勤表（404）→ 订单照常同步，状态里只提醒一句`，**测试是绿的**。
+
+### 顺手修掉一个 `flutter analyze` 的 **error**
+
+`tool\preview_kitchen.dart` 的 `_tag()` 里的 `switch` 少了 `TicketScale.huge` 这一档
+（`non_exhaustive_switch_statement`，`huge` 是后来加的字号档）——
+补上 `case TicketScale.huge: return '超高';`。
+
+现在 `flutter analyze`：**0 error / 0 warning**；剩下 111 条全是 info，
+其中 92 条在 vendored 的 `third_party/`（蓝牙插件 / file_picker），
+19 条是 `lib`+`test` 里一直就有的 `prefer_const_constructors` 之类 —— 都不影响跑。
+
+---
+
+## 本轮改动（2026-10-18 晚）：厨师单「数量」列按 **Size** 换成**手写单习惯**
+
+**你要的**：厨师以前手写单 —— `Grande` 写 **1**、`Mediano` 写 **1/2**、
+`Chico` 写**圆圈里的数字**（一份 chico = ①）。现在厨师单**左边数量列**自动这么打，
+**右边备注列照常**（选项 `Grande` / `Mediano` 还是打在右边）。
+
+菜单 Excel 里确认过：`Size` 这一组的选项是 `Chico/Mediano/Grande`（53 道菜是
+`Mediano/Grande`，6 道是三种都有；饮料的 `Size` 是 `VASO/JARRA`，不受影响）。
+
+### 规则（`kitchenSizeQtyLabel` —— ⚠️ 这是**当时的版本**，后来改成不约分的 `N/2` + 规则表，见本节末尾的「改」）
+
+| `Size` 选的是 | 数量列打成 | 例（份数 → 打出来） |
+| --- | --- | --- |
+| `Grande` | **份数** | 1 → `1`、2 → `2` |
+| `Mediano` | **份数 ÷ 2** | 1 → `1/2`、2 → `1`、3 → `1 1/2` |
+| `Chico` | **圆圈里的份数** | 1 → `①`、2 → `②`、10 → `⑩`、11 → `(11)` |
+| 没有 Size / `VASO`、`JARRA`… | 照旧 | 2 → `2`、2 份 → `2 份` |
+
+打出来长这样（58mm）：
+
+```text
+①     Chun Kun                Chico
+1/2   Lonche #3               Mediano
+```
+
+### 几个刻意的取舍（想改都很容易）
+
+- **按份数算**：2 份 `Mediano` 打 `1`（两个半份 = 一个整份，跟手写单一个意思）。
+  改成「份数不动、永远 1/2」→ 改 `kitchenSizeQtyLabel()` 里 `mediano` 那一支。
+- **放不下就退回真实份数**：`1 1/2` 是 5 列，数量列只有 4 列（`kKitchenQtyColumns`）
+  → 那种情况直接打真实份数 `3`。**绝不能让厨房看错份数**。
+- **圆圈数字只到 ⑩**：GBK 里只有 ①–⑩（⑪ 起编不出来会变 `?`），11 份以上打 `(11)`。
+- **编码**：`cp850` / `latin1` 编不出 ① → 那种设置下 Chico 打 `(1)`（不出问号）；
+  ① 在 GBK/UTF-8 里是**全角**，`displayWidth()` 已经把它算 2 列（不然整行会歪一列）。
+- **组名 → 选项值 是下单时快照在订单行上的**（`OrderLine.optionGroups`），
+  所以老单（升级前存的）没有这个字段 → 照旧打份数，不会崩也不会打错。
+
+### 主要改动文件
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `lib/models/order.dart` | `OrderLine` 新增 **`optionGroups`**（组名 → 选项值，例如 `{'Size': 'Grande'}`）+ `optionInGroup('Size')`（组名不分大小写）；`toJson` / `fromJson` / `copyWith` 都带上（老数据没有 → 空 map） |
+| `lib/state/pos_controller.dart` | 下单 / 追单 / 改单时把 `MenuItem.options` + 选择还原成 `optionGroups`（`_optionGroupsOf`，规则跟 `unitPriceFor` 一致：普通多选项存值、加料开关存组名）；并单时顺手刷新一遍（老单并单后也能换算） |
+| `lib/services/receipt_layout.dart` | 新增 **`kitchenSizeQtyLabel()`**（换算规则）+ `kKitchenSizeGroupName` + `kKitchenCircledDigits`；`_qtyCell()` 优先用它、放不下退回真实份数；`displayWidth()` 把 ①–⑳ 算 2 列；`KitchenData` 新增 `codec`（cp850/latin1 时 Chico 打 `(n)`） |
+| `lib/services/ticket_builder.dart` | 把 `settings.receiptCodec` 传给 `KitchenData.codec` |
+| `README.md`、`kitchen_ticket.md` | 把规则、坑、怎么改都写进去了（`kitchen_ticket.md` 新增「数量那一列」小节 + 「想改」表加一行） |
+| `test/receipt_layout_test.dart` | 新增 1 组 9 条：Grande / Mediano / Chico 的换算、圆圈数字边界（⑩ / 11 → `(11)`）、没 Size / VASO / 老数据不换算、大小写与阴性写法、cp850 → `(1)`、真打出来的行不超宽、3 份 Mediano 退回 `3`、没有 Size 时照旧 |
+| `test/pos_controller_test.dart` | 新增 2 条：下单把 `{'Size': 'Grande'}` 记到行上 + JSON 往返 + 老数据空 map；加料开关记 `{'EXTRA BOBA': ...}` |
+
+### 测试状态（按你的要求，这轮**没有**再跑整套）
+
+改完先跑过这两个文件：`pos_controller_test.dart` + `receipt_layout_test.dart`
+→ **110 个全过**（含上面 11 个新用例）。后面你让停，就没再跑；整轮那个偶发的
+`did not complete` 见上一节，跟这次改动无关。
+
+### 你要试的（真机）
+
+1. 点一道 `Size` 有 `Grande/Mediano/Chico` 的菜（例：`Chun Kun`），选 **Grande** → 厨房：
+   **数量列打 `1`**，右边备注列写 `Grande`；
+2. 选 **Mediano** → 数量列 `1/2`；再点**两份**同样的 Mediano → 数量列 `1`（并成一行）；
+3. 选 **Chico** → 数量列 `①`；点两份 → `②`；
+4. 换饮料（`Size: VASO/JARRA`）→ 数量列**照旧是数字**，不会被换算；
+5. 打一张 58mm 和一张 80mm，看数量列、菜名、右边备注**都对得齐**（圆圈数字是 2 列宽）。
+
+### 改（同一轮，回你两个确认）：`Mediano` **不约分** + 这块改成**能关 / 能加**的规则表
+
+> 上一节写的还是约分版（2 份 Mediano → `1`、3 份 → `1 1/2`），**已被这一节取代**。
+
+**① 份数 → `N/2`，不约分**：2 份 Mediano 打 **`2/2`**、3 份打 **`3/2`**、4 份打 `4/2`。
+（这样"点了几份"一眼看得出；约成 `1` 反而看不出是两份半个的。）
+顺带好处：`1 1/2` 那种 5 列放不下的情况基本没了 —— 现在只有 **3 位数份数**
+（例 `150/2`）才放不下，那种仍然**退回真实份数 `150`**。
+
+**② 这块是外挂，随时能关、能加**（全在 `receipt_layout.dart`，跟别处不耦合）：
+
+| 想干什么 | 改哪儿 |
+| --- | --- |
+| 整个关掉 | `kKitchenQtyShorthandEnabled = false`（一行，数量列立刻回到纯份数） |
+| 加一条规则 | 往 `kKitchenQtyRules` 加一行（例 `KitchenQtyRule('Size', 'JARRA', KitchenQtyStyle.count)`） |
+| 加一种新打法 | `KitchenQtyStyle` 加一档 + `kitchenQtyShorthandLabel()` 的 `switch` 加一个分支 |
+| 改 Mediano 写法 | 改 `KitchenQtyStyle.halves` 那一支的 `'$n/2'` |
+
+**③ 对老逻辑的影响：没有。** 逐条对过：
+- `OrderLine.options` / 小票 / 购物车 / 日结**一个字没动**；新增的 `optionGroups` 只是**多存一份**
+  组名（老数据没有 → 空 map，读旧单照旧）；
+- 数量列的老规则（份数 / 份数+单位）原样保留，只有命中规则表才换写法；
+- `displayWidth` 只多认了 ①–⑳ 这一个区间（别处没有这种字符，原有排版不受影响）；
+- 关掉开关后，`_qtyCell` 完全走老分支 —— 等价于没加过这个功能。
+
+**主要改动（这一轮增量）**：`receipt_layout.dart` 新增 `kKitchenQtyShorthandEnabled` /
+`KitchenQtyStyle` / `KitchenQtyRule` / `kKitchenQtyRules`，函数改名
+`kitchenSizeQtyLabel` → **`kitchenQtyShorthandLabel`**（逻辑改成查表）；
+`test/receipt_layout_test.dart` 的期望值同步改成 `2/2` / `3/2`，并加了一条
+「规则表是模块化的」用例。按你的要求**这轮没有跑测试**。

@@ -227,6 +227,68 @@ void main() {
     expect(pos.cartTotal, 300);
   });
 
+  // ---- Size 定制项：下单时把「组名 → 选项值」也记到单上 ----
+  //
+  // 光有 options（`Grande`）不够：厨师单的「数量」列要认 **Size** 这一组、
+  // 按老板手写单的习惯换算（Grande→份数、Mediano→份数/2、Chico→①），
+  // 见 receipt_layout.dart 的 kitchenQtyShorthandLabel。
+  test('下单：Size 的「组名 → 值」记到单上，JSON 存得住、老数据也读得回', () {
+    final pos = PosController();
+    const item = MenuItem(
+      id: 'i9',
+      name: 'Chun Kun',
+      price: 100,
+      emoji: '',
+      categoryId: 'c1',
+      options: [
+        MenuOptionGroup(
+          name: 'Size',
+          options: ['Chico', 'Mediano', 'Grande'],
+          prices: [0, 20, 50],
+        ),
+      ],
+    );
+    pos.addToCart(item, selections: const ['Grande']);
+    final o = pos.placeOrder(table: '1')!;
+    final line = o.lines.first;
+
+    // 老字段不变（小票 / 备注列还是靠它）
+    expect(line.options, ['Grande']);
+    // 新字段：组名 → 值
+    expect(line.optionGroups, {'Size': 'Grande'});
+    expect(line.optionInGroup('Size'), 'Grande');
+    expect(line.optionInGroup('size'), 'Grande', reason: '组名不分大小写');
+    expect(line.optionInGroup('辣度'), '');
+
+    // 存盘 / 上云都走 JSON：这组信息要跟着走
+    final back = OrderLine.fromJson(line.toJson());
+    expect(back.optionGroups, {'Size': 'Grande'});
+    expect(back.optionInGroup('Size'), 'Grande');
+
+    // 升级前的老单（没有 optionGroups 字段）→ 空 map（厨师单照老规则打份数）
+    final legacyJson = line.toJson()..remove('optionGroups');
+    expect(OrderLine.fromJson(legacyJson).optionGroups, isEmpty);
+  });
+
+  test('加料开关（EXTRA BOBA）：组名 → 值也记下来', () {
+    final pos = PosController();
+    const item = MenuItem(
+      id: 'i10',
+      name: 'Matcha Smoothie',
+      price: 100,
+      emoji: '',
+      categoryId: 'c1',
+      options: [
+        MenuOptionGroup(name: 'EXTRA BOBA', options: ['Yes'], prices: [25]),
+      ],
+    );
+    pos.addToCart(item, selections: const ['EXTRA BOBA']);
+    final o = pos.placeOrder(table: '2')!;
+    expect(o.lines.first.optionGroups, {'EXTRA BOBA': 'EXTRA BOBA'});
+    // 组名不是 Size → 厨师单数量列照常打份数
+    // （换算逻辑本身在 receipt_layout_test.dart 里测，这里不引打印那套）
+  });
+
   test('改已经下过厨房的行：内容变了整行重下厨房，只加份数就只补打多的', () {
     final pos = PosController();
     final beef = sampleMenu.firstWhere((m) => m.id == 'h1');
@@ -438,6 +500,74 @@ void main() {
     expect(pos.isTakeaway, isFalse);
     expect(pos.isPhoneTakeaway, isFalse);
     expect(pos.selectedType, OrderType.dineIn);
+  });
+
+  // ---- 平台外卖（Uber / DiDi 这种 App 来的单）----
+  test('平台外卖：流程跟电话外卖一样，但日结单独一行、平台刷卡单列', () {
+    final pos = PosController();
+    // 选「平台外卖」：跟电话外卖一样 takeaway: true + 指定 type
+    pos.selectTable('', takeaway: true, type: OrderType.platformTakeaway);
+    expect(pos.hasTableSelected, isTrue);
+    expect(pos.selectedTable, '');
+    expect(pos.isTakeaway, isTrue, reason: '平台外卖也是「不用桌号」的单');
+    expect(pos.isPlatformTakeaway, isTrue);
+    expect(pos.isPhoneTakeaway, isFalse);
+    expect(pos.selectedType, OrderType.platformTakeaway);
+
+    pos.addToCart(sampleMenu.firstWhere((m) => m.id == 'h2')); // 宫保鸡丁 32
+    final o = pos.placeOrder()!;
+    expect(o.orderType, OrderType.platformTakeaway);
+    expect(o.table, '');
+    expect(o.isPlatformTakeaway, isTrue);
+    // 进行中的平台外卖也能在下拉里认回来（没名字就靠单号）
+    expect(pos.openTakeawayOrders().any((x) => x.id == o.id), isTrue);
+    expect(pos.openPlatformTakeawayCount, 1);
+    expect(pos.openTakeawayCount, 0);
+    expect(pos.openPhoneTakeawayCount, 0);
+
+    // **名字 + 等待时间**：跟电话外卖走同一套（保存名字 / 等待时间都能用）
+    pos.setOrderLabel(o.id, 'Uber 张三', waitMinutes: 20);
+    expect(pos.findOrder(o.id)!.label, 'Uber 张三');
+    expect(pos.findOrder(o.id)!.waitMinutes, 20);
+
+    // 平台单**刷卡** → 日结里单列「平台刷卡」
+    pos.closeOrder(o.id, PaymentMethod.card);
+    expect(pos.openPlatformTakeawayCount, 0);
+
+    // 再来一单平台外卖，**收现金** → 并进「现金」
+    pos.selectTable('', takeaway: true, type: OrderType.platformTakeaway);
+    pos.addToCart(sampleMenu.firstWhere((m) => m.id == 'd2')); // 橙汁 8
+    pos.closeOrder(pos.placeOrder()!.id, PaymentMethod.cash);
+
+    // 普通外卖 5（刷卡）、堂食 28（现金）做对照
+    pos.selectTable('', takeaway: true);
+    pos.addToCart(sampleMenu.firstWhere((m) => m.id == 'd1'));
+    pos.closeOrder(pos.placeOrder()!.id, PaymentMethod.card);
+    pos.selectTable('1');
+    pos.addToCart(sampleMenu.firstWhere((m) => m.id == 'h1'));
+    pos.closeOrder(pos.placeOrder()!.id, PaymentMethod.cash);
+
+    final totals = computeSalesTotals(pos.completedOrders);
+    // 左侧：平台外卖单独一行
+    expect(totals.platformTakeaway, closeTo(40, 0.001)); // 32 + 8
+    expect(totals.dineIn, closeTo(28, 0.001));
+    expect(totals.takeaway, closeTo(5, 0.001));
+    // 右侧：平台刷卡单列，普通「刷卡」里**不含**它（不重复算）
+    expect(totals.platformCard, closeTo(32, 0.001));
+    expect(totals.card, closeTo(5, 0.001));
+    // 平台收的**现金**并进「现金」（不单列）
+    final cashTotal =
+        totals.cashByCurrency.values.fold<double>(0, (a, b) => a + b);
+    expect(cashTotal, closeTo(36, 0.001)); // 平台 8 + 堂食 28
+    // 四行加起来 = 总营业额（不会漏账、不会重复）
+    expect(
+        totals.dineIn +
+            totals.takeaway +
+            totals.phoneTakeaway +
+            totals.platformTakeaway,
+        closeTo(totals.total, 0.001));
+    expect(totals.total, closeTo(73, 0.001));
+    expect(totals.nonCashTotal, closeTo(37, 0.001)); // 刷卡 5 + 平台刷卡 32
   });
 
   // ---- 外卖单：点完厨房还在购物车 / 下拉列表里（有名字没名字都要能认回来）----

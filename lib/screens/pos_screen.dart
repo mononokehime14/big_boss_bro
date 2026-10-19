@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../l10n/app_strings.dart';
 import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
+import '../utils/order_label.dart';
 import '../widgets/account_menu.dart';
 import '../widgets/cart_bottom_bar.dart';
 import '../widgets/cart_panel.dart';
@@ -31,13 +32,16 @@ class PosScreen extends StatelessWidget {
     // 标题顺便显示当前桌/外卖（有名字/号也带上），避免看错单
     final open = pos.openOrderForSelectedTable();
     final tag = open?.takeawayTag ?? '';
-    final target = !pos.hasTableSelected
-        ? ''
-        : pos.isPhoneTakeaway
-            ? ' · ${L10n.t('order.phonecallTakeaway')}${tag.isEmpty ? '' : ' $tag'}'
-            : pos.isTakeaway
-                ? ' · ${L10n.t('order.takeaway')}${tag.isEmpty ? '' : ' $tag'}'
-                : ' · ${L10n.t('order.table')} ${pos.selectedTable}';
+    // 类型叫法跟着当前选的目标走（堂食 / 外卖 / 电话外卖 / 平台外卖）
+    final String target;
+    if (!pos.hasTableSelected) {
+      target = '';
+    } else if (pos.isTakeaway) {
+      final type = orderTypeLabel(pos.selectedType);
+      target = ' · ${tag.isEmpty ? type : '$type $tag'}';
+    } else {
+      target = ' · ${L10n.t('order.table')} ${pos.selectedTable}';
+    }
 
     return Scaffold(
       appBar: AppBar(

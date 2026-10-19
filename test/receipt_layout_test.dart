@@ -213,7 +213,7 @@ void main() {
     });
   });
 
-  group('单子类型（堂食 / 外卖 / 电话外卖）', () {
+  group('单子类型（堂食 / 外卖 / 电话外卖 / 平台外卖）', () {
     Order orderWith(OrderType type) => Order(
           id: '20260920-001',
           createdAt: DateTime(2026, 9, 20, 17, 15),
@@ -241,6 +241,42 @@ void main() {
 
     test('厨房单上也打「电话外卖」（厨房才知道这是电话来的单）', () {
       expect(kitchen(OrderType.phonecallTakeaway), contains('电话外卖'));
+    });
+
+    // 平台外卖（Uber / DiDi 这种 App 来的）：
+    // - **顾客小票**上照实写「平台外卖」（这是正式叫法，跟日结对得上）；
+    // - **厨房单不区分**：底部徽标和门牌都只打「外卖」（老板的要求：厨师不用管哪个平台）。
+    test('平台外卖：小票打「平台外卖」，厨房单只打「外卖」（不额外区分）', () {
+      final t = receipt(OrderType.platformTakeaway);
+      expect(t, contains('平台外卖'));
+
+      final k = kitchen(OrderType.platformTakeaway);
+      expect(k, isNot(contains('平台外卖')),
+          reason: '厨房单上不该出现「平台外卖」这几个字');
+      expect(k, contains('外卖'), reason: '底部徽标要打「外卖」');
+
+      // 跟普通外卖的厨房单**一模一样**（门牌 + 徽标都不区分）
+      expect(kitchen(OrderType.platformTakeaway),
+          kitchen(OrderType.takeaway));
+    });
+
+    test('平台外卖：带名字 / 等待时间时，厨房单照样打名字 + 等待分钟', () {
+      final o = Order(
+        id: '20261018-009',
+        createdAt: DateTime(2026, 10, 18, 19, 30),
+        lines: const [
+          OrderLine(name: '牛肉炒饭', quantity: 1, unitPrice: 28),
+        ],
+        total: 28,
+        orderType: OrderType.platformTakeaway,
+        label: 'Uber 张三',
+        waitMinutes: 20,
+      );
+      final lines = TicketBuilder.kitchenLines(o, Settings())
+          .map((l) => l.text)
+          .join('\n');
+      expect(lines, contains('外卖 Uber 张三'));
+      expect(lines, contains('等待 20 分钟'));
     });
 
     test('堂食 / 外卖 的老文案没变', () {
@@ -961,6 +997,181 @@ void main() {
   });
 
   // ---------------------------------------------------------------------
+  // 厨师单「数量」列：按规则表换成老板手写单的习惯（1 / N/2 / ①）
+  // ---------------------------------------------------------------------
+  group('厨师单数量列：按手写习惯换算（规则表 + 开关）', () {
+    /// 一道带 Size 的菜（`size == null` = 没选 / 没有 Size 这一组）。
+    OrderLine line({
+      required int qty,
+      String? size,
+      String group = 'Size',
+      String unit = '',
+      String name = 'Chun Kun',
+    }) =>
+        OrderLine(
+          name: name,
+          quantity: qty,
+          unitPrice: 120,
+          unit: unit,
+          options: size == null ? const [] : [size],
+          optionGroups: size == null ? const {} : {group: size},
+        );
+
+    /// 把一行菜排成厨师单（58mm），返回所有行。
+    List<TicketRow> rows(OrderLine l, {String codec = 'gbk'}) => buildKitchenRows(
+          KitchenData(
+            table: '5',
+            orderId: 'o1',
+            createdAt: DateTime(2026, 10, 18, 13, 0),
+            lines: [l],
+            paperWidth: '58',
+            codec: codec,
+            labels: const KitchenLabels(
+              title: '厨师单',
+              labelTable: '桌号',
+              colName: '菜名',
+              colQty: '数量',
+              colNote: '备注',
+              append: '追加',
+            ),
+          ),
+        );
+
+    /// 「数量 + 菜名」那一行（菜品行的前半段）。
+    TicketRow itemHead(OrderLine l, {String codec = 'gbk'}) =>
+        rows(l, codec: codec).firstWhere((r) => r.continueLine);
+
+    test('Grande → 份数（1 份写 1、2 份写 2）', () {
+      expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'Grande')), '1');
+      expect(kitchenQtyShorthandLabel(line(qty: 2, size: 'Grande')), '2');
+    });
+
+    test('Mediano → 份数/2，**不约分**（1→1/2、2→2/2、3→3/2、4→4/2）', () {
+      expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'Mediano')), '1/2');
+      expect(kitchenQtyShorthandLabel(line(qty: 2, size: 'Mediano')), '2/2',
+          reason: '两份 Mediano 就写 2/2，不要约成 1（几份就要看得出几份）');
+      expect(kitchenQtyShorthandLabel(line(qty: 3, size: 'Mediano')), '3/2');
+      expect(kitchenQtyShorthandLabel(line(qty: 4, size: 'Mediano')), '4/2');
+    });
+
+    test('Chico → 圆圈里的份数（① ② ⑩；11 份以上写 (11)）', () {
+      expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'Chico')), '①');
+      expect(kitchenQtyShorthandLabel(line(qty: 2, size: 'Chico')), '②');
+      expect(kitchenQtyShorthandLabel(line(qty: 10, size: 'Chico')), '⑩');
+      expect(kitchenQtyShorthandLabel(line(qty: 11, size: 'Chico')), '(11)',
+          reason: '⑪ 起 GBK 里没有，会打成问号');
+    });
+
+    test('没 Size / 选了别的（VASO、JARRA）/ 老数据没组名 → 不换算', () {
+      expect(kitchenQtyShorthandLabel(line(qty: 2)), isNull);
+      expect(kitchenQtyShorthandLabel(line(qty: 2, size: 'VASO')), isNull);
+      expect(kitchenQtyShorthandLabel(line(qty: 2, size: 'JARRA')), isNull);
+      // 老单：options 有 Grande，但没有 optionGroups（升级前存的）
+      const old = OrderLine(
+        name: 'Chun Kun',
+        quantity: 1,
+        unitPrice: 120,
+        options: ['Grande'],
+      );
+      expect(kitchenQtyShorthandLabel(old), isNull, reason: '认不出组名就不换算');
+    });
+
+    test('组名 / 选项值不分大小写，阴性写法（mediana / chica）也认', () {
+      expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'grande')), '1');
+      expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'Mediano', group: 'size')),
+          '1/2');
+      expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'mediana')), '1/2');
+      expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'Chica')), '①');
+    });
+
+    test('cp850 / latin1 打不出 ① → 改成 (1)（不乱码）', () {
+      expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'Chico'), codec: 'cp850'),
+          '(1)');
+      expect(
+          kitchenQtyShorthandLabel(line(qty: 2, size: 'Chico'), codec: 'latin1'),
+          '(2)');
+      // gbk 默认：还是圆圈数字
+      expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'Chico')), '①');
+    });
+
+    test('真打在小票上：数量列 2/2，右边备注列照常写 Mediano', () {
+      final l = line(qty: 2, size: 'Mediano');
+      final rs = rows(l);
+      final head = rs.firstWhere((r) => r.continueLine);
+      expect(head.text.startsWith('2/2'), isTrue,
+          reason: '数量列应该从 2/2 开始：`${head.text}`');
+      expect(head.scale, kKitchenItemScale);
+      // 一行都不超宽（58mm = 32 列；每一行按自己的字号换算）
+      for (final r in rs) {
+        expect(displayWidth(r.text), lessThanOrEqualTo(r.scale.columnsFor(32)),
+            reason: '超宽会被打印机自己折行：`${r.text}`');
+      }
+      // 备注列（右边）跟以前一样：选项 Mediano 照打
+      expect(rs.map((r) => r.text).join('\n'), contains('Mediano'));
+    });
+
+    test('Chico 1 份：数量列打 ①（按 2 列算，整行不会挤歪）', () {
+      final l = line(qty: 1, size: 'Chico');
+      final rs = rows(l);
+      final head = rs.firstWhere((r) => r.continueLine);
+      expect(head.text.startsWith('①'), isTrue, reason: '`${head.text}`');
+      for (final r in rs) {
+        expect(displayWidth(r.text), lessThanOrEqualTo(r.scale.columnsFor(32)),
+            reason: '超宽会被打印机自己折行：`${r.text}`');
+      }
+      expect(rs.map((r) => r.text).join('\n'), contains('Chico'));
+    });
+
+    test('份数太多放不下（150 份 Mediano = `150/2`，5 列 > 4 列）→ 退回真实份数', () {
+      final head = itemHead(line(qty: 150, size: 'Mediano'));
+      expect(head.text.startsWith('150'), isTrue,
+          reason: '宁可不符合手写习惯，也不能让厨房看错份数：`${head.text}`');
+      expect(head.text.contains('150/2'), isFalse);
+    });
+
+    test('没有 Size 的菜：数量列还是老样子（份数 / 份数+单位）', () {
+      // 普通定制项（辣度，不是 Size）→ 不换算；那一行同样是「数量+菜名」前半段
+      expect(
+        itemHead(line(qty: 2, size: '中辣', group: '辣度')).text.startsWith('2'),
+        isTrue,
+      );
+      expect(
+        itemHead(line(qty: 2, size: '中辣', group: '辣度', unit: '份'))
+            .text
+            .startsWith('2 份'),
+        isTrue,
+      );
+    });
+
+    // 这块是**外挂**：规则全在 kKitchenQtyRules 这张表里，加一行就多一条规则。
+    test('规则表是模块化的：Size 的三档 + 开关都在表 / 常量里', () {
+      expect(kKitchenQtyShorthandEnabled, isTrue, reason: '总开关（关掉整块失效）');
+      // 三条规则都在表里（要加规则就往表里加一行，函数不用改）
+      expect(
+          kKitchenQtyRules.any((r) =>
+              r.group == 'Size' &&
+              r.option == 'Grande' &&
+              r.style == KitchenQtyStyle.count),
+          isTrue);
+      expect(
+          kKitchenQtyRules.any((r) =>
+              r.group == 'Size' &&
+              r.option == 'Mediano' &&
+              r.style == KitchenQtyStyle.halves),
+          isTrue);
+      expect(
+          kKitchenQtyRules.any((r) =>
+              r.group == 'Size' &&
+              r.option == 'Chico' &&
+              r.style == KitchenQtyStyle.circled),
+          isTrue);
+      // 表里没有的组（例如「辣度」）不会被误换算
+      expect(kitchenQtyShorthandLabel(line(qty: 2, size: '特辣', group: '辣度')),
+          isNull);
+    });
+  });
+
+  // ---------------------------------------------------------------------
   // 日结：整张按「特大」打（跟厨师单的菜品一样大）
   // ---------------------------------------------------------------------
   group('日结小票：整张「特大」', () {
@@ -1011,6 +1222,58 @@ void main() {
       for (final l in lines) {
         expect(displayWidth(l.text), lessThanOrEqualTo(24),
             reason: '`${l.text}`');
+      }
+    });
+
+    // 平台外卖（Uber / DiDi 这种）：**左侧单独一行**；
+    // **右侧**平台收的刷卡单列「平台刷卡」（现金已经并进「现金」）。
+    test('平台外卖：左侧单独一行、右侧「平台刷卡」单列（刷卡里不含它）', () {
+      final lines = TicketBuilder.summaryLines(SummaryData(
+        storeName: '我的餐厅',
+        dateLabel: '2026-10-18',
+        paperWidth: '58',
+        currency: '¥',
+        dineInTotal: 28,
+        takeawayTotal: 5,
+        phoneTakeawayTotal: 8,
+        platformTakeawayTotal: 40,
+        cashByCurrency: const {'MXN': 36},
+        cardTotal: 5, // 普通刷卡（不含平台）
+        platformCardTotal: 32, // 平台外卖刷的卡
+        qrTotal: 0,
+        total: 81, // 28 + 5 + 8 + 40
+        expense: 0,
+        orderCount: 4,
+        labels: const SummaryLabels(
+          title: '日结',
+          date: '日期',
+          dineIn: '堂食',
+          takeaway: '外卖',
+          phoneTakeaway: '电话外卖',
+          platformTakeaway: '平台外卖',
+          platformCard: '平台刷卡',
+          cash: '现金',
+          card: '刷卡',
+          qr: '扫码',
+          total: '总营业额',
+          expense: '支出',
+          net: '净额',
+          orders: '单数',
+        ),
+      ));
+      final text = lines.map((l) => l.text).join('\n');
+      expect(text, contains('平台外卖'));
+      expect(text, contains('平台刷卡'));
+      expect(text, contains('40.00'), reason: '平台外卖的营业额');
+      expect(text, contains('32.00'), reason: '平台刷卡的钱');
+      // 平台刷卡**不再**混进普通「刷卡」那一行（只有 5.00）
+      final cardRow = lines.firstWhere((l) => l.text.trimLeft().startsWith('刷卡'));
+      expect(cardRow.text, contains('5.00'));
+      expect(cardRow.text, isNot(contains('37.00')));
+      // 一行都不超宽（58mm 特大 = 16 列）
+      for (final l in lines) {
+        expect(displayWidth(l.text), lessThanOrEqualTo(16),
+            reason: '超宽会被打印机自己折行：`${l.text}`');
       }
     });
   });

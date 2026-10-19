@@ -18,7 +18,10 @@ class TicketBuilder {
   static String _lang(Settings s) =>
       s.receiptLang.isEmpty ? L10n.currentLang : s.receiptLang;
 
-  /// 单子类型在小票 / 厨房单上的文字：堂食 / 外卖 / **电话外卖**。
+  /// 单子类型在小票 / 厨房单上的文字：堂食 / 外卖 / **电话外卖** / **平台外卖**。
+  ///
+  /// ⚠️ 这是**顾客小票**（以及界面上）的叫法；厨房单上平台外卖要打「外卖」，
+  /// 见 [_kitchenTypeLabel]。
   static String _typeLabel(Settings s, OrderType type) {
     switch (type) {
       case OrderType.dineIn:
@@ -27,8 +30,22 @@ class TicketBuilder {
         return _t(s, 'order.takeaway');
       case OrderType.phonecallTakeaway:
         return _t(s, 'order.phonecallTakeaway');
+      case OrderType.platformTakeaway:
+        return _t(s, 'order.platformTakeaway');
     }
   }
+
+  /// **厨房单**上单子类型的叫法 —— **平台外卖跟普通外卖一样，只打「外卖」**。
+  ///
+  /// 老板的要求：平台外卖（Uber / DiDi 这种）流程跟电话外卖完全一样，
+  /// 但**厨师单上不用区分**（厨师只管打包，不关心单子是从哪个平台来的），
+  /// 所以门牌那行和底部徽标都跟普通外卖一模一样。
+  ///
+  /// 想改成「厨房也看得出是平台单」：把方法体换成 `return _typeLabel(s, type);`
+  /// （底部徽标另见 [_badgeKey]）。
+  static String _kitchenTypeLabel(Settings s, OrderType type) =>
+      _typeLabel(s,
+          type == OrderType.platformTakeaway ? OrderType.takeaway : type);
 
   /// 厨师单**底部徽标**上那行字在 l10n 里的键（**短词**，跟 `order.*` 的长句分开）。
   static String _badgeKey(OrderType type) {
@@ -39,6 +56,9 @@ class TicketBuilder {
         return 'kitchen.badgeTakeaway';
       case OrderType.phonecallTakeaway:
         return 'kitchen.badgePhone';
+      // 平台外卖：底部徽标**直接打「外卖」**（`LLEVAR` / `外卖`），不额外区分
+      case OrderType.platformTakeaway:
+        return 'kitchen.badgeTakeaway';
     }
   }
 
@@ -216,10 +236,13 @@ class TicketBuilder {
       // **饮料排在最后**：餐品打完打一条虚线，饮料在下面（见 buildKitchenRows ④段）。
       // `-1` = 这张单没有饮料 / 调用方没算（比如测试直接构造 KitchenData）。
       drinksFrom: drinksFrom,
+      // 小票编码：只给「Chico → 圆圈数字 ①」用（cp850/latin1 编不出 ①，改打 (1)）
+      codec: settings.receiptCodec,
       // 电话外卖填了「等待 N 分钟」→ 厨房单上单独打一行（见 buildKitchenRows ③段）
       waitMinutes: order.waitMinutes,
       // 门牌那行要用的类型叫法（外卖打「外卖 张三」，堂食只打桌号）
-      typeLabel: _typeLabel(settings, order.orderType),
+      // ⚠️ 厨房单走 `_kitchenTypeLabel`：**平台外卖也打「外卖」**（不区分平台/电话）
+      typeLabel: _kitchenTypeLabel(settings, order.orderType),
       // 底部徽标：**西文 + 中文**两行大字（谁都能认），见 receipt_layout.dart 的 _badgeRows
       badgeWestern: L10n.tFor(_badgeWesternLang(settings), badgeKey),
       // 中文那行是**固定要打的**：不管票面语言是西语还是英语，都出中文（店里有中国厨师）。

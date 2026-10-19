@@ -1,4 +1,4 @@
-﻿import '../utils/format.dart' show signedAmount;
+import '../utils/format.dart' show signedAmount;
 import '../utils/pricing.dart';
 
 /// 支付方式。
@@ -32,12 +32,19 @@ enum OrderStatus {
       );
 }
 
-/// 堂食 / 外卖 / 电话外卖。会打在小票和厨房单上。
+/// 堂食 / 外卖 / 电话外卖 / 平台外卖。会打在小票和厨房单上。
 ///
 /// - [dineIn]：堂食，有桌号；
 /// - [takeaway]：到店买走的外卖（没桌号）；
 /// - [phonecallTakeaway]：**打电话点的外卖**（也没桌号）——
-///   跟 [takeaway] 一样不用桌号，但**标签、日结统计都单独一份**，方便老板看「电话单多少」。
+///   跟 [takeaway] 一样不用桌号，但**标签、日结统计都单独一份**，方便老板看「电话单多少」；
+/// - [platformTakeaway]：**平台外卖**（Uber Eats / DiDi Food 这类 App 来的单）——
+///   **流程跟电话外卖完全一样**（不用桌号、能起名字、能填等待时间），区别只有两处：
+///   1. **厨房单上不区分**：底部徽标和门牌都打「外卖」（厨师不用管平台还是电话）；
+///   2. **日结分开算**：左侧单独一行「平台外卖」；右侧**平台收的刷卡**单独列
+///      「平台刷卡」（平台收的现金照样并进「现金」）。
+///
+///   见 `services/sales_totals.dart` 和 `services/ticket_builder.dart`。
 ///
 /// ⚠️ 枚举值的写法：**分号只写在最后一个值后面**（中间用逗号），
 /// 写成 `takeaway('takeaway');` 再另起一行那个值，编译器就会报
@@ -45,7 +52,8 @@ enum OrderStatus {
 enum OrderType {
   dineIn('dine_in'),
   takeaway('takeaway'),
-  phonecallTakeaway('phonecall_takeaway');
+  phonecallTakeaway('phonecall_takeaway'),
+  platformTakeaway('platform_takeaway');
 
   final String id;
   const OrderType(this.id);
@@ -79,6 +87,19 @@ class OrderLine {
 
   /// 所选的定制项值，例如 ['Grande']。
   final List<String> options;
+
+  /// **选中的定制项：组名 → 选项值**（`{'Size': 'Grande'}`）。
+  ///
+  /// 为什么光有 [options] 还不够：[options] 里**只有值**（`Grande`），组名丢了 ——
+  /// 而厨师单的「数量」列要认 **Size** 这一组、按老板的手写习惯换算
+  /// （`Grande` → 份数、`Mediano` → 份数÷2、`Chico` → 圆圈里的份数，
+  /// 见 `receipt_layout.dart` 的 `kitchenQtyShorthandLabel`）。
+  ///
+  /// - 普通多选项（Size: Grande）→ `{'Size': 'Grande'}`；
+  /// - 加料开关（EXTRA BOBA 选了）→ `{'EXTRA BOBA': 'EXTRA BOBA'}`（值就是组名，
+  ///   跟 [options] 一致）；
+  /// - **老数据没有这个字段** → 空 map（厨师单照老规则打份数）。
+  final Map<String, String> optionGroups;
 
   /// **特别备注**：可以好几条（点菜时一条一条加进来的）。
   final List<String> notes;
@@ -126,6 +147,7 @@ class OrderLine {
     required this.quantity,
     required this.unitPrice,
     this.options = const [],
+    this.optionGroups = const {},
     this.notes = const [],
     this.notePrices = const [],
     this.unit = '',
@@ -172,6 +194,18 @@ class OrderLine {
   String get displayName =>
       nickName.trim().isEmpty ? name : nickName.trim();
 
+  /// 某个定制项组选了什么（`optionInGroup('Size')` → `Grande`；没选 = 空串）。
+  ///
+  /// 组名比对**不分大小写、忽略前后空格**（Excel 里写 `Size` / `size ` 都认）。
+  /// 老数据没有 [optionGroups] → 一律返回空串（厨师单就照老规则打份数）。
+  String optionInGroup(String group) {
+    final want = group.trim().toLowerCase();
+    for (final e in optionGroups.entries) {
+      if (e.key.trim().toLowerCase() == want) return e.value;
+    }
+    return '';
+  }
+
   /// 小计 = **实收单价**（含备注加价）× 份数。
   double get subtotal => round2(effectiveUnitPrice * quantity);
 
@@ -189,6 +223,7 @@ class OrderLine {
     int? quantity,
     double? unitPrice,
     List<String>? options,
+    Map<String, String>? optionGroups,
     List<String>? notes,
     String? unit,
     String? nickName,
@@ -201,6 +236,7 @@ class OrderLine {
         quantity: quantity ?? this.quantity,
         unitPrice: unitPrice ?? this.unitPrice,
         options: options ?? this.options,
+        optionGroups: optionGroups ?? this.optionGroups,
         notes: notes ?? this.notes,
         notePrices: notePrices ?? this.notePrices,
         unit: unit ?? this.unit,
@@ -214,6 +250,8 @@ class OrderLine {
         'quantity': quantity,
         'unitPrice': unitPrice,
         'options': options,
+        // 组名 → 选项值（老数据没有 → 空 map；只用来给厨师单数量列换算）
+        'optionGroups': optionGroups,
         'notes': notes,
         // 备注加价（跟 notes 一一对应；老数据没有 → 空 = 都不加钱）
         'notePrices': notePrices,
@@ -232,6 +270,8 @@ class OrderLine {
         options:
             (json['options'] as List?)?.map((e) => e.toString()).toList() ??
                 const [],
+        // 老数据没有 optionGroups → 空 map（厨师单数量列照老规则打）
+        optionGroups: _optionGroupsFromJson(json),
         // 备注：新格式是数组；老数据是单个字符串（`note`）
         notes: _notesFromJson(json),
         notePrices: _notePricesFromJson(json),
@@ -245,6 +285,20 @@ class OrderLine {
                 ? (json['quantity'] as num).toInt()
                 : 0),
       );
+
+  /// 「组名 → 选项值」：老数据没有这个字段 → 空 map；坏形状（不是 map）也当空。
+  static Map<String, String> _optionGroupsFromJson(Map<String, dynamic> json) {
+    final raw = json['optionGroups'];
+    if (raw is! Map) return const {};
+    final out = <String, String>{};
+    raw.forEach((k, v) {
+      if (k == null || v == null) return;
+      final key = k.toString().trim();
+      if (key.isEmpty) return;
+      out[key] = v.toString();
+    });
+    return out;
+  }
 
   static List<String> _notesFromJson(Map<String, dynamic> json) {
     final raw = json['notes'];
@@ -505,7 +559,7 @@ class Order {
 
   bool get isInProgress => status == OrderStatus.inProgress;
 
-  /// **不用桌号**的单：外卖 + 电话外卖。
+  /// **不用桌号**的单：外卖 + 电话外卖 + 平台外卖。
   ///
   /// ⚠️ 注意写法：`orderType == OrderType.takeaway || OrderType.phonecallTakeaway`
   /// 这样写是错的 —— `||` 两边都要是 `bool`，右边那个是枚举值，编译器会报类型错。
@@ -514,6 +568,11 @@ class Order {
 
   /// **电话外卖**（打电话点的外卖）：跟外卖一样不用桌号，但统计单独算。
   bool get isPhoneTakeaway => orderType == OrderType.phonecallTakeaway;
+
+  /// **平台外卖**（Uber / DiDi 这种 App 来的单）：
+  /// 流程跟电话外卖一样，但**日结里单独一行**，刷卡还要单列「平台刷卡」
+  /// （见 `services/sales_totals.dart`）。
+  bool get isPlatformTakeaway => orderType == OrderType.platformTakeaway;
 
   /// 是不是**分单**（从母单分出来的一张单，单独收钱）。
   bool get isSplit => parentId.isNotEmpty;

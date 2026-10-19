@@ -9,6 +9,7 @@ import '../state/auth_controller.dart';
 import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
 import '../utils/format.dart';
+import '../utils/order_label.dart';
 import '../utils/pricing.dart';
 import 'bank_card_anim.dart';
 import 'takeaway_name_dialog.dart';
@@ -515,14 +516,17 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
         ? '   ·   ${L10n.t('kitchen.wait')} ${_order.waitMinutes} '
             '${L10n.t('kitchen.minutes')}'
         : '';
-    final typeText = _order.isPhoneTakeaway
-        ? '${L10n.t('order.phonecallTakeaway')}'
-            '${tag.isEmpty ? '' : ' $tag'}$wait'
-        : _order.isTakeaway
-            ? '${L10n.t('order.takeaway')}${tag.isEmpty ? '' : ' $tag'}$wait'
-            : (_order.table.isEmpty
-                ? ''
-                : '${L10n.t('order.table')} ${_order.table}');
+    // 类型文字：外卖 / 电话外卖 / 平台外卖 都带上名字（或号）+ 等待时间；
+    // 堂食只写桌号。
+    final String typeText;
+    if (_order.isTakeaway) {
+      final type = orderTypeLabel(_order.orderType);
+      typeText = '${tag.isEmpty ? type : '$type $tag'}$wait';
+    } else {
+      typeText = _order.table.isEmpty
+          ? ''
+          : '${L10n.t('order.table')} ${_order.table}';
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 14, 8, 10),
       child: Row(

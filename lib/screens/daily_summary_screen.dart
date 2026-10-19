@@ -12,13 +12,18 @@ import '../state/settings_controller.dart';
 import '../utils/format.dart';
 import '../widgets/account_menu.dart';
 
-/// 日结（每日汇总）：左边堂食/外卖营业额，右边日期、小计/折扣/税、
-/// 现金(分币种)、刷卡、扫码、总营业额、支出（可填）、净额，
-/// 右上角可以**打印这张日结**。
+/// 日结（每日汇总）：左边堂食/外卖（电话外卖 / 平台外卖有单时各多一行）营业额，
+/// 右边日期、小计/折扣/税、现金(分币种)、刷卡、**平台刷卡**、扫码、总营业额、
+/// 支出（可填）、净额，右上角可以**打印这张日结**。
 ///
 /// 汇总逻辑全在 [computeSalesTotals]（纯函数，有单元测试）：
 /// 营业额按订单算，收款按**每一笔 payment** 算 —— AA 分开付的单
 /// 会分别落进各自的方式/币种里，所以各方式加起来永远等于总营业额。
+///
+/// **平台外卖**（Uber / DiDi 这种 App 来的单）按老板的要求单独算：
+/// - 左侧「营业额」里**单独一行「平台外卖」**；
+/// - 右侧平台收**现金**并进「现金」；平台收**刷卡**单列「平台刷卡」
+///   （「刷卡」那一行里**不含**它，不会重复）。
 class DailySummaryScreen extends StatefulWidget {
   /// 打开时先看**哪一天**（`yyyy-MM-dd`）；null = 今天（并且跨零点自动跟到今天）。
   ///
@@ -103,31 +108,42 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
                       color: Colors.white,
                       child: Padding(
                         padding: const EdgeInsets.all(18),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(L10n.t('summary.sales'),
-                                style: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w700)),
-                            const SizedBox(height: 16),
-                            _bigRow(L10n.t('summary.dineIn'), totals.dineIn,
-                                symbol, const Color(0xFF1565C0)),
-                            const SizedBox(height: 12),
-                            _bigRow(L10n.t('summary.takeaway'),
-                                totals.takeaway, symbol,
-                                const Color(0xFF37474F)),
-                            // 电话外卖（打电话点的）：有单才显示这一行
-                            if (totals.phoneTakeaway != 0) ...[
+                        // 4 行营业额（堂食 / 外卖 / 电话外卖 / 平台外卖）在小屏上会变高，
+                        // 跟着右边一样能滚，免得窗口矮的时候溢出。
+                        child: SingleChildScrollView(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(L10n.t('summary.sales'),
+                                  style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700)),
+                              const SizedBox(height: 16),
+                              _bigRow(L10n.t('summary.dineIn'), totals.dineIn,
+                                  symbol, const Color(0xFF1565C0)),
                               const SizedBox(height: 12),
-                              _bigRow(L10n.t('summary.phonecallTakeaway'),
-                                  totals.phoneTakeaway, symbol,
-                                  const Color(0xFF6A1B9A)),
+                              _bigRow(L10n.t('summary.takeaway'),
+                                  totals.takeaway, symbol,
+                                  const Color(0xFF37474F)),
+                              // 电话外卖（打电话点的）：有单才显示这一行
+                              if (totals.phoneTakeaway != 0) ...[
+                                const SizedBox(height: 12),
+                                _bigRow(L10n.t('summary.phonecallTakeaway'),
+                                    totals.phoneTakeaway, symbol,
+                                    const Color(0xFF6A1B9A)),
+                              ],
+                              // 平台外卖（Uber / DiDi 这种 App 来的）：有单才显示这一行
+                              if (totals.platformTakeaway != 0) ...[
+                                const SizedBox(height: 12),
+                                _bigRow(L10n.t('summary.platformTakeaway'),
+                                    totals.platformTakeaway, symbol,
+                                    const Color(0xFF00695C)),
+                              ],
+                              const Divider(height: 32),
+                              _smallRow(L10n.t('summary.orders'),
+                                  '${totals.orderCount}'),
                             ],
-                            const Divider(height: 32),
-                            _smallRow(L10n.t('summary.orders'),
-                                '${totals.orderCount}'),
-                          ],
+                          ),
                         ),
                       ),
                     ),
@@ -177,6 +193,11 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
                                   ),
                               _smallRow(L10n.t('summary.card'),
                                   money(totals.card, symbol)),
+                              // 平台外卖刷的卡：单独一行（现金已经并进上面的「现金」里）
+                              if (totals.platformCard != 0)
+                                _smallRow(
+                                    L10n.t('summary.platformCard'),
+                                    money(totals.platformCard, symbol)),
                               if (totals.qr != 0)
                                 _smallRow(L10n.t('summary.qr'),
                                     money(totals.qr, symbol)),
@@ -302,8 +323,10 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
       dineInTotal: totals.dineIn,
       takeawayTotal: totals.takeaway,
       phoneTakeawayTotal: totals.phoneTakeaway,
+      platformTakeawayTotal: totals.platformTakeaway,
       cashByCurrency: totals.cashByCurrency,
       cardTotal: totals.card,
+      platformCardTotal: totals.platformCard,
       qrTotal: totals.qr,
       subtotalTotal: totals.subtotal,
       discountTotal: totals.discount,
@@ -317,6 +340,8 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
         dineIn: L10n.t('summary.dineIn'),
         takeaway: L10n.t('summary.takeaway'),
         phoneTakeaway: L10n.t('summary.phonecallTakeaway'),
+        platformTakeaway: L10n.t('summary.platformTakeaway'),
+        platformCard: L10n.t('summary.platformCard'),
         cash: L10n.t('summary.cash'),
         card: L10n.t('summary.card'),
         qr: L10n.t('summary.qr'),

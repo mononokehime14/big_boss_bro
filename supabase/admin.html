@@ -36,6 +36,7 @@
   .pill.orange { background:#fff4e5; color:#b25d00; }
   .pill.purple { background:#f4ecfb; color:#6a1b9a; }
   .pill.gray { background:#eef1ef; color:#55605a; }
+  .pill.teal { background:#e0f2f1; color:#00695c; }
   .muted { color:#6b7a72; font-size:12px; }
   .err { color:#c62828; font-size:13px; white-space:pre-wrap; }
   .ok { color:var(--green); font-size:13px; }
@@ -422,10 +423,19 @@ async function refreshAll(full) {
 }
 
 // ---- 渲染小工具 ----
-const TYPE = { dine_in: '堂食', takeaway: '外卖', phonecall_takeaway: '电话外卖' };
+// 单子类型：dine_in 堂食 / takeaway 外卖 / phonecall_takeaway 电话外卖 /
+// platform_takeaway 平台外卖（Uber、DiDi 这种 App 来的单，跟电话外卖一样不用桌号）
+const TYPE = {
+  dine_in: '堂食',
+  takeaway: '外卖',
+  phonecall_takeaway: '电话外卖',
+  platform_takeaway: '平台外卖',
+};
 function typeLabel(t) { return TYPE[t] || t || '-'; }
 function typePill(t) {
-  const cls = t === 'phonecall_takeaway' ? 'pill purple' : (t === 'takeaway' ? 'pill gray' : 'pill');
+  const cls = t === 'phonecall_takeaway'
+    ? 'pill purple'
+    : (t === 'platform_takeaway' ? 'pill teal' : (t === 'takeaway' ? 'pill gray' : 'pill'));
   return '<span class="' + cls + '">' + typeLabel(t) + '</span>';
 }
 function tableOf(o) {
@@ -654,8 +664,12 @@ function renderDay() {
   const dineIn = sum((o) => o.order_type === 'dine_in');
   const takeaway = sum((o) => o.order_type === 'takeaway');
   const phone = sum((o) => o.order_type === 'phonecall_takeaway');
+  // 平台外卖：营业额单独一行；**平台收的现金并进现金**，**平台收的刷卡单列「平台刷卡」**
+  const isPlatform = (o) => o.order_type === 'platform_takeaway';
+  const platform = sum(isPlatform);
   const cash = sum((o) => (o.data || {}).paymentMethod === 'cash');
-  const card = sum((o) => (o.data || {}).paymentMethod === 'card');
+  const platformCard = sum((o) => isPlatform(o) && (o.data || {}).paymentMethod === 'card');
+  const card = sum((o) => (o.data || {}).paymentMethod === 'card' && !isPlatform(o));
   const total = sum(() => true);
 
   $('dayKpi').innerHTML = [
@@ -664,8 +678,10 @@ function renderDay() {
     ['堂食', money(dineIn)],
     ['外卖', money(takeaway)],
     ['电话外卖', money(phone)],
+    ['平台外卖', money(platform)],
     ['现金', money(cash)],
     ['刷卡', money(card)],
+    ['平台刷卡', money(platformCard)],
   ].map(([k, v]) => '<div class="muted">' + k + '<b>' + v + '</b></div>').join('');
 
   // 按菜统计（卖了多少份）

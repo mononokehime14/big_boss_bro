@@ -575,8 +575,9 @@ class _CartPanelState extends State<CartPanel> {
   /// 顶部：**桌号 / 外卖下拉**（堂食外卖出这里选）。
   ///
   /// 下拉里的顺序是固定的（改需求时别乱调）：
-  /// **外卖**（开新单）→ **电话外卖**（开新单）→ **各桌**（有菜的橙色 +「已有 N」）
-  /// → **进行中的外卖单**（外卖/电话外卖，**起没起名字都列**；没名字的用单号 `#3` 认）。
+  /// **外卖**（开新单）→ **电话外卖**（开新单）→ **平台外卖**（开新单）
+  /// → **各桌**（有菜的橙色 +「已有 N」）
+  /// → **进行中的外卖单**（外卖/电话外卖/平台外卖，**起没起名字都列**；没名字的用单号 `#3` 认）。
   ///
   /// 最后那一组就是"点完厨房还留在购物车里、随时能回去接着改 / 接着结账"的外卖单；
   /// 结账之后它不再是进行中 → 自然从列表里消失。
@@ -602,9 +603,13 @@ class _CartPanelState extends State<CartPanel> {
     final value = focusedValue ??
         (pos.isPhoneTakeaway
             ? _kPhoneTakeaway
-            : pos.isTakeaway
-                ? _kTakeaway
-                : (tables.contains(pos.selectedTable) ? pos.selectedTable : null));
+            : pos.isPlatformTakeaway
+                ? _kPlatformTakeaway
+                : pos.isTakeaway
+                    ? _kTakeaway
+                    : (tables.contains(pos.selectedTable)
+                        ? pos.selectedTable
+                        : null));
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 8, 6),
@@ -641,6 +646,19 @@ class _CartPanelState extends State<CartPanel> {
                             : null,
                       ),
                     ),
+                    // 平台外卖（Uber / DiDi 这种 App 来的单）：
+                    // **流程跟电话外卖完全一样**（起名 / 等待时间都照旧），
+                    // 区别只在日结：左边单独一行、右边平台刷卡单列「平台刷卡」
+                    DropdownMenuItem(
+                      value: _kPlatformTakeaway,
+                      child: _targetRow(
+                        L10n.t('order.platformTakeaway'),
+                        color: const Color(0xFF00695C),
+                        note: pos.openPlatformTakeawayCount > 0
+                            ? '${pos.openPlatformTakeawayCount} ${L10n.t('table.openOrders')}'
+                            : null,
+                      ),
+                    ),
                     // 各桌（有菜 = 橙色，空桌 = 绿色）
                     for (final t in tables)
                       DropdownMenuItem<String>(
@@ -661,9 +679,9 @@ class _CartPanelState extends State<CartPanel> {
                       DropdownMenuItem<String>(
                         value: '$_kSavedPrefix${o.id}',
                         child: _targetRow(
-                          o.isPhoneTakeaway
-                              ? L10n.t('order.phonecallTakeaway')
-                              : L10n.t('order.takeaway'),
+                          // 类型叫法跟着这张单自己的类型走
+                          // （外卖 / 电话外卖 / 平台外卖 各有各的叫法）
+                          orderTypeLabel(o.orderType),
                           color: const Color(0xFF00838F),
                           name: o.takeawayTag.isEmpty ? null : o.takeawayTag,
                           note: '${o.itemCount} ${L10n.t('cart.items')}',
@@ -690,6 +708,12 @@ class _CartPanelState extends State<CartPanel> {
                       pos.selectTable('',
                           takeaway: true,
                           type: OrderType.phonecallTakeaway);
+                    } else if (v == _kPlatformTakeaway) {
+                      // 平台外卖：流程跟电话外卖完全一样（起名 / 等待时间照旧），
+                      // 只是类型不同 → 日结里单独算
+                      pos.selectTable('',
+                          takeaway: true,
+                          type: OrderType.platformTakeaway);
                     } else {
                       pos.selectTable(v);
                     }
@@ -859,6 +883,10 @@ const String _kTakeaway = '__takeaway__';
 
 /// 下拉里代表「**电话外卖**」的伪桌号（打电话来点的外卖）。
 const String _kPhoneTakeaway = '__phone_takeaway__';
+
+/// 下拉里代表「**平台外卖**」的伪桌号（Uber / DiDi 这种 App 来的外卖：
+/// 流程跟电话外卖一样，只是日结单独算）。
+const String _kPlatformTakeaway = '__platform_takeaway__';
 
 /// 下拉里「已保存的外卖单」的前缀（后面接订单 id，见 `_targetSelector`）。
 const String _kSavedPrefix = '__saved_takeaway__:';

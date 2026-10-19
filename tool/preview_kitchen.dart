@@ -1,4 +1,4 @@
-﻿/// **在终端里预演厨师单的版式**（不用真打纸）。
+/// **在终端里预演厨师单的版式**（不用真打纸）。
 ///
 /// 用法（在项目根目录）：
 /// ```text
@@ -127,6 +127,10 @@ void main(List<String> args) {
 void out(String s) => stdout.writeln(s);
 
 /// 每一行前面的字号标签（都是 4 列宽，跟尺子对齐）。
+///
+/// ⚠️ 必须把 [TicketScale] 的**每一档**都列出来（switch 要穷尽），
+/// 否则 `flutter analyze` 会报 non_exhaustive_switch_statement ——
+/// 以后再加字号档位，这里也要跟着补一个 case。
 String _tag(TicketScale s) {
   switch (s) {
     case TicketScale.normal:
@@ -135,6 +139,10 @@ String _tag(TicketScale s) {
       return '大  ';
     case TicketScale.xlarge:
       return '特大';
+    // 厨师单底部徽标用的「超高」（双倍宽 + 三倍高）：
+    // 终端里只标个名字，真打出来见 kKitchenBadgeScale
+    case TicketScale.huge:
+      return '超高';
   }
 }
 

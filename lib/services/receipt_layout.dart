@@ -76,9 +76,10 @@ class KitchenData {
   ///
   /// 徽标就是**两行大字**：西文一行 + 中文一行（见 `buildKitchenRows` ⑤段）——
   /// 西语 / 英语的厨师看西文那行，中文的厨师看中文那行。
+  /// **平台外卖**打的是普通外卖那套（`LLEVAR`），不额外区分。
   final String badgeWestern;
 
-  /// 徽标上的**中文**（`堂食` / `外卖` / `电话外卖`）。
+  /// 徽标上的**中文**（`堂食` / `外卖` / `电话外卖`；**平台外卖也打「外卖」**）。
   ///
   /// ⚠️ 这一行是**固定要打的**（店里有中国厨师，哪怕票面语言选了西语 / 英语）——
   /// 所以它按**强制中文模式**打（`escpos.dart` 的 [gbkLineBytes]），
@@ -89,9 +90,11 @@ class KitchenData {
   /// 单子类型的**正式叫法**（`堂食` / `外卖` / `电话外卖`，随票面语言）。
   ///
   /// 用在**门牌**那行：外卖打「外卖 张三」/「外卖 #3」（堂食只打桌号）。
+  /// ⚠️ **平台外卖**传进来的是「外卖」（不是「平台外卖」）—— 老板要求厨房单不区分，
+  /// 见 `ticket_builder.dart` 的 `_kitchenTypeLabel`。
   final String typeLabel;
 
-  /// 是不是**外卖 / 电话外卖**（= `Order.isTakeaway`）。
+  /// 是不是**外卖 / 电话外卖 / 平台外卖**（= `Order.isTakeaway`）。
   ///
   /// true 时：中上部打**外卖的名字**（没名字就打系统给的号 [dailyNo]——
   /// 堂食靠桌号认单，外卖只能靠名字 / 号，厨房才不会拿错）。
@@ -122,6 +125,13 @@ class KitchenData {
   /// 这个下标前面打一条虚线，厨师一眼看出"下面这些是饮料"。
   final int drinksFrom;
 
+  /// **小票编码**（`gbk` / `utf8` / `latin1` / `cp850`，见 `escpos.dart` 的
+  /// `kReceiptCodecs`）。
+  ///
+  /// 只有「**Chico → 圆圈数字 ①**」这一档用得上：`latin1` / `cp850` 编不出 ①，
+  /// 那种情况下数量列改成 `(1)`（详见 [kitchenQtyShorthandLabel]）。
+  final String codec;
+
   KitchenData({
     required this.table,
     required this.orderId,
@@ -140,6 +150,7 @@ class KitchenData {
     this.copyIndex = 1,
     this.copyTotal = 1,
     this.drinksFrom = -1,
+    this.codec = 'gbk',
   });
 }
 
@@ -336,7 +347,12 @@ const TicketScale kKitchenDetailScale = TicketScale.large;
 /// 菜品行里「**数量**」占几列（**特大字号下的列数**）。
 ///
 /// 默认 4：`2` / `12` / `2 份` 都放得下（单位太长就只打数字，见 `_qtyCell`）。
-/// 数字**右对齐**在这一列里。
+/// 数字**左对齐**在这一列里（见 `buildKitchenRows` ④段）。
+///
+/// ⚠️ **手写习惯换算**也受这 4 列限制：`Grande → 2`、`Mediano → 2/2`、
+/// `Chico → ①` 都放得下；`150 份 Mediano = 150/2` 是 5 列 → 那种情况退回
+/// **真实份数**（见 `kitchenQtyShorthandLabel` / `_qtyCell`）。
+/// 把这里改成 5 就能多放一列，代价是菜名少一列。
 const int kKitchenQtyColumns = 4;
 
 /// 菜品行里「**备注**」占几列的除数：备注列 = 整行 ÷ 这个数。
@@ -423,7 +439,10 @@ bool _isWide(int rune) {
       (rune >= 0xFE30 && rune <= 0xFE4F) ||
       (rune >= 0xFF00 && rune <= 0xFF60) ||
       (rune >= 0xFFE0 && rune <= 0xFFE6) ||
-      (rune >= 0x3000 && rune <= 0x303F);
+      (rune >= 0x3000 && rune <= 0x303F) ||
+      // 圆圈数字 ①–⑳（厨师单「Chico」的数量列用它）：在 GBK 里是**全角**（2 列），
+      // 这里不按 2 列算的话，后面补空格会多补一列、把菜名那一列挤歪。
+      (rune >= 0x2460 && rune <= 0x24FF);
 }
 
 String padRight(String s, int width) {
@@ -679,6 +698,11 @@ List<TicketRow> buildKitchenRows(KitchenData k) {
   // ```
   // 「右边那一条」= **定制项和特别备注里的第一个**（定制项优先）；
   // 没有定制项时，它自然就是第一条特别备注 —— 照样跟在菜名右边、贴右边缘。
+  //
+  // ⚠️ **数量那一列不一定是数字**：认到规则表里的定制项（默认 `Size`）时会换成
+  // 老板手写单的习惯（`Grande → 份数`、`Mediano → 份数/2`、`Chico → ①`），
+  // 见 `kitchenQtyShorthandLabel` / `kKitchenQtyRules`。
+  // 例：`①     Chun Kun            Chico` —— 数量列是圆圈 1、右边备注照常写 Chico。
   final itemScale = kKitchenItemScale;
   // 菜品行能用的列数（特大 = 双倍宽）：58mm = 16、80mm = 24
   final itemCols = kitchenItemColumns(k.paperWidth);
@@ -727,7 +751,7 @@ List<TicketRow> buildKitchenRows(KitchenData k) {
       rows.add(TicketRow(_dash(cols)));
     }
     // 数量**贴最左**（`2` / `12` / `2 份` 都从纸的左边缘开始）
-    final qty = padRight(_qtyCell(l, qtyW), qtyW);
+    final qty = padRight(_qtyCell(l, qtyW, k.codec), qtyW);
     // 「第一个」= 定制项在前，没有定制项才用第一条特别备注
     final notes = _noteItems(l);
     String noteHead = '';
@@ -989,11 +1013,135 @@ String kitchenItemName(String name) {
   return '$head #${m.group(2)}';
 }
 
+// ---------------------------------------------------------------------------
+// 厨师单「数量」列的手写习惯（Size：1 / N/2 / ①）
+//
+// 这一整块是**独立的外挂**：关掉它（`kKitchenQtyShorthandEnabled = false`）
+// 或删掉 `_qtyCell` 里的那两行，厨师单就回到"只打份数"，别的地方一律不受影响。
+// ---------------------------------------------------------------------------
+
+/// **这个功能的总开关**：`false` = 整块关掉。
+///
+/// 关掉之后数量列**跟没加这个功能时一模一样**（份数，有单位就带单位），
+/// 别的逻辑一点都不受影响 —— 想临时取消就改成 `false`。
+const bool kKitchenQtyShorthandEnabled = true;
+
+/// 数量列有哪几种「打法」（规则表 [kKitchenQtyRules] 里每条规则选一种）。
+enum KitchenQtyStyle {
+  /// 打**份数**：`Grande` 1 份 → `1`、2 份 → `2`
+  count,
+
+  /// 打**份数/2**：`Mediano` 1 份 → `1/2`、2 份 → `2/2`、3 份 → `3/2`
+  ///
+  /// ⚠️ **不约分**：2 份就打 `2/2`，不打成 `1` —— 老板要的是"几份就写几分之几"，
+  /// 厨房数的是"几个半份"，约掉之后反而看不出客人点了几份。
+  halves,
+
+  /// 打**圆圈里的份数**：`Chico` 1 份 → `①`（①–⑩；11 份以上 / 编码不支持时 `(11)`）
+  circled,
+}
+
+/// 一条规则：**某个定制项组选了某个值 → 数量列按 [style] 打**。
+///
+/// [group] / [option] 跟 Excel 里写的一致就行，比对时**不分大小写**。
+class KitchenQtyRule {
+  final String group;
+  final String option;
+  final KitchenQtyStyle style;
+
+  const KitchenQtyRule(this.group, this.option, this.style);
+}
+
+/// **手写习惯规则表** —— 要加 / 改规则**只动这里**，`kitchenQtyShorthandLabel()` 不用改。
+///
+/// 例：以后想让 `Size: JARRA` 也按整数打，加一行
+/// `KitchenQtyRule('Size', 'JARRA', KitchenQtyStyle.count)` 就行；
+/// 想加一种全新打法，就在 [KitchenQtyStyle] 里加一档 + 那个 `switch` 里加一个分支
+/// （两处都在本文件，跟别处没关系）。
+const List<KitchenQtyRule> kKitchenQtyRules = [
+  KitchenQtyRule('Size', 'Grande', KitchenQtyStyle.count),
+  KitchenQtyRule('Size', 'Mediano', KitchenQtyStyle.halves),
+  // 西班牙语阴性写法：菜单以后改叫 mediana / chica 也不用动代码
+  KitchenQtyRule('Size', 'Mediana', KitchenQtyStyle.halves),
+  KitchenQtyRule('Size', 'Chico', KitchenQtyStyle.circled),
+  KitchenQtyRule('Size', 'Chica', KitchenQtyStyle.circled),
+];
+
+/// 「圆圈里的数字」①–⑩（Chico 的数量列用）。
+///
+/// ⚠️ 只到 ⑩：**GBK 里只有 ①–⑩**（A2D9–A2E2），⑪ 起 GBK 编不出来、打出来是 `?`
+/// （GB18030 才有，但热敏打印机基本只认 GBK）。
+/// 所以 11 份以上写成 `(11)` —— 见 [kitchenQtyShorthandLabel]。
+const List<String> kKitchenCircledDigits = [
+  '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', //
+];
+
+/// 这个编码能不能打出圆圈数字（①–⑩）。
+///
+/// - `gbk`：能（GBK 里就是全角 `①`）；
+/// - `utf8`：能（打印机认 UTF-8 就能画出来）；
+/// - `latin1` / `cp850`：**不能**（编不出来会变 `?`）→ 改用 `(1)`。
+bool _codecCanPrintCircled(String codec) {
+  final c = codec.trim().toLowerCase();
+  return c == 'gbk' || c == 'utf8' || c == 'gb18030';
+}
+
+/// **厨师单「数量」列按手写习惯换算**（老板 2026-10-18 要的个性化处理）。
+///
+/// 规则**不写死在这里**，全在 [kKitchenQtyRules]：
+///
+/// | 规则 | 数量列打成 | 例（份数 → 打出来） |
+/// | --- | --- | --- |
+/// | `Size: Grande` | **份数** | 1 → `1`、2 → `2` |
+/// | `Size: Mediano` | **份数/2**（不约分） | 1 → `1/2`、2 → `2/2`、3 → `3/2` |
+/// | `Size: Chico` | **圆圈里的份数** | 1 → `①`、2 → `②`、11 → `(11)` |
+///
+/// 返回 `null` = **不用换算**，照老规则打份数：
+/// - 总开关 [kKitchenQtyShorthandEnabled] 关着；
+/// - 这道菜没有规则表里那些组（**老单连组名都没存**，也是这种）；
+/// - 组选了别的值（`VASO` / `JARRA`… 饮料那些）；
+/// - 份数 ≤ 0（理论上不会）。
+///
+/// **右边备注列不受影响**：选项（`Grande`）照常打在右边。
+String? kitchenQtyShorthandLabel(OrderLine line, {String codec = 'gbk'}) {
+  if (!kKitchenQtyShorthandEnabled) return null;
+  final n = line.quantity;
+  if (n <= 0) return null;
+  for (final rule in kKitchenQtyRules) {
+    final picked = line.optionInGroup(rule.group);
+    if (picked.isEmpty) continue; // 这一组没选
+    if (picked.trim().toLowerCase() != rule.option.trim().toLowerCase()) {
+      continue; // 选的是这个组的别的值（VASO / JARRA…）
+    }
+    switch (rule.style) {
+      case KitchenQtyStyle.count:
+        return '$n';
+      case KitchenQtyStyle.halves:
+        return '$n/2';
+      case KitchenQtyStyle.circled:
+        if (!_codecCanPrintCircled(codec)) return '($n)';
+        if (n <= kKitchenCircledDigits.length) {
+          return kKitchenCircledDigits[n - 1];
+        }
+        return '($n)';
+    }
+  }
+  return null;
+}
+
 /// 「数量」单元格：菜有单位（Excel 的「单位」列）时写「2 份」。
 ///
 /// 只有**放得下**才加单位 —— 单位名太长（例如「公斤」+ 数量）就只打数字，
 /// 免得把整张票的列对不齐。
-String _qtyCell(OrderLine l, int width) {
+///
+/// **手写习惯优先**（见 [kitchenQtyShorthandLabel]）。换算结果**放不进这一列**时
+/// （例如 150 份 `Mediano` = `150/2`，5 列 > 4 列）**退回真实份数** ——
+/// 宁可不符合手写习惯，也绝不让厨房看到错的份数。
+String _qtyCell(OrderLine l, int width, String codec) {
+  final shorthand = kitchenQtyShorthandLabel(l, codec: codec);
+  if (shorthand != null) {
+    return displayWidth(shorthand) <= width ? shorthand : '${l.quantity}';
+  }
   final unit = l.unit.trim();
   final plain = '${l.quantity}';
   if (unit.isEmpty) return plain;
@@ -1035,6 +1183,8 @@ class SummaryLabels {
   final String expense; // 支出
   final String net; // 净额
   final String orders; // 单数
+  final String platformTakeaway; // 平台外卖
+  final String platformCard; // 平台刷卡
 
   const SummaryLabels({
     required this.title,
@@ -1049,6 +1199,8 @@ class SummaryLabels {
     required this.net,
     required this.orders,
     this.phoneTakeaway = 'Takeaway (Phone Call)',
+    this.platformTakeaway = 'Platform Delivery',
+    this.platformCard = 'Platform card',
     this.subtotal = 'Subtotal',
     this.discount = 'Discount',
     this.tax = 'Tax',
@@ -1067,9 +1219,16 @@ class SummaryData {
   /// **电话外卖**（打电话点的）的营业额 —— 0 的时候不打印这一行。
   final double phoneTakeawayTotal;
 
+  /// **平台外卖**（Uber / DiDi 这种 App 来的）的营业额 —— 0 的时候不打印这一行。
+  final double platformTakeawayTotal;
+
   /// 现金：币种 → 金额（MXN / USD / RMB …）。
   final Map<String, double> cashByCurrency;
   final double cardTotal;
+
+  /// **平台外卖刷的卡**（「平台刷卡」，从 [cardTotal] 里分出来的；0 时不打印）。
+  final double platformCardTotal;
+
   final double qrTotal;
 
   /// 小计 / 折扣 / 税（折扣与税非 0 时才多打两行）。
@@ -1097,6 +1256,8 @@ class SummaryData {
     required this.orderCount,
     required this.labels,
     this.phoneTakeawayTotal = 0,
+    this.platformTakeawayTotal = 0,
+    this.platformCardTotal = 0,
     this.subtotalTotal = 0,
     this.discountTotal = 0,
     this.taxTotal = 0,
@@ -1143,11 +1304,14 @@ List<String> buildSummaryLines(SummaryData d) {
   lines.add(_truncateToWidth('${d.labels.date}: ${d.dateLabel}', cols));
   lines.add(thin);
 
-  // 左：堂食 / 外卖（电话外卖有单的时候才多打一行）
+  // 左：堂食 / 外卖（电话外卖、平台外卖有单的时候才多打一行）
   addRow(d.labels.dineIn, d.dineInTotal);
   addRow(d.labels.takeaway, d.takeawayTotal);
   if (round2(d.phoneTakeawayTotal) != 0) {
     addRow(d.labels.phoneTakeaway, d.phoneTakeawayTotal);
+  }
+  if (round2(d.platformTakeawayTotal) != 0) {
+    addRow(d.labels.platformTakeaway, d.platformTakeawayTotal);
   }
   lines.add(thin);
 
@@ -1162,6 +1326,10 @@ List<String> buildSummaryLines(SummaryData d) {
     });
   }
   if (d.cardTotal != 0) addRow(d.labels.card, d.cardTotal);
+  // 平台外卖刷的卡：单独一行（平台的到账 / 手续费跟店里自己的刷卡不一样）
+  if (round2(d.platformCardTotal) != 0) {
+    addRow(d.labels.platformCard, d.platformCardTotal);
+  }
   if (d.qrTotal != 0) addRow(d.labels.qr, d.qrTotal);
   lines.add(divider);
 

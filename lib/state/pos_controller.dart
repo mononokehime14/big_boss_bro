@@ -555,6 +555,9 @@ class PosController extends ChangeNotifier {
             quantity: c.quantity,
             unitPrice: c.unitPrice,
             options: List.of(c.selections),
+            // 「组名 → 选项值」（`{'Size': 'Grande'}`）：厨师单的「数量」列要按
+            // Size 换算成手写习惯（1 / 1/2 / ①），见 receipt_layout.dart
+            optionGroups: _optionGroupsOf(c.menuItem, c.selections),
             notes: List.of(c.notes),
             // 备注加价跟着走（「换炒饭 +70」的钱记在这一行上）
             notePrices: [
@@ -596,7 +599,7 @@ class PosController extends ChangeNotifier {
       table: isTakeaway ? '' : (table ?? _selectedTable),
       // 外卖单的名字 = "保存过"的外卖单（起过名才会出现在下拉列表里，见 openTakeawayOrders）
       label: isTakeaway ? _selectedTakeawayLabel : '',
-      // **所有单**都拿一个"当天从 1 开始"的号（堂食 / 外卖 / 电话外卖**共用**一条序列）：
+      // **所有单**都拿一个"当天从 1 开始"的号（堂食 / 外卖 / 电话外卖 / 平台外卖**共用**一条序列）：
       // 订单页的**默认排序**就是按它从大到小排；外卖单没起名字时，
       // 厨房单中上部（"门牌"）那行大字也是它（见 Order.dailyNo）。
       dailyNo: _nextDailyNo(),
@@ -617,19 +620,22 @@ class PosController extends ChangeNotifier {
   String _selectedTable = '';
 
   /// 当前选的是哪种单：[OrderType.dineIn]（要桌号）/ [OrderType.takeaway] /
-  /// [OrderType.phonecallTakeaway]（后两种都不用桌号）。
+  /// [OrderType.phonecallTakeaway] / [OrderType.platformTakeaway]（后三种都不用桌号）。
   OrderType _selectedType = OrderType.dineIn;
 
   String get selectedTable => _selectedTable;
 
-  /// 当前选的目标类型（堂食 / 外卖 / 电话外卖）。
+  /// 当前选的目标类型（堂食 / 外卖 / 电话外卖 / 平台外卖）。
   OrderType get selectedType => _selectedType;
 
-  /// 当前选的是不是「**不用桌号**」的单（外卖 / 电话外卖）。
+  /// 当前选的是不是「**不用桌号**」的单（外卖 / 电话外卖 / 平台外卖）。
   bool get isTakeaway => _selectedType != OrderType.dineIn;
 
   /// 当前选的是不是「**电话外卖**」（打电话点的）。
   bool get isPhoneTakeaway => _selectedType == OrderType.phonecallTakeaway;
+
+  /// 当前选的是不是「**平台外卖**」（Uber / DiDi 这种 App 来的）。
+  bool get isPlatformTakeaway => _selectedType == OrderType.platformTakeaway;
 
   bool get hasTableSelected => isTakeaway || _selectedTable.isNotEmpty;
 
@@ -646,10 +652,11 @@ class PosController extends ChangeNotifier {
   /// 只能靠单号把它调回购物车。
   String _focusedOrderId = '';
 
-  /// 选桌：堂食传桌号；外卖 / 电话外卖传 `takeaway: true`。
+  /// 选桌：堂食传桌号；外卖 / 电话外卖 / 平台外卖传 `takeaway: true`。
   ///
   /// [type] 只在 `takeaway: true` 时有用：默认是**外卖**，
-  /// 传 [OrderType.phonecallTakeaway] 就是**电话外卖**（打了个电话来点的）。
+  /// 传 [OrderType.phonecallTakeaway] 就是**电话外卖**（打了个电话来点的），
+  /// 传 [OrderType.platformTakeaway] 就是**平台外卖**（Uber / DiDi 这种 App 来的）。
   ///
   /// 「外卖」这一项是**开新单**，所以会顺手把"选中的已保存外卖单"清掉。
   void selectTable(
@@ -748,7 +755,7 @@ class PosController extends ChangeNotifier {
     return null;
   }
 
-  /// **进行中的外卖单**（外卖 + 电话外卖，**有没有名字都算**）：桌号下拉列表用它们
+  /// **进行中的外卖单**（外卖 + 电话外卖 + 平台外卖，**有没有名字都算**）：桌号下拉列表用它们
   /// "回到那张单接着改 / 结账"。
   ///
   /// 没起名字的外卖单也有**当天从 1 开始的单号**（`Order.dailyNo`，显示成 `#3`），
@@ -863,7 +870,7 @@ class PosController extends ChangeNotifier {
 
   /// **今天的单号**：当天已有的最大号 + 1（从 1 开始）。
   ///
-  /// **堂食 / 外卖 / 电话外卖共用一条序列**（不分开算）：这样订单页按单号排的时候，
+  /// **堂食 / 外卖 / 电话外卖 / 平台外卖共用一条序列**（不分开算）：这样订单页按单号排的时候，
   /// 一天里谁先开的一目了然，也不会出现"三张单都是 #1"。
   ///
   /// 为什么从订单本身推、而不是存个计数器：重启/换设备都不会把号弄乱，也不占存储。
@@ -895,11 +902,14 @@ class PosController extends ChangeNotifier {
     return n;
   }
 
-  /// 当前有几个「进行中」的外卖单（**不含**电话外卖）。
+  /// 当前有几个「进行中」的外卖单（**不含**电话外卖 / 平台外卖）。
   int get openTakeawayCount => _openCount(OrderType.takeaway);
 
   /// 当前有几个「进行中」的**电话外卖**单。
   int get openPhoneTakeawayCount => _openCount(OrderType.phonecallTakeaway);
+
+  /// 当前有几个「进行中」的**平台外卖**单。
+  int get openPlatformTakeawayCount => _openCount(OrderType.platformTakeaway);
 
   int _openCount(OrderType type) {
     var n = 0;
@@ -931,8 +941,12 @@ class PosController extends ChangeNotifier {
             for (var i = 0; i < c.notes.length; i++) c.notePriceAt(i),
           ]));
       if (idx >= 0) {
-        merged[idx] =
-            merged[idx].copyWith(quantity: merged[idx].quantity + c.quantity);
+        merged[idx] = merged[idx].copyWith(
+          quantity: merged[idx].quantity + c.quantity,
+          // 选项一样 → 「组名 → 值」也跟着补 / 刷新一遍：
+          // 老单（升级前开的）没有这个字段，并单之后厨师单就能按 Size 换算了
+          optionGroups: _optionGroupsOf(c.menuItem, c.selections),
+        );
       } else {
         merged.add(OrderLine(
           name: c.menuItem.name,
@@ -940,6 +954,8 @@ class PosController extends ChangeNotifier {
           quantity: c.quantity,
           unitPrice: c.unitPrice,
           options: List.of(c.selections),
+          // 组名 → 选项值（跟 `_cartLines()` 一样，厨师单数量列要用）
+          optionGroups: _optionGroupsOf(c.menuItem, c.selections),
           notes: List.of(c.notes),
           // 备注加价跟着走（「换炒饭 +70」的钱记在这一行上）
           notePrices: [
@@ -1381,6 +1397,10 @@ class PosController extends ChangeNotifier {
     lines[index] = old.copyWith(
       quantity: quantity,
       options: List.of(selections),
+      // 换了选项 → 「组名 → 值」也要跟着重算（厨师单数量列按 Size 换算）
+      optionGroups: item == null
+          ? old.optionGroups
+          : _optionGroupsOf(item, selections),
       notes: List.of(notes),
       notePrices: prices,
       unitPrice: unitPrice,
@@ -1627,6 +1647,29 @@ class PosController extends ChangeNotifier {
       if (a[i] != b[i]) return false;
     }
     return true;
+  }
+
+  /// 把购物车里**选中的值**还原成「组名 → 值」（`{'Size': 'Grande'}`）。
+  ///
+  /// 为什么需要：`CartItem.selections` / `OrderLine.options` 里**只有选项值**
+  /// （`Grande`），组名丢了；而厨师单的「数量」列要认 **Size** 那一组、
+  /// 按老板的手写习惯换算（见 `receipt_layout.dart` 的 `kitchenQtyShorthandLabel`）。
+  ///
+  /// 规则跟 `MenuItem.unitPriceFor` 一致：
+  /// - 普通多选项（Size: Grande）→ 存**选项值**；
+  /// - **加料开关**（EXTRA BOBA / JARRA）→ 单子上存的是**组名**，这里也照存。
+  static Map<String, String> _optionGroupsOf(
+      MenuItem item, List<String> picks) {
+    final out = <String, String>{};
+    for (final g in item.options) {
+      for (final v in picks) {
+        if (g.options.contains(v) || (g.isToggle && g.name == v)) {
+          out[g.name] = v;
+          break;
+        }
+      }
+    }
+    return out;
   }
 
   /// 生成一个新的分类/菜品 id（时间戳+自增，保证唯一）。

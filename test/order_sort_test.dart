@@ -43,12 +43,13 @@ void main() {
   List<String> ids(List<Order> orders) => orders.map((o) => o.id).toList();
 
   group('按位置（默认）', () {
-    test('外卖 → 电话外卖 → 桌子；桌子按桌号清单的顺序', () {
+    test('外卖 → 电话外卖 → 平台外卖 → 桌子；桌子按桌号清单的顺序', () {
       final orders = [
         order(id: 't9', table: '9'),
         order(id: 'phone', type: OrderType.phonecallTakeaway, dailyNo: 1),
         order(id: 't2', table: '2'),
         order(id: 'take', type: OrderType.takeaway, dailyNo: 2),
+        order(id: 'platform', type: OrderType.platformTakeaway, dailyNo: 3),
         order(id: 'tA', table: 'A'),
       ];
       final out = sortInProgressOrders(
@@ -56,7 +57,7 @@ void main() {
         OrderSort.position,
         const ['1', '2', '3', '9', 'A', 'B'],
       );
-      expect(ids(out), ['take', 'phone', 't2', 't9', 'tA']);
+      expect(ids(out), ['take', 'phone', 'platform', 't2', 't9', 'tA']);
     });
 
     test('桌号**数字在字母前**，且按数值大小（1,2,9,10）', () {

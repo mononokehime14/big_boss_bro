@@ -31,7 +31,7 @@ create extension if not exists pgcrypto;
 create table if not exists public.orders (
   id          text primary key,                     -- 单号（App 生成，带设备前缀不会撞）
   status      text        not null default 'in_progress', -- in_progress / completed
-  order_type  text        not null default 'dine_in',     -- dine_in / takeaway / phonecall_takeaway
+  order_type  text        not null default 'dine_in',     -- dine_in / takeaway / phonecall_takeaway / platform_takeaway
   table_no    text        not null default '',
   total       numeric(12,2) not null default 0,
   item_count  integer     not null default 0,

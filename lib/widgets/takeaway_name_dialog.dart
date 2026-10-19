@@ -80,8 +80,12 @@ class _TakeawayNameDialogState extends State<_TakeawayNameDialog> {
   /// 要不要问「等多久」：**所有外卖单都问**（普通外卖也常有"20 分钟后来拿"）。
   bool get _showWait => widget.order.isTakeaway;
 
-  /// 标题用哪种叫法（电话外卖 / 普通外卖）—— 跟"要不要问等待时间"是两件事。
+  /// 标题用哪种叫法（电话外卖 / 平台外卖 / 普通外卖）—— 跟"要不要问等待时间"是两件事。
   bool get _isPhone => widget.order.isPhoneTakeaway;
+
+  /// 平台外卖（Uber / DiDi 这种 App 来的）：流程跟电话外卖**完全一样**，
+  /// 只有标题上的叫法不同（日结那边才真正区分）。
+  bool get _isPlatform => widget.order.isPlatformTakeaway;
 
   /// 输入框里的等待时间（空的 = 0）。
   int get _waitMinutes => int.tryParse(_waitCtl.text.trim()) ?? 0;
@@ -138,9 +142,11 @@ class _TakeawayNameDialogState extends State<_TakeawayNameDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(_isPhone
-          ? L10n.t('takeaway.name.titlePhone')
-          : L10n.t('takeaway.name.title')),
+      title: Text(_isPlatform
+          ? L10n.t('takeaway.name.titlePlatform')
+          : _isPhone
+              ? L10n.t('takeaway.name.titlePhone')
+              : L10n.t('takeaway.name.title')),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,

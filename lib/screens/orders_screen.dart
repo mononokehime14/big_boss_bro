@@ -205,7 +205,7 @@ class _InProgressTabState extends State<_InProgressTab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // ---- 上面：外卖 / 电话外卖 / 堂食 ----
+        // ---- 上面：外卖 / 电话外卖 / 平台外卖 / 堂食 ----
         _Bar(
           children: [
             _SortChip(
@@ -219,6 +219,13 @@ class _InProgressTabState extends State<_InProgressTab> {
               label: L10n.t('order.phonecallTakeaway'),
               icon: Icons.phone_in_talk_outlined,
               onTap: () => setState(() => _type = OrderType.phonecallTakeaway),
+            ),
+            // 平台外卖（Uber / DiDi 这种 App 来的）：单独一类，方便老板看
+            _SortChip(
+              selected: _type == OrderType.platformTakeaway,
+              label: L10n.t('order.platformTakeaway'),
+              icon: Icons.delivery_dining_outlined,
+              onTap: () => setState(() => _type = OrderType.platformTakeaway),
             ),
             _SortChip(
               selected: _type == OrderType.dineIn,

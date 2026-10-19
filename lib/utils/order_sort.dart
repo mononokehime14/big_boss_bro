@@ -131,10 +131,10 @@ List<Order> _byNumber(List<Order> orders) => _sortBy(orders, (o) => <num>[
 int _dayNumber(Order o) =>
     o.createdAt.year * 10000 + o.createdAt.month * 100 + o.createdAt.day;
 
-/// 按位置排：外卖（0）→ 电话外卖（1）→ 桌子（2）。
+/// 按位置排：外卖（0）→ 电话外卖（1）→ 平台外卖（2）→ 桌子（3）。
 ///
 /// 组内：
-/// - 外卖 / 电话外卖 → 按「当天第几号」（`#1 #2 …`；老数据没号的排最后）；
+/// - 外卖 / 电话外卖 / 平台外卖 → 按「当天第几号」（`#1 #2 …`；老数据没号的排最后）；
 /// - 桌子 → 按桌号在清单里的位置（**清单里没有的桌号**排到最后，按名字的自然顺序）。
 ///
 /// 位置完全一样的（同一张桌开了两张单）→ **保持原来的先后**（新的在上面）。
@@ -151,7 +151,9 @@ List<Order> _byPosition(List<Order> orders, List<String> tables) {
   final rank = <String, int>{for (var i = 0; i < all.length; i++) all[i]: i};
 
   return _sortBy(orders, (o) => <int>[
-        o.isPhoneTakeaway ? 1 : (o.isTakeaway ? 0 : 2),
+        o.isPhoneTakeaway
+            ? 1
+            : (o.isPlatformTakeaway ? 2 : (o.isTakeaway ? 0 : 3)),
         o.isTakeaway
             ? (o.dailyNo > 0 ? o.dailyNo : 999999)
             : (rank[o.table.trim()] ?? 999999),
