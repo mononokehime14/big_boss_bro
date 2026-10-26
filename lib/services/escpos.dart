@@ -214,6 +214,20 @@ const int kKitchenExtraFeedDots = 16;
 /// 有些打印机加粗会显得发糊 → 把这行改成 `false` 就恢复普通字重。
 const bool kKitchenBoldItemNames = true;
 
+/// **开钱箱**：`ESC p m t1 t2`（发送给**连着钱柜的那台打印机**，不是钱柜本身）。
+///
+/// - `m = 0` → 钱箱接口 **pin 2**（绝大多数小票机，包括 EC Line 的 DK 口都是这个）；
+/// - `t1 = 25` / `t2 = 250` → 脉冲 25×2ms + 250×2ms（约 0.5 秒），足够弹开。
+///
+/// 钱柜是插在打印机背后的 **RJ11/RJ12「DK / 钱箱」口**上的：蓝牙 / USB / 网络
+/// 只是打印机和电脑的连接方式，开钱箱永远是打印机收到这条 ESC/POS 指令后
+/// 自己给钱柜发脉冲。
+///
+/// 如果 EC Line 钱柜接的是 **pin 5**（少数机型），把第一个参数从 `0x00` 改成
+/// `0x01` 即可（`m=1`）。
+const List<int> kCashDrawerKickBytes = <int>[0x1B, 0x70, 0x00, 0x19, 0xFA];
+
+
 /// `ESC E n`：加粗（1 = 开，0 = 关）。参考图里店名那行就是这种"加重"的效果。
 List<int> emphasize(bool on) => <int>[0x1B, 0x45, on ? 1 : 0];
 

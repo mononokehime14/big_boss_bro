@@ -871,6 +871,10 @@ class _ClosedOrderCard extends StatelessWidget {
     final settings = context.watch<SettingsController>().settings;
     // 右边那点小字：**有才显示** —— 已结单显示支付方式。
     final extras = orderPaymentLabel(order);
+    // 回退（回收）只允许**今天结的**：
+    // 老单退回去会把日结/流行度弄乱，按钮对老单显示成灰色。
+    final isToday = PosController.dateKey(order.closedAt ?? order.createdAt) ==
+        PosController.dateKey(DateTime.now());
 
     return Card(
       color: Colors.white,
@@ -884,7 +888,8 @@ class _ClosedOrderCard extends StatelessWidget {
             // 窗口宽（收银台 / 平板）才显示右边那些"有就有、没有也行"的小字；
             // 窄的时候（手机）先让位给桌号和菜名，免得把右边的按钮挤出去。
             final roomy = box.maxWidth >= 700;
-            final tagWidth = box.maxWidth * 0.5;
+            // 窄屏还要给「删除 + 回退」两个按钮留地方，桌号最多占 38%
+            final tagWidth = box.maxWidth * (roomy ? 0.5 : 0.38);
             return Row(
               children: [
                 _PlaceTag(order: order, maxWidth: tagWidth),
@@ -931,8 +936,8 @@ class _ClosedOrderCard extends StatelessWidget {
                 const SizedBox(width: 12),
                 Text(
                   money(order.total, settings.currencySymbol),
-                  style: const TextStyle(
-                    fontSize: 24,
+                  style: TextStyle(
+                    fontSize: roomy ? 24 : 20,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFF232829),
                   ),
@@ -942,13 +947,74 @@ class _ClosedOrderCard extends StatelessWidget {
                   onPressed: () => _confirmDelete(context),
                   tooltip: L10n.t('order.delete'),
                   visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 36, minHeight: 36),
                   iconSize: 22,
                   icon: const Icon(Icons.delete_outline, color: Colors.grey),
+                ),
+                // **回退到进行中**：放在最右边（删除按钮旁边），收银员结错单可以救回来。
+                // 只能退今天结的；老单按钮是灰的（tooltip 说明原因）。
+                IconButton(
+                  onPressed: isToday ? () => _reopen(context) : null,
+                  tooltip: isToday
+                      ? L10n.t('order.reopen')
+                      : L10n.t('order.reopen.notToday'),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 36, minHeight: 36),
+                  iconSize: 22,
+                  color: const Color(0xFF1565C0),
+                  disabledColor: Colors.grey.shade400,
+                  icon: const Icon(Icons.undo),
                 ),
               ],
             );
           }),
         ),
+      ),
+    );
+  }
+
+  /// 把这张已结单**回退成进行中**（结错 / 点快了）。
+  ///
+  /// 真正能不能退由 `PosController.reopenOrder` 判断：
+  /// 今天结的、不跟同桌/同名的进行中单冲突、分单的母单还在。
+  /// **只允许管理员操作**（跟删除一样要先过 `requireAdmin`）。
+  /// 失败时**弹窗**说明原因（冲突等），成功才用横幅提示。
+  Future<void> _reopen(BuildContext context) async {
+    final ok = await requireAdmin(
+      context,
+      reason: L10n.t('auth.reopenNeeded'),
+    );
+    if (!ok || !context.mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    final reason = context.read<PosController>().reopenOrder(order.id);
+    if (reason == null) {
+      messenger
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(
+          content: Text(L10n.t('order.reopen.done')),
+          duration: const Duration(milliseconds: 1800),
+        ));
+      return;
+    }
+
+    // 冲突 / 母单没了 / 不是今天 → **弹窗**说明，不要只飘一条文字横幅
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(L10n.t('order.reopen.blockedTitle')),
+        content: Text(L10n.t(reason)),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(L10n.t('common.ok')),
+          ),
+        ],
       ),
     );
   }

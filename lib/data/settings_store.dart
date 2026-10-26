@@ -254,6 +254,11 @@ class Settings {
   static const List<String> defaultTables = ['1', '2', '3', '4', '5'];
 
   /// 该菜品分类能用哪些备注：通用（'' 键） + 这个分类自己的。
+  ///
+  /// 备注和菜单是**分开存**的（备注在店级配置 `store_settings`，菜单在自己的表）：
+  /// 菜单里某个种类被删掉 / 改 id 时，它下面的备注**仍留在本机 / 云端**，
+  /// 只是程序不会再请求那个分类 → 自然不显示；以后那个分类回来了，
+  /// 备注还能接着用。所以不需要因为菜单变动去删备注。
   List<String> notesFor(String categoryId) => <String>[
         ...(notesByCategory[''] ?? const <String>[]),
         ...(notesByCategory[categoryId] ?? const <String>[]),

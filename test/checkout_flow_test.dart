@@ -9,12 +9,14 @@ import 'package:big_boss_bro/state/pos_controller.dart';
 import 'package:big_boss_bro/state/settings_controller.dart';
 import 'package:big_boss_bro/widgets/payment_flow.dart';
 
-/// 结账窗口的规矩（**一个页面搞定**，这次改的正是这里）：
+/// 结账窗口的规矩（**两步走**，这次改的正是这里）：
 ///
-/// - 明细 + 小计/合计在**左边**，右边从上到下：应收 → 折扣 → 收款币种 → 支付方式 →
-///   现金（实收 + 快捷金额 + 找零）/ 刷卡；
-/// - 右下角只有 **`打印单子`**（打完留在本界面，可以再打）和 **`确认收款`**，**没有「取消」**；
-/// - **不用先打纸也能收款**（这正是当初要改的那个不顺手的地方）。
+/// - **第一步**：明细 + 小计/合计在**左边**，右边应收 → 折扣 → 收款币种 → 支付方式 →
+///   现金实收 / 刷卡。**不显示找零**；右下角 `打印单子` + `确认收款`，**没有「取消」**；
+/// - **第二步（钱柜）**：左边清单不变，右边大字找零 + 左上角「返回上一步」，
+///   底部 `打印单子` + `结束`；**点「结束」才算结完**（订单才进已结单）；
+/// - **两步右上角都有 ✕**：随时取消结账，什么都不发生；
+/// - **不用先打纸也能收款**。
 void main() {
   // 必须在**创建 PosController 之前**把 SharedPreferences 的假数据准备好，
   // 否则它构造函数里那次 `_loadOrders()` 会走到平台通道上（测试里没插件 → 报错）。
@@ -76,32 +78,75 @@ void main() {
     return () => printCalls;
   }
 
-  testWidgets('一个页面：下面是「打印单子」+「确认收款」，没有「取消」', (tester) async {
+  testWidgets('第一步：下面是「打印单子」+「确认收款」，没有「取消」', (tester) async {
     await openCheckout(tester);
 
     expect(find.text('打印单子'), findsOneWidget);
-    expect(find.text('确认收款'), findsOneWidget, reason: '收款按钮就在同一页');
+    expect(find.text('确认收款'), findsOneWidget, reason: '收款按钮就在第一步');
     expect(find.text('取消'), findsNothing, reason: '明确不要「取消」按钮');
-    expect(find.text('返回上一步'), findsNothing, reason: '一页搞定，不需要翻页了');
+    expect(find.text('返回上一步'), findsNothing, reason: '第一步还没进钱柜，不需要返回');
   });
 
-  testWidgets('一页里就能收款：折扣 / 收款币种 / 支付方式 / 实收找零 都在，没打过纸也能收',
+  testWidgets('两步结账：第一步只收款不显示找零；确认后进钱柜，点「结束」才关窗',
       (tester) async {
     final printCalls = await openCheckout(tester);
 
-    // 收款要用的东西全在这一页上
+    // 第一步：收款要用的东西全在，但**找零先不显示**（留到第二步钱柜）
     expect(find.text('折扣'), findsOneWidget);
     expect(find.text('收款币种'), findsOneWidget);
     expect(find.text('支付方式'), findsOneWidget);
     expect(find.textContaining('实收'), findsWidgets);
-    expect(find.textContaining('找零'), findsWidgets);
-    expect(find.textContaining('应收'), findsWidgets); // 应收跟着币种显示
+    expect(find.textContaining('找零'), findsNothing,
+        reason: '第一步不能显示找零，确认收款后才进钱柜');
 
-    // 一次都没打纸，直接收款也应该能点
+    // 点「确认收款」：不关窗、不落账，进第二步钱柜
     await tester.tap(find.text('确认收款'));
     await tester.pumpAndSettle();
-    expect(printCalls(), 0, reason: '收款不该顺手打纸 —— 打纸是左边那个按钮的事');
-    expect(find.text('打印单子'), findsNothing, reason: '收了钱窗口就该关了');
+
+    expect(find.textContaining('找零'), findsWidgets, reason: '第二步要大字显示找零');
+    expect(find.text('结束'), findsOneWidget);
+    expect(find.text('打印单子'), findsOneWidget);
+    expect(find.text('确认收款'), findsNothing);
+    expect(find.text('返回上一步'), findsOneWidget, reason: '第二步左上角要能回上一步');
+
+    // 第二步点「结束」才关窗（真正落账在 settleOrderFlow）
+    await tester.tap(find.text('结束'));
+    await tester.pumpAndSettle();
+    expect(find.text('结束'), findsNothing);
+    expect(find.text('打印单子'), findsNothing);
+    expect(printCalls(), 0, reason: '确认 / 结束都不该顺手打纸');
+  });
+
+  testWidgets('第二步「返回上一步」：回到第一步改金额，不关窗、不显示找零', (tester) async {
+    await openCheckout(tester);
+
+    await tester.tap(find.text('确认收款'));
+    await tester.pumpAndSettle();
+    expect(find.text('结束'), findsOneWidget);
+
+    await tester.tap(find.text('返回上一步'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('确认收款'), findsOneWidget, reason: '回到第一步');
+    expect(find.text('结束'), findsNothing);
+    expect(find.textContaining('找零'), findsNothing, reason: '找零只在第二步显示');
+  });
+
+  testWidgets('第二步右上角 ✕：取消结账，直接关窗（不落账）', (tester) async {
+    await openCheckout(tester);
+
+    await tester.tap(find.text('确认收款'));
+    await tester.pumpAndSettle();
+    expect(find.text('结束'), findsOneWidget);
+    expect(find.byIcon(Icons.close), findsOneWidget,
+        reason: '第二步也要有右上角的小叉叉');
+
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pumpAndSettle();
+
+    expect(find.text('结束'), findsNothing);
+    expect(find.text('确认收款'), findsNothing);
+    expect(find.text('打印单子'), findsNothing);
   });
 
   testWidgets('点「打印单子」：打完留在本界面，还能再打一张', (tester) async {
@@ -117,10 +162,14 @@ void main() {
     // 打印**不切页面**：收款那些操作还在
     expect(find.text('确认收款'), findsOneWidget);
 
-    // 打完单子「去干别的」= 界面一直开着，回来点确认就能收款
+    // 打完单子「去干别的」= 界面一直开着；回来点确认进钱柜，再点结束
     await tester.tap(find.text('确认收款'));
     await tester.pumpAndSettle();
     expect(printCalls(), 1, reason: '确认收款时不该再打一遍');
+    expect(find.text('结束'), findsOneWidget);
+
+    await tester.tap(find.text('结束'));
+    await tester.pumpAndSettle();
   });
 
   testWidgets('打过纸的标记：同一页上切支付方式也还在', (tester) async {

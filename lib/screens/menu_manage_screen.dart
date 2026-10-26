@@ -1,12 +1,17 @@
 // 注：原来这里写的是 `hide Category` —— 那是我以为 material 也导出 Category。
 // 分析器明确说 material **不导出**这个成员（foundation 才导出），
 // 所以那个 hide 是多余的，反而报 undefined_hidden_name 警告，去掉了。
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../l10n/app_strings.dart';
 import '../models/category.dart';
 import '../models/menu_item.dart';
+import '../services/menu_exporter.dart';
+import '../services/xlsx_writer.dart';
 import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
 import '../utils/category_colors.dart';
@@ -27,6 +32,9 @@ class MenuManageScreen extends StatefulWidget {
 class _MenuManageScreenState extends State<MenuManageScreen> {
   String _selectedCatId = '';
 
+  /// 正在导出 xlsx（防止连点）。
+  bool _exporting = false;
+
   @override
   Widget build(BuildContext context) {
     final pos = context.watch<PosController>();
@@ -40,7 +48,16 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
         : pos.menu.where((m) => m.categoryId == _selectedCatId).toList();
 
     return Scaffold(
-      appBar: AppBar(title: Text(L10n.t('menu.title'))),
+      appBar: AppBar(
+        title: Text(L10n.t('menu.title')),
+        actions: [
+          IconButton(
+            tooltip: L10n.t('menu.export'),
+            onPressed: _exporting ? null : () => _exportMenu(pos),
+            icon: const Icon(Icons.file_download_outlined),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -75,6 +92,26 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
             ),
           ),
           const SizedBox(height: 16),
+          // 导出当前菜单：列和「Excel 导入」模板一致，导到别的平台可以直接再导入
+          OutlinedButton.icon(
+            onPressed: _exporting ? null : () => _exportMenu(pos),
+            icon: _exporting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.file_download_outlined),
+            label: Text(_exporting
+                ? L10n.t('menu.export.busy')
+                : L10n.t('menu.export')),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            L10n.t('menu.export.hint'),
+            style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 10),
           // 恢复默认菜单（改乱后一键还原）
           OutlinedButton.icon(
             onPressed: () => _resetMenu(pos),
@@ -84,6 +121,63 @@ class _MenuManageScreenState extends State<MenuManageScreen> {
         ],
       ),
     );
+  }
+
+  /// 把当前菜单导出成 `.xlsx`（列顺序 / 表头和导入模板一致）。
+  Future<void> _exportMenu(PosController pos) async {
+    setState(() => _exporting = true);
+    try {
+      final rows = MenuExporter.rows(pos.categories, pos.menu);
+      final bytes = XlsxWriter.fromRows(rows);
+      final picked = await FilePicker.saveFile(
+        dialogTitle: L10n.t('menu.export.saveAs'),
+        fileName: MenuExporter.fileName(),
+        type: FileType.custom,
+        allowedExtensions: const ['xlsx'],
+        bytes: bytes,
+        lockParentWindow: true,
+      );
+      if (picked == null || picked.isEmpty || !mounted) return;
+
+      // 兜底：Windows 的保存对话框可能返回一个**没有扩展名**的路径
+      // （用户把默认文件名里的 `.xlsx` 删掉时）。没有扩展名 Excel 不会认，
+      // 这里强制补成 `.xlsx`，并把插件刚写下的无扩展名文件删掉。
+      var path = picked;
+      if (Platform.isWindows && !path.toLowerCase().endsWith('.xlsx')) {
+        // 别覆盖已有的同名 .xlsx：用户刚才保存的是无扩展名的 `menu`，
+        // 如果 `menu.xlsx` 已经存在，就改成 `menu (1).xlsx`。
+        var fixed = '$path.xlsx';
+        var n = 1;
+        while (await File(fixed).exists()) {
+          fixed = '$path ($n).xlsx';
+          n++;
+        }
+        await File(fixed).writeAsBytes(bytes, flush: true);
+        try {
+          await File(path).delete();
+        } catch (_) {
+          // 删旧文件失败不影响新文件；只是可能留下一个无扩展名的副本
+        }
+        path = fixed;
+      }
+
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(
+          content: Text('${L10n.t('menu.export.done')}$path'),
+          duration: const Duration(seconds: 4),
+        ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(
+          content: Text('${L10n.t('menu.export.fail')}$e'),
+          backgroundColor: Colors.redAccent,
+        ));
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
   }
 
   /// 恢复默认菜单（改乱后一键还原）。

@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
 
 import 'cart_panel.dart';
-import 'payment_flow.dart';
 
 /// 打开购物车明细底部弹窗（窄屏/手机用；宽屏是右侧常驻面板）。
 ///
 /// 弹窗里就是同一个 [CartPanel]：上面是这张单已有的菜、下面是本次新增的菜，
-/// 下面三个按钮 **保存 / 厨房 / 结账** —— 点完先关弹窗，再用点单页的 context 跑流程
-/// （弹窗自己的 context 已经关闭，不能再用）。
-Future<void> showCartSheet(BuildContext context) {
-  void runAfterClose(Future<void> Function(BuildContext) flow) {
+/// 下面三个按钮 **保存 / 厨房 / 结账** —— 点完先关弹窗，再跑点单页传进来的
+/// 回调（回调已经绑好点单页的 context，弹窗自己的 context 已经关闭，不能再用）。
+Future<void> showCartSheet(
+  BuildContext context, {
+  required VoidCallback onSave,
+  required VoidCallback onKitchen,
+  required VoidCallback onCheckout,
+}) {
+  void runAfterClose(VoidCallback action) {
     // 用点单页的 context（弹窗的 context 已经关闭）
-    WidgetsBinding.instance.addPostFrameCallback((_) => flow(context));
+    WidgetsBinding.instance.addPostFrameCallback((_) => action());
   }
 
   return showModalBottomSheet<void>(
@@ -28,15 +32,15 @@ Future<void> showCartSheet(BuildContext context) {
         showHandle: true,
         onSave: () {
           Navigator.of(sheetContext).pop();
-          runAfterClose(saveOrderFlow);
+          runAfterClose(onSave);
         },
         onKitchen: () {
           Navigator.of(sheetContext).pop();
-          runAfterClose(kitchenOrderFlow);
+          runAfterClose(onKitchen);
         },
         onCheckout: () {
           Navigator.of(sheetContext).pop();
-          runAfterClose(checkoutOrderFlow);
+          runAfterClose(onCheckout);
         },
       ),
     ),

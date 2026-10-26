@@ -14,10 +14,10 @@ import '../utils/pricing.dart';
 import 'bank_card_anim.dart';
 import 'takeaway_name_dialog.dart';
 
-/// 收款框点「确认收款」后的结果。
+/// 结账窗口**第二步点「结束」**后交回去的结果。
 ///
 /// 现金会带上币种、汇率、实收、找零（**都用客人付的那个币种计**）；
-/// 刷卡只带方式。
+/// 刷卡只带方式。只有拿到这个结果，`settleOrderFlow` 才会落账。
 class CheckoutResult {
   final DiscountType discountType;
   final double discountValue;
@@ -47,15 +47,20 @@ class CheckoutResult {
   });
 }
 
-/// 结账窗口（**屏幕中间，左右两栏，一个页面搞定**）：
+/// 结账窗口（**两步走**，防止收银员手快一点就把单子收进已结单）：
 ///
-/// **左边 30%** = 这张单的菜（明细）+ **底部的金额明细（小计 / 折扣 / 税 / 合计）**；
-/// **右边 70%** = 全部操作，从上到下：
-/// **应收（跟着收款币种变的大字）→ 折扣 → 收款币种 → 支付方式 →
-/// 现金（实收 + 右边一排快捷金额 + 大字找零）/ 刷卡（银行卡动画）**。
+/// **左边 30%（两步都不变）** = 这张单的菜（明细）+ 底部的金额明细
+/// （小计 / 折扣 / 税 / 合计）。
 ///
-/// 右下角两个按钮：**`打印单子`**（打完留在本界面，可以再打，标一行「已打印 HH:MM」）
-/// 和 **`确认收款`**（点它落账、关窗）。**没有「取消」按钮**：退出点标题栏的 ✕。
+/// **第一步：收款**
+/// 右边 70% = 应收（跟着收款币种变的大字）→ 折扣 → 收款币种 → 支付方式 →
+/// 现金（实收 + 快捷金额）/ 刷卡（银行卡动画）。**这里不显示找零**。
+/// 右下角两个按钮：`打印单子` 和 `确认收款` —— 点确认**不落账**，进第二步。
+///
+/// **第二步：钱柜**
+/// 左边清单不变；右边左上角「返回上一步」，中间**大字找零**（刷卡显示已收款、
+/// 无需找零），底部 `打印单子` 和 `结束`。**只有点「结束」才落账、关窗**
+/// （这时订单才变成「已结单」）。
 ///
 /// 其它取舍：
 /// - **没有 AA 分开付**：一单一次收清，界面和账都简单；
@@ -66,12 +71,16 @@ class CheckoutResult {
 ///
 /// [printBill] 由调用方（`settleOrderFlow`）提供：把当前这张单打成「单子」，
 /// 返回 null 表示成功。打不出来会弹「重试 / 跳过」。
+///
+/// [openCashDrawer] 也是由调用方提供：现金结账第一步点「确认收款」时，
+/// 给**接着钱柜的打印机**发开钱箱指令（钱柜本身不跟电脑通信）。
 Future<CheckoutResult?> showCheckoutDialog(
   BuildContext context, {
   required Order order,
   required Settings settings,
   required String cashier,
   required Future<PrintError?> Function(Order) printBill,
+  Future<PrintError?> Function()? openCashDrawer,
 }) {
   return showDialog<CheckoutResult>(
     context: context,
@@ -80,6 +89,7 @@ Future<CheckoutResult?> showCheckoutDialog(
       settings: settings,
       cashier: cashier,
       printBill: printBill,
+      openCashDrawer: openCashDrawer,
     ),
   );
 }
@@ -92,11 +102,15 @@ class _CheckoutDialog extends StatefulWidget {
   /// 打「单子」：结账窗口里点「打印单子 / 再打一张」时调用（明细+合计）。
   final Future<PrintError?> Function(Order) printBill;
 
+  /// 弹钱箱：现金点「确认收款」时调用；null = 当前环境不弹（例如测试）。
+  final Future<PrintError?> Function()? openCashDrawer;
+
   const _CheckoutDialog({
     required this.order,
     required this.settings,
     required this.cashier,
     required this.printBill,
+    this.openCashDrawer,
   });
 
   @override
@@ -107,12 +121,30 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
   /// 正在打单（防止连点两次打出两张）。
   bool _printing = false;
 
+  /// 正在「确认收款」（弹钱箱 + 进第二步），防止连点两次弹两次钱箱。
+  bool _confirming = false;
+
   /// 本界面上**已经成功打过单子**的时刻（null = 还没打过）。
   ///
   /// 只用来给收银员一个「这单已经出过纸了」的提示（按钮变「再打一张」+
   /// 右下角一行「已打印 HH:MM」），**不参与任何判断** ——
   /// 没打过也照样能点「确认」去收款。
   DateTime? _printedAt;
+
+  /// 第二步（钱柜 / 找零）要交回去的那笔收款；**null = 还在第一步**。
+  ///
+  /// 只有第二步点「结束」时才把结果交回给 `settleOrderFlow` 落账 ——
+  /// 这样"确认收款"只是打开钱柜，不会手快一下就把单子收进已结单里。
+  CheckoutResult? _pending;
+
+  /// 确认收款那一刻**冻结**下来的金额（第二步直接显示这些，不再跟着后台刷新变）。
+  double _pendingDue = 0;
+  double _pendingReceived = 0;
+  double _pendingChange = 0;
+  String _pendingSymbol = '';
+
+  /// 是不是已经在第二步（钱柜 / 找零）了。
+  bool get _atDrawer => _pending != null;
 
   /// 本帧要显示的那张单。
   ///
@@ -259,6 +291,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     final price = _price;
     final change = _change;
 
+    // 两步都可以直接取消：右上角 ✕ / 系统返回 都是**关窗、不落账**。
     return Dialog(
       insetPadding: const EdgeInsets.all(16),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -279,7 +312,9 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                   // ------- 右边 70%：应收 + 折扣 + 收款币种 + 支付方式 + 收款 -------
                   Expanded(
                     flex: 7,
-                    child: Column(
+                    // 第一步：收款操作（折扣 / 币种 / 支付方式 / 实收）；
+                    // 第二步：钱柜（大字找零 + 打印 + 结束）。
+                    child: _atDrawer ? _drawerPane() : Column(
                       children: [
                         Expanded(
                           child: SingleChildScrollView(
@@ -430,49 +465,19 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                                       ],
                                     ],
                                   ),
-                                  const SizedBox(height: 10),
-                                  // 找零：**大字**（要一眼看清，找错钱就麻烦了）
-                                  Container(
-                                    width: double.infinity,
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 14, vertical: 10),
-                                    decoration: BoxDecoration(
-                                      color: change < 0
-                                          ? const Color(0xFFFFEBEE)
-                                          : const Color(0xFFE8F5E9),
-                                      borderRadius: BorderRadius.circular(12),
+                                  // **找零不在这里显示**：点「确认收款」后才进第二步钱柜，
+                                  // 那里用大字显示找零。这里只在钱不够时提示「还差」。
+                                  if (change < 0) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      '${L10n.t('pay.short')} ${money(change.abs(), _symbol)}',
+                                      style: const TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFFC62828),
+                                      ),
                                     ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          change < 0
-                                              ? L10n.t('pay.short')
-                                              : L10n.t('pay.change'),
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w700,
-                                            color: change < 0
-                                                ? Colors.red.shade700
-                                                : const Color(0xFF2E7D32),
-                                          ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          money(change.abs(), _symbol),
-                                          style: TextStyle(
-                                            fontSize: 44,
-                                            height: 1.1,
-                                            fontWeight: FontWeight.w800,
-                                            color: change < 0
-                                                ? Colors.red.shade700
-                                                : const Color(0xFF1FA85A),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
+                                  ],
                                 ],
 
                                 // ---------------- 刷卡：银行卡动画 ----------------
@@ -489,7 +494,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                             ),
                           ),
                         ),
-                        // 右下角：`打印单子` + `确认收款`（一个页面搞定，不用再翻页）
+                        // 第一步右下角：`打印单子` + `确认收款`（确认后进第二步钱柜）
                         const Divider(height: 1),
                         _actionRow(context, isCash: isCash, change: change),
                       ],
@@ -559,6 +564,8 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
               '${L10n.t('pay.cashier')}: ${widget.cashier}',
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
+          // 两步都保留右上角的 ✕：**取消结账 = 关窗，什么都不发生**
+          //（订单不会落账；第二步想回第一步改金额，用右边那个「返回上一步」）
           IconButton(
             onPressed: () => Navigator.pop(context),
             tooltip: L10n.t('common.cancel'),
@@ -673,12 +680,14 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     );
   }
 
-  /// 右下角的按钮行（**一个页面，就这两个按钮**）：
+  /// 第一步右下角的按钮行（就这两个按钮）：
   ///
   /// - 左：**`打印单子`**（打完留在本界面，可以再打；打成功了标一行「已打印 HH:MM」）；
-  /// - 右：**`确认收款`**（现金还差钱时是灰的）—— 点它就落账、关窗。
+  /// - 右：**`确认收款`**（现金还差钱时是灰的）—— 点它**不落账**，
+  ///   只是进第二步「钱柜」看找零。
   ///
-  /// **没有「取消」按钮**：要退出就点标题栏右上角的 ✕。
+  /// **没有「取消」按钮**：两步都可以点标题栏右上角的 ✕ 取消（什么都不发生）；
+  /// 第二步另有「返回上一步」回第一步改金额。
   Widget _actionRow(
     BuildContext context, {
     required bool isCash,
@@ -731,13 +740,19 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
               const SizedBox(width: 10),
               Expanded(
                 child: FilledButton(
-                  // 现金还差钱才禁用；**刷卡**时不看实收框（免得先输过现金再切刷卡就点不动了）
-                  onPressed: (isCash && change < 0)
+                  // 现金还差钱 / 正在弹钱箱时禁用，避免连点两次
+                  onPressed: (_confirming || (isCash && change < 0))
                       ? null
-                      : () => _finish(context, isCash, change),
-                  child: Text(isCash
-                      ? L10n.t('checkout.collect')
-                      : L10n.t('checkout.cardDone')),
+                      : _confirm,
+                  child: _confirming
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Text(isCash
+                          ? L10n.t('checkout.collect')
+                          : L10n.t('checkout.cardDone')),
                 ),
               ),
             ],
@@ -747,29 +762,219 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     );
   }
 
+  /// **第二步：钱柜 / 找零**。
+  ///
+  /// - 左边清单保持不变（还是 [_linesPane]）；
+  /// - **右边左上角**是「返回上一步」（回第一步改折扣 / 实收）；
+  /// - 中间是**大字找零**（刷卡则显示已收款、无需找零）；
+  /// - 底下是「打印单子」和「结束」。
+  ///
+  /// **只有点「结束」才会把结果交回去落账**（这时单子才进已结单）；
+  /// 点「返回上一步」不落账。
+  Widget _drawerPane() {
+    final result = _pending!;
+    final isCash = result.method == PaymentMethod.cash;
+    final amount = isCash ? _pendingChange : _pendingDue;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _backToEdit,
+              icon: const Icon(Icons.arrow_back, size: 20),
+              label: Text(L10n.t('checkout.back')),
+            ),
+          ),
+        ),
+        Expanded(
+          // 找零从**上方**开始排（横向居中），不要整块垂直居中
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+            child: SizedBox(
+              width: double.infinity,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    isCash ? Icons.point_of_sale_outlined : Icons.credit_card,
+                    size: 46,
+                    color: const Color(0xFF1FA85A),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    isCash ? L10n.t('pay.change') : L10n.t('checkout.paid'),
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF2E7D32),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  // 找零**大字**：老人 / 隔着手推车也要一眼看清
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      money(amount, _pendingSymbol),
+                      style: const TextStyle(
+                        fontSize: 74,
+                        height: 1.05,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF1FA85A),
+                      ),
+                    ),
+                  ),
+                  // 币种也写出来：MXN / USD 符号都可能是 $，不写清楚容易找错钱
+                  if (result.currencyCode.isNotEmpty)
+                    Text(
+                      result.currencyCode,
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                  const SizedBox(height: 10),
+                  Text(
+                    isCash
+                        ? '${L10n.t('pay.received')} '
+                            '${money(_pendingReceived, _pendingSymbol)}   ·   '
+                            '${L10n.t('pay.due')} '
+                            '${money(_pendingDue, _pendingSymbol)}'
+                        : '${L10n.t('pay.due')} '
+                            '${money(_pendingDue, _pendingSymbol)}   ·   '
+                            '${L10n.t('checkout.noChange')}',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey.shade700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const Divider(height: 1),
+        _drawerActionRow(),
+      ],
+    );
+  }
+
+  /// 第二步底下：**打印单子 + 结束**。
+  Widget _drawerActionRow() {
+    final printed = _printedAt;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _printedHint(printed),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _printing ? null : () => _printBill(context),
+                  icon: _printing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.print_outlined),
+                  label: Text(printed == null
+                      ? L10n.t('checkout.printBill')
+                      : L10n.t('checkout.printAgain')),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _end,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF1FA85A),
+                    minimumSize: const Size(0, 52),
+                  ),
+                  icon: const Icon(Icons.check, size: 20),
+                  label: Text(L10n.t('checkout.done')),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 「已打印 HH:MM」提示（两步的按钮行共用）。
+  Widget _printedHint(DateTime? printed) => printed == null
+      ? const SizedBox.shrink()
+      : Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(
+            children: [
+              const Icon(Icons.check_circle,
+                  size: 16, color: Color(0xFF1FA85A)),
+              const SizedBox(width: 6),
+              Text(
+                '${L10n.t('checkout.printed')} ${timeHm(printed)}',
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF2E7D32),
+                ),
+              ),
+            ],
+          ),
+        );
+
+  /// 现在屏幕上这笔收款的结果（第一步点「确认收款」时把它冻住）。
+  CheckoutResult _currentResult() {
+    final isCash = _method == PaymentMethod.cash;
+    return CheckoutResult(
+      discountType: _discountType,
+      discountValue: _discountValue,
+      method: _method,
+      currencyCode: _currency,
+      // 本位币传 0：表示「不需要换算」，外币才传真实汇率
+      exchangeRate: _currency == widget.settings.baseCurrency ? 0 : _rate,
+      received: isCash ? (_received ?? _dueForeign) : null,
+      change: isCash ? _change : null,
+    );
+  }
+
   /// 要打出去的那张单：**把屏幕上刚设的折扣 / 实收 / 找零临时贴上去**。
   ///
-  /// 折扣、实收、找零这时都还没写进订单（要等收款成功才落账），所以临时造一张
+  /// 折扣、实收、找零这时都还没写进订单（要等「结束」才落账），所以临时造一张
   /// 「带这些数的单」去打印，这样**纸上的合计 = 屏幕上显示的合计 = 最后记账的金额**，
   /// 而且**合计下面是实收、再下面是找零**（收银员/客人当场对账用）。
   ///
   /// 只有现金才打实收/找零；**钱还不够（找零是负数）时那两行不打** ——
   /// 那时候还没谈妥怎么付，纸上写个负数反而让人糊涂。
-  Order _billToPrint() {
-    final isCash = _method == PaymentMethod.cash;
-    final change = _change;
+  Order _billToPrint(CheckoutResult result) {
+    final isCash = result.method == PaymentMethod.cash;
+    final change = result.change ?? 0;
     final paid = isCash && change >= 0;
+    final price = PriceBreakdown.of(
+      subtotal: _order.subtotal,
+      discountType: result.discountType,
+      discountValue: result.discountValue,
+      taxRate: _order.taxRate,
+      taxIncluded: _order.taxIncluded,
+    );
     return _order.copyWith(
-      discountType: _discountType,
-      discountValue: _discountValue,
-      total: _price.total,
+      discountType: result.discountType,
+      discountValue: result.discountValue,
+      total: price.total,
       // 支付方式（现金 / 刷卡）也打上，纸上才看得懂下面那两行是哪来的
-      paymentMethod: _method,
-      currencyCode: _currency,
-      // 本位币传 0（不需要换算），外币才传真实汇率 —— 跟 `_finish` 一个口径
-      exchangeRate: _currency == widget.settings.baseCurrency ? 0 : _rate,
-      receivedAmount: paid ? (_received ?? _dueForeign) : null,
-      changeAmount: paid ? change : null,
+      paymentMethod: result.method,
+      currencyCode: result.currencyCode,
+      exchangeRate: result.exchangeRate,
+      receivedAmount: paid ? result.received : null,
+      changeAmount: paid ? result.change : null,
     );
   }
 
@@ -782,7 +987,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     if (_printing) return;
     setState(() => _printing = true);
 
-    final bill = _billToPrint();
+    final bill = _billToPrint(_pending ?? _currentResult());
     final err = await widget.printBill(bill);
     // 两个都查一下：mounted 是 State 的（下面要 setState），context.mounted 是因为
     // 后面还要拿这个 context 弹窗 —— 分析器只认「跟用到的 context 对得上」的那个检查。
@@ -805,23 +1010,63 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     }
   }
 
-  /// 收款完成 —— 把结果交回给 `settleOrderFlow` 落账，窗口关闭。
-  /// （「单子」想打就点左边那个按钮打过了，收款这里**不打纸**。）
-  void _finish(BuildContext context, bool isCash, double change) {
-    Navigator.pop(
-      context,
-      CheckoutResult(
-        discountType: _discountType,
-        discountValue: _discountValue,
-        method: _method,
-        currencyCode: _currency,
-        // 本位币传 0：表示「不需要换算」，外币才传真实汇率
-        exchangeRate:
-            _currency == widget.settings.baseCurrency ? 0 : _rate,
-        received: isCash ? (_received ?? _dueForeign) : null,
-        change: isCash ? change : null,
-      ),
-    );
+  /// 第一步「确认收款」：**先不落账**，把金额冻住、进第二步钱柜。
+  ///
+  /// 现金走这里时会**先弹钱箱**（钱柜接在打印机上，见 `ReceiptPrintService.openCashDrawer`）；
+  /// 钱箱打不开 / 超时也**不阻止**继续收款（不能因为钱箱卡住就收不了钱）。
+  /// 这一步订单还是「进行中」；只有第二步点「结束」才真正结账。
+  Future<void> _confirm() async {
+    if (_confirming) return;
+    // 现金还差钱不让进（按钮本来就灰了，这里兜底）
+    if (_method == PaymentMethod.cash && _change < 0) return;
+
+    setState(() => _confirming = true);
+    // 收起键盘：第二步是全屏找零，别让输入法挡住「结束」
+    FocusScope.of(context).unfocus();
+    try {
+      // **现金才弹钱箱**（刷卡不该开钱柜）；3 秒超时，失败也继续
+      if (_method == PaymentMethod.cash) {
+        final open = widget.openCashDrawer;
+        if (open != null) {
+          try {
+            await open().timeout(const Duration(seconds: 3));
+          } catch (_) {
+            // 打印机没连 / 钱箱线没插：不阻止收款，收银员能继续操作
+          }
+        }
+      }
+
+      if (!mounted) return;
+      final result = _currentResult();
+      setState(() {
+        _pending = result;
+        _pendingDue = _dueForeign;
+        _pendingReceived = _received ?? _dueForeign;
+        _pendingChange = _change;
+        _pendingSymbol = _symbol;
+      });
+    } finally {
+      if (mounted) setState(() => _confirming = false);
+    }
+  }
+
+  /// 第二步「返回上一步」：回第一步改折扣 / 实收（不落账）。
+  ///
+  /// 已经打过的提示作废：金额可能要改，别让人以为纸上那份还是对的。
+  void _backToEdit() {
+    setState(() {
+      _pending = null;
+      _printedAt = null;
+    });
+  }
+
+  /// 第二步「结束」：把冻住的收款结果交给 `settleOrderFlow` 落账并关窗。
+  ///
+  /// **只有走到这一步，单子才进「已结单」**。
+  void _end() {
+    final result = _pending;
+    if (result == null) return;
+    Navigator.pop(context, result);
   }
 
   /// 小计 / 折扣 / 税 / 合计（显示在**左边清单的底部**）。
@@ -990,15 +1235,23 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
 /// 用在「不用惊动厨房」的菜上：酒水、饮料、先垫着不下厨的菜。
 /// 记完之后菜会出现在购物车上面的「已在单上」区，标成**橙色「未下厨」**，
 /// 下次点「厨房」时会跟别的没下厨的菜一起打给厨房。
-Future<void> saveOrderFlow(BuildContext context) =>
+Future<Order?> saveOrderFlow(BuildContext context) =>
     _submitOrder(context, toKitchen: false, askName: true);
 
 /// 购物车下面**中间那个「厨房」**：把本次新增的菜记到单上，然后**打厨房单**。
 ///
 /// 厨房单打的是这张单上**所有还没下厨的行**（包括之前「保存」过的），
 /// 所以厨房不会漏菜；打成功了才把这些行标成「已下厨」（失败可以再点一次重打）。
-Future<void> kitchenOrderFlow(BuildContext context) =>
-    _submitOrder(context, toKitchen: true);
+///
+/// 打印失败 / 被「跳过」时返回 null：点餐页据此**不自动回选桌页**，
+/// 收银员可以留在原地再点一次「厨房」重打。
+Future<Order?> kitchenOrderFlow(BuildContext context) async {
+  final order = await _submitOrder(context, toKitchen: true);
+  if (order == null || !context.mounted) return order;
+  // `_submitOrder` 打印失败被跳过时也会把单交回来；看还有没有没下厨的行。
+  final pending = context.read<PosController>().kitchenTicketLines(order.id).lines;
+  return pending.isEmpty ? order : null;
+}
 
 /// 购物车下面**右边那个「结账」**：**先记单**（跟「保存」一样），
 /// 然后**直接打开这张单的结账窗口**（就是订单页那个「结账」）。
@@ -1011,16 +1264,17 @@ Future<void> kitchenOrderFlow(BuildContext context) =>
 /// - **没起名字的外卖单**既没桌号也没名字，`openOrderForSelectedTable()` 是找不到它的
 ///   （那是故意的设计），所以兜底用"刚刚动过的那一张"（`lastTouchedOrder`）——
 ///   这样"点完厨房再点结账"也能结到正确的那张单。
-Future<void> checkoutOrderFlow(BuildContext context) async {
+Future<Order?> checkoutOrderFlow(BuildContext context) async {
   final pos = context.read<PosController>();
   // 购物车里有菜 → 先记到单上（这一步跟「保存」完全一样，只是不问名字）
   final saved = await _submitOrder(context, toKitchen: false, askName: false);
-  if (!context.mounted) return;
+  if (!context.mounted) return null;
   // 购物车本来就是空的（比如刚点过「厨房」）→ 结"当前这张还没结的单"
   final order =
       saved ?? pos.openOrderForSelectedTable() ?? pos.lastTouchedOrder;
-  if (order == null) return; // 没东西可结
-  await settleOrderFlow(context, order);
+  if (order == null) return null; // 没东西可结
+  // 返回真正结掉的那张单；用户取消结账窗口 → null（点餐页据此判断要不要回选桌页）
+  return settleOrderFlow(context, order);
 }
 
 /// 「保存」「厨房」「结账」共用的流程：**先记单，再（可选）打厨房单**。
@@ -1075,7 +1329,8 @@ Future<Order?> _submitOrder(
     // - 电话外卖（现在普通外卖也一样）→ 等待时间随时能改，厨房单跟着变；
     // - 点「不用名字」= **不要名字了**（原来有名字的会被清掉，靠 `#号` 继续认）。
     if (!toKitchen) {
-      if (askName && saved.isTakeaway && context.mounted) {
+      // 分单不弹：名字 / 等待时间属于**母单**，分单跟着母单走
+      if (askName && saved.isTakeaway && !saved.isSplit && context.mounted) {
         final r = await showTakeawayNameDialog(context, saved);
         if (r != null) {
           pos.setOrderLabel(
@@ -1104,7 +1359,8 @@ Future<Order?> _submitOrder(
       if (askName && context.mounted) {
         // 当前这张单：先按桌号/名字找，找不到就用"刚动过的那一张"兜底
         final open = pos.openOrderForSelectedTable() ?? pos.lastTouchedOrder;
-        if (open != null && open.isTakeaway) {
+        // 分单不弹（名字 / 等待时间属于母单）
+        if (open != null && open.isTakeaway && !open.isSplit) {
           final r = await showTakeawayNameDialog(context, open);
           if (r != null) {
             pos.setOrderLabel(
@@ -1184,12 +1440,18 @@ Future<Order?> _submitOrder(
   return order;
 }
 
-/// 结账流程：一个结账窗口（明细 + 折扣 + 收款都在一页）→ 记成已结单。
+/// 结账流程：结账窗口（两步）→ 第二步点「结束」→ 记成已结单。
 ///
-/// **打纸跟收款解开**：想打就点「打印单子」（明细 + 合计，含刚设的折扣），
-/// 打完留在原界面（可以再打、也可以走开一会儿）；点「确认收款」才落账、关窗，
-/// **点确认的时候不再出纸**。打印失败的处理（重试 / 跳过）在窗口内部（见 `_printBill`）。
-Future<void> settleOrderFlow(BuildContext context, Order order) async {
+/// **确认收款 ≠ 结账完成**：第一步点「确认收款」只是打开钱柜看找零，
+/// 这时候订单还是「进行中」；第二步点「结束」才落账、关窗，单子才进已结单。
+/// 第二步左上角的「返回上一步」可以回第一步改折扣 / 实收，不会落账。
+///
+/// **打纸跟收款解开**：想打就点「打印单子」（明细 + 合计 + 实收/找零），
+/// 两步都能打、可以打多次；**点「结束」的时候不再出纸**。
+/// 打印失败的处理（重试 / 跳过）在窗口内部（见 `_printBill`）。
+///
+/// 返回**真正结掉的单**；取消结账窗口返回 null（点餐页据此判断要不要回选桌页）。
+Future<Order?> settleOrderFlow(BuildContext context, Order order) async {
   final pos = context.read<PosController>();
   final settingsCtl = context.read<SettingsController>();
   final service = context.read<ReceiptPrintService>();
@@ -1203,11 +1465,13 @@ Future<void> settleOrderFlow(BuildContext context, Order order) async {
     cashier: cashier,
     // 「单子」= 这张进行中的单（明细 + 合计，还没有支付信息）
     printBill: (o) => service.printReceipt(o, settings),
+    // 现金点「确认收款」时弹钱箱：钱柜接在打印机上，走同一条打印通道
+    openCashDrawer: () => service.openCashDrawer(settings),
   );
-  if (result == null || !context.mounted) return;
+  if (result == null || !context.mounted) return null;
 
   // 记账：金额按订单**当前**的行算（窗口里可能刚删过菜），折扣用窗口里选的
-  pos.closeOrder(
+  return pos.closeOrder(
     order.id,
     result.method,
     discountType: result.discountType,

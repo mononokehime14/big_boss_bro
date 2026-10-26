@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../l10n/app_strings.dart';
 import '../models/menu_item.dart';
 import '../models/menu_option_group.dart';
+import '../state/pos_controller.dart';
 import '../state/settings_controller.dart';
 import '../utils/format.dart';
 
@@ -100,6 +101,30 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
   String _priceTag(double price) =>
       price == 0 ? '' : ' ${signedAmount(price)}';
 
+  /// 备注搜索用的归一化：转小写 + 去掉空格（「不要 炒饭」也能搜到「不要炒饭」）。
+  static String _normNote(String s) =>
+      s.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+
+  /// **相近备注**的打分：
+  /// 完全一样 4 → 前缀 3 → 包含 2 → 按顺序出现（「不要饭」也能找到「不要炒饭」）1
+  /// → 不相关 -1。
+  static int _noteMatchScore(String note, String query) {
+    final n = _normNote(note);
+    final q = _normNote(query);
+    if (q.isEmpty) return 0;
+    if (n == q) return 4;
+    if (n.startsWith(q)) return 3;
+    if (n.contains(q)) return 2;
+    // 简单的"字按顺序出现"：足够处理「不要饭」→「不要炒饭」这种少打一个字的输入
+    final nr = n.runes.toList();
+    final qr = q.runes.toList();
+    var qi = 0;
+    for (var i = 0; i < nr.length && qi < qr.length; i++) {
+      if (nr[i] == qr[qi]) qi++;
+    }
+    return qi == qr.length ? 1 : -1;
+  }
+
   /// 备注输入框右边那个小金额框里填的数。
   ///
   /// **空着的时候不是 0**：如果打的这条文字正好是一条**常用备注**
@@ -136,11 +161,24 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
   final _notePriceCtl = TextEditingController();
   final _qtyCtl = TextEditingController();
   final _noteFocus = FocusNode();
-  bool _saveAsTag = false;
+
+  /// 新备注**默认存进常用备注**（用户可以在下面取消勾选）。
+  bool _saveAsTag = true;
+
+  /// **常用备注使用次数**（只算已结账单）：打开框时从 PosController 取一次。
+  ///
+  /// 测试 / 没有 PosController 的环境取不到 → 空 map（就按设置里原来的顺序）。
+  late final Map<String, int> _noteUsage;
 
   @override
   void initState() {
     super.initState();
+    // 常用备注排序用的使用次数：打开框时算一次（测试里没 PosController → 空）
+    try {
+      _noteUsage = context.read<PosController>().noteUsageCounts();
+    } catch (_) {
+      _noteUsage = const <String, int>{};
+    }
     final initial = widget.initial?.selections ?? const <String>[];
     // ⚠️ 兜底一定要写 `const <MenuOptionGroup>[]`（不能只写 `const []`）：
     // 只写 `const []` 时这个表达式的类型会变成 `List<dynamic>`，循环变量 g 就变 dynamic，
@@ -414,8 +452,35 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
     final settings = context.watch<SettingsController>().settings;
     final item = widget.item;
     final symbol = settings.currencySymbol;
-    // 常用备注按**种类**给：通用('' 键) + 这个菜品所属分类的
-    final savedNotes = settings.notesFor(_categoryId);
+
+    // ---- 常用备注：搜索 / 按已结账单的使用次数排序 / 最多显示两行 ----
+    final noteQuery = _noteCtl.text.trim();
+    // 通用（''）+ 这个分类的；**已经加进这一行的**不重复显示（上面有 InputChip）。
+    final seen = <String>{};
+    final available = <String>[
+      for (final n in settings.notesFor(_categoryId))
+        if (!_notes.contains(n) && seen.add(n)) n,
+    ];
+    final matches = <({String note, int score, int index})>[];
+    for (var i = 0; i < available.length; i++) {
+      final score =
+          noteQuery.isEmpty ? 0 : _noteMatchScore(available[i], noteQuery);
+      if (score < 0) continue;
+      matches.add((note: available[i], score: score, index: i));
+    }
+    matches.sort((a, b) {
+      // 输入了搜索词：先按"相近程度"，再按使用次数
+      final byScore = b.score.compareTo(a.score);
+      if (byScore != 0) return byScore;
+      final byUsage =
+          (_noteUsage[b.note] ?? 0).compareTo(_noteUsage[a.note] ?? 0);
+      if (byUsage != 0) return byUsage;
+      return a.index.compareTo(b.index);
+    });
+    final visibleNotes = [for (final m in matches) m.note];
+    final exactNoteAlreadyAdded =
+        noteQuery.isNotEmpty && _notes.contains(noteQuery);
+
     final isEdit = widget.initial != null;
 
     return Dialog(
@@ -612,9 +677,10 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                             controller: _noteCtl,
                             focusNode: _noteFocus,
                             textInputAction: TextInputAction.next,
-                            decoration: const InputDecoration(
-                              border: OutlineInputBorder(),
+                            decoration: InputDecoration(
+                              border: const OutlineInputBorder(),
                               isDense: true,
+                              hintText: L10n.t('custom.note.hint'),
                             ),
                             // 回车 = 跳到右边那个「加价」小框（填完再回车就存）
                             onSubmitted: (_) => FocusScope.of(context).nextFocus(),
@@ -647,34 +713,50 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                         ),
                       ],
                     ),
-                    // 常用备注标签：点一下**加进备注**（不是填进输入框）
-                    if (savedNotes.isNotEmpty) ...[
+                    // 常用备注：输入时就是**搜索结果**；没输入时按「已结账单使用次数」
+                    // 从多到少排。最多显示**两行**，剩下的用「…」省略（继续打字可搜出来）。
+                    if (visibleNotes.isNotEmpty || noteQuery.isNotEmpty) ...[
                       const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 4,
-                        children: [
-                          for (final n in savedNotes)
-                            FilterChip(
-                              selected: _notes.contains(n),
-                              onSelected: (v) => _toggleSavedNote(
-                                  n, v, settings.notePriceFor(_categoryId, n)),
-                              // 标签上也把加价写出来，免得点了才知道加钱
-                              label: Text(
-                                '$n${_priceTag(settings.notePriceFor(_categoryId, n))}',
-                              ),
-                              showCheckmark: true,
-                              selectedColor: const Color(0xFF1FA85A),
-                              checkmarkColor: Colors.white,
-                              labelStyle: TextStyle(
-                                color: _notes.contains(n)
-                                    ? Colors.white
-                                    : const Color(0xFF232829),
-                                fontWeight: FontWeight.w600,
-                              ),
+                      if (noteQuery.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Text(
+                            visibleNotes.isNotEmpty
+                                ? L10n.t('custom.note.matches')
+                                : (exactNoteAlreadyAdded
+                                    ? L10n.t('custom.note.alreadyAdded')
+                                    : L10n.t('custom.note.noMatch')),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade600,
                             ),
-                        ],
-                      ),
+                          ),
+                        ),
+                      if (visibleNotes.isNotEmpty)
+                        _LimitedWrap(
+                          children: [
+                            for (final n in visibleNotes)
+                              FilterChip(
+                                selected: false,
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                                onSelected: (_) => _toggleSavedNote(
+                                  n,
+                                  true,
+                                  settings.notePriceFor(_categoryId, n),
+                                ),
+                                // 标签上也把加价写出来，免得点了才知道加钱
+                                label: Text(
+                                  '$n${_priceTag(settings.notePriceFor(_categoryId, n))}',
+                                ),
+                                showCheckmark: false,
+                                labelStyle: const TextStyle(
+                                  color: Color(0xFF232829),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                          ],
+                        ),
                     ],
                     Row(
                       children: [
@@ -795,6 +877,64 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// **两行高的可滚动框**：常用备注太多时，框本身还是两行，
+/// 右边出现一个**可拖动的滚动条**（就像网页右侧那条），用户往下拖看更多。
+///
+/// 不用省略号：备注仍然都在，只是藏在框里，滚一下就能看到；
+/// 另外在输入框打字会直接搜索，不用滚。
+class _LimitedWrap extends StatefulWidget {
+  final List<Widget> children;
+
+  const _LimitedWrap({required this.children});
+
+  @override
+  State<_LimitedWrap> createState() => _LimitedWrapState();
+}
+
+class _LimitedWrapState extends State<_LimitedWrap> {
+  /// 两行的高度：FilterChip 用了 `shrinkWrap`，一行 32；两行 + 4 行距 = 68。
+  static const double _maxHeight = 68;
+
+  /// 滚动条和滚动内容**共用**这个 controller，拖动条才能控制内容。
+  final ScrollController _scrollCtl = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollCtl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: Scrollbar(
+        controller: _scrollCtl,
+        // 一直显示那条滚动条（内容不够高时 Flutter 自己不会画）
+        thumbVisibility: true,
+        // Windows / 安卓都能**直接拖这条 bar**
+        interactive: true,
+        thickness: 6,
+        radius: const Radius.circular(3),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: _maxHeight),
+          child: SingleChildScrollView(
+            controller: _scrollCtl,
+            physics: const ClampingScrollPhysics(),
+            // 右边留一点，别让 chip 压在滚动条下面
+            padding: const EdgeInsets.only(right: 12),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: widget.children,
+            ),
+          ),
         ),
       ),
     );

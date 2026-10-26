@@ -515,6 +515,14 @@ class Order {
   /// **只在本地有意义**：有没有还没推上去的改动（推成功后置 false）。
   final bool dirty;
 
+  /// **本地回退过、还没同步到服务器**（`reopenOrder` 置 true）。
+  ///
+  /// 为什么需要它：服务器对「已结单」用 `close_order()` 做 CAS（`status <> completed`）。
+  /// 如果本地把单子退回进行中、**还没把 in_progress 推上去**就再次结账，
+  /// 服务器仍然是 completed → CAS 会返回**旧单**，反而把这次重新结账覆盖掉。
+  /// 带这个标记的已结单改用整单 upsert（推上去时 `OrderSync` 会把它置 false）。
+  final bool reopenPending;
+
   Order({
     required this.id,
     required this.createdAt,
@@ -544,6 +552,7 @@ class Order {
     this.rev = 0,
     this.deviceId = '',
     this.dirty = true,
+    this.reopenPending = false,
     // 注意：updatedAt 是参数名，下面初始化列表里右边的 updatedAt 指的是这个参数
   })  : payments = payments ?? <Payment>[],
         updatedAt = updatedAt ?? createdAt;
@@ -555,6 +564,49 @@ class Order {
         updatedAt: DateTime.now(),
         deviceId: (deviceId == null || deviceId.isEmpty) ? null : deviceId,
         dirty: true,
+      );
+
+  /// **已结单 → 进行中**（收银员手快结错单时回退用）。
+  ///
+  /// 只清「收款」相关的字段：**菜、折扣、税、桌号、分单关系都不动**，
+  /// 应收按当前的行重新算一遍，保证再结账时金额一致。
+  ///
+  /// ⚠️ 不能用 [copyWith] 清字段：`copyWith` 里 `closedAt ?? this.closedAt`
+  /// 这种写法**传 null 等于"不修改"**，所以这里直接构造一个新对象。
+  Order reopened({String? deviceId}) => Order(
+        id: id,
+        createdAt: createdAt,
+        lines: lines,
+        total: computedTotal,
+        discountType: discountType,
+        discountValue: discountValue,
+        taxRate: taxRate,
+        taxIncluded: taxIncluded,
+        // 收款记录全部清掉：退回收银状态，等下一次结账重新记
+        payments: const <Payment>[],
+        paymentMethod: null,
+        table: table,
+        label: label,
+        dailyNo: dailyNo,
+        waitMinutes: waitMinutes,
+        orderType: orderType,
+        status: OrderStatus.inProgress,
+        closedAt: null,
+        currencyCode: '',
+        exchangeRate: 0,
+        receivedAmount: null,
+        changeAmount: null,
+        cashier: cashier,
+        parentId: parentId,
+        splitNo: splitNo,
+        updatedAt: DateTime.now(),
+        rev: rev,
+        deviceId: (deviceId == null || deviceId.isEmpty)
+            ? this.deviceId
+            : deviceId,
+        dirty: true,
+        // 提醒同步：这次"回退"要先整单 upsert 上去，别走 close_order 的 CAS
+        reopenPending: true,
       );
 
   bool get isInProgress => status == OrderStatus.inProgress;
@@ -690,6 +742,7 @@ class Order {
     int? rev,
     String? deviceId,
     bool? dirty,
+    bool? reopenPending,
   }) =>
       Order(
         id: id,
@@ -720,6 +773,7 @@ class Order {
         rev: rev ?? this.rev,
         deviceId: deviceId ?? this.deviceId,
         dirty: dirty ?? this.dirty,
+        reopenPending: reopenPending ?? this.reopenPending,
       );
 
   Map<String, dynamic> toJson() => {
@@ -753,6 +807,8 @@ class Order {
         'rev': rev,
         'deviceId': deviceId,
         'dirty': dirty,
+        // 本地回退过、还没同步到服务器（见字段注释；老数据没有 → false）
+        'reopenPending': reopenPending,
       };
 
   factory Order.fromJson(Map<String, dynamic> json) => Order(
@@ -803,6 +859,8 @@ class Order {
         rev: (json['rev'] as num?)?.toInt() ?? 0,
         deviceId: (json['deviceId'] as String?) ?? '',
         dirty: (json['dirty'] as bool?) ?? true,
+        // 老数据没有这个字段 → 没回退过
+        reopenPending: (json['reopenPending'] as bool?) ?? false,
       );
 
   static List<Payment> _paymentsFromJson(Map<String, dynamic> json) {

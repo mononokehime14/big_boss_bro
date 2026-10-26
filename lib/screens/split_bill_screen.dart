@@ -38,7 +38,8 @@ Future<void> showSplitBillScreen(BuildContext context, String orderId) =>
 /// - 每栏都显示**自己的合计**（客人分开付钱，各自结账）。
 ///
 /// 规则（`PosController.splitOrderLines`）：菜是**挪走**的（合计加起来不变）、
-/// 出手的那一栏至少留一道菜、分单单独结账。
+/// 母单至少留一道菜、**分单的菜可以移回母单**、分单单独结账；
+/// 分单被整单移空之后会自动删除，不会留下空单。
 class SplitBillScreen extends StatefulWidget {
   /// 从哪张单进来的（母单或分单都行 —— 会显示它所属的**整条线**）。
   final String orderId;
@@ -67,14 +68,40 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
         if (!_picked.remove(index)) _picked.add(index);
       });
 
-  /// 问「移到哪儿」：新分单 / 这条线里**别的**分单。
+  /// 问「移到哪儿」：**母单**（分单专用，把菜挪回去）/ 新分单 / 这条线里**别的**分单。
   Future<String?> _askTarget(List<Order> family, String sourceId, String symbol) {
     final others = family.where((o) => o.isSplit && o.id != sourceId).toList();
+    // 勾的这张是不是分单？这条线里还有没有母单（母单可能已经结账走了）？
+    Order? source;
+    Order? root;
+    for (final o in family) {
+      if (o.id == sourceId) source = o;
+      if (!o.isSplit) root = o;
+    }
+    final mainOrder = root;
+    final canMoveBack = (source?.isSplit ?? false) && mainOrder != null;
     return showDialog<String>(
       context: context,
       builder: (dialogContext) => SimpleDialog(
         title: Text(L10n.t('split.move')),
         children: [
+          // **移回母单**：从分单点错了 / 客人又不分开了 → 把菜挪回去
+          if (canMoveBack)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dialogContext, mainOrder!.id),
+              child: Row(
+                children: [
+                  const Icon(Icons.arrow_upward,
+                      size: 20, color: Color(0xFF1FA85A)),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(L10n.t('split.backToParent'))),
+                  Text(
+                    money(mainOrder!.total, symbol),
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+            ),
           SimpleDialogOption(
             onPressed: () => Navigator.pop(dialogContext, ''),
             child: Row(
@@ -138,7 +165,9 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(
-        content: Text('${L10n.t('split.moved')} · ${orderPlaceLabel(r)}'),
+        // 移回母单和移到分单分开说，免得收银员以为又多了一张分单
+        content: Text('${L10n.t(r.isSplit ? 'split.moved' : 'split.movedToParent')}'
+            ' · ${orderPlaceLabel(r)}'),
         duration: const Duration(milliseconds: 1600),
       ));
   }
@@ -217,6 +246,32 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
           ),
         ],
       ),
+      // ---- 底部「确定」：每次移动其实**已经写进单子**了，这个按钮只是关掉界面 ----
+      // 给收银员一个明确的"我确认分好了"，不用靠左上角返回箭头猜有没有保存。
+      bottomNavigationBar: SafeArea(
+        minimum: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              L10n.t('split.autoSaved'),
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+            ),
+            const SizedBox(height: 6),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(context).pop(),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF1FA85A),
+                minimumSize: const Size(0, 46),
+              ),
+              icon: const Icon(Icons.check, size: 20),
+              label: Text(L10n.t('split.done')),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -253,9 +308,12 @@ class _SplitColumn extends StatelessWidget {
   Widget build(BuildContext context) {
     final accent =
         isMain ? const Color(0xFF1FA85A) : const Color(0xFF1565C0);
-    // 勾满一整栏 = 这张单会被搬空 → 不允许
+    // 勾满一整栏 = 这张单会被搬空：
+    // - **母单**不允许（至少要留一道菜，不然整条线就没有根了）；
+    // - **分单**允许（整单移走 / 移回母单之后，这张空分单会自动删掉）。
     final allPicked =
         order.lines.isNotEmpty && picked.length >= order.lines.length;
+    final canMove = picked.isNotEmpty && (order.isSplit || !allPicked);
     final pickedTotal = [
       for (var i = 0; i < order.lines.length; i++)
         if (picked.contains(i)) order.lines[i].subtotal,
@@ -388,15 +446,14 @@ class _SplitColumn extends StatelessWidget {
                 ),
                 if (allPicked)
                   Text(
-                    L10n.t('split.keepOne'),
+                    L10n.t(isMain ? 'split.keepOne' : 'split.moveAllHint'),
                     maxLines: 2,
                     style: const TextStyle(
                         fontSize: 11, color: Color(0xFFEF6C00)),
                   ),
                 const SizedBox(height: 6),
                 FilledButton.icon(
-                  onPressed:
-                      picked.isEmpty || allPicked ? null : onMove,
+                  onPressed: canMove ? onMove : null,
                   style: FilledButton.styleFrom(
                     backgroundColor: accent,
                     minimumSize: const Size(0, 40),

@@ -371,6 +371,29 @@ class FilePickerWindows extends FilePickerPlatform {
       nativeString[units.length] = 0;
     }
 
+    // 保存对话框的「默认扩展名」。
+    //
+    // Windows 只有在 lpstrDefExt 非空时才会在用户没写扩展名时自动补上；
+    // 原来的实现没设这个字段，所以在 Windows 上输入 `menu` 会存成无扩展名的
+    // 文件（资源管理器里显示成 File），Excel 打不开。这里优先用 allowedExtensions，
+    // 没有就取默认文件名后面的扩展名。
+    String? defaultExt;
+    if (args.allowedExtensions != null && args.allowedExtensions!.isNotEmpty) {
+      defaultExt = args.allowedExtensions!.first;
+    } else if (args.defaultFileName != null) {
+      final dot = args.defaultFileName!.lastIndexOf('.');
+      if (dot >= 0 && dot < args.defaultFileName!.length - 1) {
+        defaultExt = args.defaultFileName!.substring(dot + 1);
+      }
+    }
+    final ext = defaultExt;
+    if (ext != null) {
+      final clean = ext.startsWith('.') ? ext.substring(1) : ext;
+      if (clean.isNotEmpty) {
+        openFileNameW.ref.lpstrDefExt = clean.toNativeUtf16();
+      }
+    }
+
     return openFileNameW;
   }
 
@@ -393,6 +416,9 @@ class FilePickerWindows extends FilePickerPlatform {
     calloc.free(openFileNameW.ref.lpstrFile);
     calloc.free(openFileNameW.ref.lpstrFilter);
     calloc.free(openFileNameW.ref.lpstrInitialDir);
+    if (openFileNameW.ref.lpstrDefExt.address != 0) {
+      calloc.free(openFileNameW.ref.lpstrDefExt);
+    }
     calloc.free(openFileNameW);
   }
 

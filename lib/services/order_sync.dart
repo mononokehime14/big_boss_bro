@@ -197,7 +197,11 @@ class OrderSync {
         'device_id': deviceId.isEmpty ? o.deviceId : deviceId,
         'closed_at': o.closedAt?.toUtc().toIso8601String(),
         // 整张单原样存进 data（后台网页直接读它）
-        'data': o.copyWith(dirty: false, deviceId: deviceId).toJson(),
+        // `reopenPending` 是**本地**标记：送上去一律置 false，
+        // 服务器回包采纳回来时它就自然清掉了（见 Order.reopenPending）。
+        'data': o
+            .copyWith(dirty: false, deviceId: deviceId, reopenPending: false)
+            .toJson(),
       };
 
   /// 结账时要并进服务器 JSON 的那份「补丁」= **本地整张单的 JSON**。
@@ -217,5 +221,7 @@ class OrderSync {
     Order closed, {
     required String deviceId,
   }) =>
-      closed.copyWith(dirty: false, deviceId: deviceId).toJson();
+      closed
+          .copyWith(dirty: false, deviceId: deviceId, reopenPending: false)
+          .toJson();
 }

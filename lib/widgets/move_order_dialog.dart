@@ -44,6 +44,12 @@ class _MoveOrderDialogState extends State<_MoveOrderDialog> {
   /// 选中的目标桌（空 = 还没选，会自动挑第一个能用的）。
   String _table = '';
 
+  /// 选中的**外卖类型**目标（null = 现在选的是桌子）。
+  ///
+  /// 外卖 / 电话外卖 / 平台外卖作为"类型目标"，不是某一张具体的外卖单：
+  /// 选中后只改这张单的 `orderType`，不会跟别的外卖单合并。
+  OrderType? _takeawayTarget;
+
   @override
   void initState() {
     super.initState();
@@ -68,9 +74,11 @@ class _MoveOrderDialogState extends State<_MoveOrderDialog> {
     // 右边：所有桌号（自然顺序，跟点单页一样）
     final tables = sortedTables(settings.tables);
 
-    // 还没挑目标桌（或者挑的那张已经被删掉）→ 默认用第一个**跟源单不一样**的桌
+    // 选了外卖类型时，不需要桌号；选桌子时才自动挑第一个**跟源单不一样**的桌。
+    final takeawayTarget = _takeawayTarget;
     var table = _table;
-    if (table.isEmpty || !tables.contains(table)) {
+    if (takeawayTarget == null &&
+        (table.isEmpty || !tables.contains(table))) {
       for (final t in tables) {
         if (source == null || source.isTakeaway || t != source.table) {
           table = t;
@@ -80,9 +88,17 @@ class _MoveOrderDialogState extends State<_MoveOrderDialog> {
       if (table.isEmpty && tables.isNotEmpty) table = tables.first;
     }
 
-    final sameTable =
-        source != null && !source.isTakeaway && source.table == table;
-    final canMove = source != null && table.isNotEmpty && !sameTable;
+    final sameTable = takeawayTarget == null &&
+        source != null &&
+        !source.isTakeaway &&
+        source.table == table;
+    final sameTakeaway = takeawayTarget != null &&
+        source != null &&
+        source.orderType == takeawayTarget;
+    final sameTarget = sameTable || sameTakeaway;
+    final canMove = source != null &&
+        !sameTarget &&
+        (takeawayTarget != null || table.isNotEmpty);
     // 确认按钮里要用到它（这里先抓成非空，免得回调里再判一次）
     final src = canMove ? source : null;
 
@@ -106,20 +122,56 @@ class _MoveOrderDialogState extends State<_MoveOrderDialog> {
         ],
       ),
     );
-    // 右栏：要移动到的桌
+    // 右栏：移到哪张桌 / 哪种外卖
     final right = _Pane(
-      title: L10n.t('move.target'),
+      title: L10n.t('move.targetAny'),
       child: ListView(
         children: [
+          // **外卖 / 电话外卖 / 平台外卖**：只改类型，不跟别的外卖单合并
+          _TypeTile(
+            title: L10n.t('order.takeaway'),
+            icon: Icons.shopping_bag_outlined,
+            color: const Color(0xFF37474F),
+            selected: takeawayTarget == OrderType.takeaway,
+            onTap: () => setState(() {
+              _takeawayTarget = OrderType.takeaway;
+              _table = '';
+            }),
+          ),
+          _TypeTile(
+            title: L10n.t('order.phonecallTakeaway'),
+            icon: Icons.phone_in_talk_outlined,
+            color: const Color(0xFF6A1B9A),
+            selected: takeawayTarget == OrderType.phonecallTakeaway,
+            onTap: () => setState(() {
+              _takeawayTarget = OrderType.phonecallTakeaway;
+              _table = '';
+            }),
+          ),
+          _TypeTile(
+            title: L10n.t('order.platformTakeaway'),
+            icon: Icons.delivery_dining_outlined,
+            color: const Color(0xFF00695C),
+            selected: takeawayTarget == OrderType.platformTakeaway,
+            onTap: () => setState(() {
+              _takeawayTarget = OrderType.platformTakeaway;
+              _table = '';
+            }),
+          ),
+          const Divider(height: 16),
           for (final t in tables)
             _TableTile(
               table: t,
-              selected: t == table,
+              // 选了外卖类型时，桌号都不高亮
+              selected: takeawayTarget == null && t == table,
               // 那桌已经有菜 → 提示「已有 N」（确认后会并单）
               note: pos.openItemCountForTable(t) > 0
                   ? '${L10n.t('move.occupied')} ${pos.openItemCountForTable(t)}'
                   : null,
-              onTap: () => setState(() => _table = t),
+              onTap: () => setState(() {
+                _table = t;
+                _takeawayTarget = null;
+              }),
             ),
         ],
       ),
@@ -158,7 +210,16 @@ class _MoveOrderDialogState extends State<_MoveOrderDialog> {
                   )),
       ),
       actions: [
-        if (sameTable)
+        if (sameTakeaway)
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Text(
+              L10n.t('move.sameType'),
+              style: const TextStyle(
+                  fontSize: 13, color: Color(0xFFEF6C00)),
+            ),
+          )
+        else if (sameTable)
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: Text(
@@ -175,18 +236,22 @@ class _MoveOrderDialogState extends State<_MoveOrderDialog> {
           onPressed: src == null
               ? null
               : () {
-                  final merged = pos.moveOrderToTable(src.id, table);
+                  final moved = takeawayTarget != null
+                      ? pos.moveOrderToType(src.id, takeawayTarget!)
+                      : pos.moveOrderToTable(src.id, table);
                   final messenger = ScaffoldMessenger.of(context);
                   Navigator.pop(context);
-                  if (merged == null) return;
+                  if (moved == null) return;
                   messenger
                     ..clearSnackBars()
                     ..showSnackBar(SnackBar(
                       content: Text(
                         // 换了张单（id 变了）= 并进目标桌那张了
-                        merged.id != src.id
+                        moved.id != src.id
                             ? L10n.t('move.merged')
-                            : L10n.t('move.done'),
+                            : takeawayTarget != null
+                                ? L10n.t('move.typeDone')
+                                : L10n.t('move.done'),
                       ),
                       duration: const Duration(milliseconds: 1600),
                     ));
@@ -264,6 +329,56 @@ class _OrderTile extends StatelessWidget {
       trailing: Text(
         trailing,
         style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+      ),
+      onTap: onTap,
+    );
+  }
+}
+
+/// 右边那一行：**外卖 / 电话外卖 / 平台外卖**目标（只改类型，不合并单子）。
+class _TypeTile extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final Color color;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _TypeTile({
+    required this.title,
+    required this.icon,
+    required this.color,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      dense: true,
+      selected: selected,
+      selectedTileColor: color.withValues(alpha: 0.12),
+      leading: Icon(
+        selected ? Icons.radio_button_checked : Icons.radio_button_off,
+        size: 20,
+        color: selected ? color : Colors.grey,
+      ),
+      title: Row(
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: color,
+              ),
+            ),
+          ),
+        ],
       ),
       onTap: onTap,
     );

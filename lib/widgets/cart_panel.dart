@@ -20,7 +20,8 @@ import 'takeaway_name_dialog.dart';
 /// 购物车面板（宽屏常驻右侧，窄屏放进底部弹窗）。
 ///
 /// 结构（从上到下）：
-/// 1. **桌号 / 外卖下拉**（堂食外卖出这里选；有菜的桌子显示橙色 +「已有 N」），
+/// 1. **桌号 / 外卖下拉**（堂食外卖出这里选；有菜的桌子显示橙色 +「已有 N」；
+///    **分单缩进挂在母单（桌号 / 外卖单）下面**，选中后就是编那张分单）；
 ///    右边一个「**⋮**」：**清空购物车**这类用得少的操作放在里面；
 /// 2. **已在单上**：这张桌**当前这张单**里的菜（选桌后自动带出来）。
 ///    其中**已经下过厨房**的用绿色 +「已下厨」标出来，
@@ -576,11 +577,14 @@ class _CartPanelState extends State<CartPanel> {
   ///
   /// 下拉里的顺序是固定的（改需求时别乱调）：
   /// **外卖**（开新单）→ **电话外卖**（开新单）→ **平台外卖**（开新单）
-  /// → **各桌**（有菜的橙色 +「已有 N」）
-  /// → **进行中的外卖单**（外卖/电话外卖/平台外卖，**起没起名字都列**；没名字的用单号 `#3` 认）。
+  /// → **各桌**（有菜的橙色 +「已有 N」）**+ 这一桌的分单**（缩进挂在桌号下面）
+  /// → **进行中的外卖单**（外卖/电话外卖/平台外卖，**起没起名字都列**；没名字的用单号 `#3` 认）
+  ///   **+ 每张外卖单的分单**（同样缩进挂在它下面）。
   ///
   /// 最后那一组就是"点完厨房还留在购物车里、随时能回去接着改 / 接着结账"的外卖单；
   /// 结账之后它不再是进行中 → 自然从列表里消失。
+  /// **分单**跟着母单显示（母单结账后仍有未结的分单时，兜底列在最后），
+  /// 选中分单后「保存 / 厨房 / 结账」都作用在**这张分单**上。
   Widget _targetSelector(PosController pos, Order? open) {
     final settings = context.watch<SettingsController>().settings;
     // 桌号按**自然顺序**排：数字在前（1,2,…,9,10），然后字母（A,B,C…SA,SB）
@@ -588,18 +592,43 @@ class _CartPanelState extends State<CartPanel> {
     final tables = sortedTables(settings.tables);
     // **进行中的外卖单**（外卖 + 电话外卖，有名字没名字都在）
     final takeaways = pos.openTakeawayOrders();
-    // 正在编的是哪张外卖单：点过「保存 / 厨房」后它就是当前这张
-    // （没起名字的外卖单没有桌号也没有名字，只能靠 id 认）
+    // 每张桌当前进行中的母单：分单要**挂在它下面**显示（见下面的 items）
+    final tableParents = <String, Order>{};
+    for (final t in tables) {
+      final p = pos.openParentForTable(t);
+      if (p != null) tableParents[t] = p;
+    }
+    // 下拉里以「已保存单」形式出现的那些：外卖母单 + 所有分单。
+    // 用它认「当前选中的是哪一张」（以前只认外卖母单，所以选中分单时下拉会显示回母单/桌号）。
+    final savedOrders = <Order>[
+      ...takeaways,
+      for (final o in takeaways) ...pos.splitsOf(o.id),
+      for (final p in tableParents.values) ...pos.splitsOf(p.id),
+    ];
+    // 去重（正常不会重；Dropdown 不允许重复 value，兜底一下）
+    final savedIds = <String>{};
+    savedOrders.removeWhere((o) => !savedIds.add(o.id));
+    // 兜底：母单已经结账 / 桌号不在设置里，但分单还没结 —— 放在最后，
+    // 不然这些分单只能去「订单」页才找得到。
+    final looseSplits = pos.openSplitOrders
+        .where((o) => !savedIds.contains(o.id))
+        .toList()
+      ..sort((a, b) => a.splitNo.compareTo(b.splitNo));
+    savedOrders.addAll(looseSplits);
+
+    // 正在编的是哪张单：点过「保存 / 厨房」后它就是当前这张
+    // （没起名字的外卖单 / 分单没有自己的桌号或名字，只能靠 id 认）
     final focused = pos.focusedOrder;
     String? focusedValue;
-    for (final o in takeaways) {
+    for (final o in savedOrders) {
       if (focused != null && o.id == focused.id) {
         focusedValue = '$_kSavedPrefix${o.id}';
+        break;
       }
     }
     // ⚠️ 只在它**真的在列表里**时才当下拉的 value：否则 DropdownButton 会因为
-    // "找不到对应的 item"直接抛断言（例如刚从订单页调出来的是一张**分单**——
-    // 分单不出现在这个列表里，就退回按类型显示）
+    // "找不到对应的 item"直接抛断言 —— 所以分单也要进 [savedOrders]
+    //（没找到就按当前桌号 / 外卖类型显示）。
     final value = focusedValue ??
         (pos.isPhoneTakeaway
             ? _kPhoneTakeaway
@@ -660,7 +689,8 @@ class _CartPanelState extends State<CartPanel> {
                       ),
                     ),
                     // 各桌（有菜 = 橙色，空桌 = 绿色）
-                    for (final t in tables)
+                    // 这一桌有进行中的单 + 分单时，**分单紧跟在母单（这一桌）下面**。
+                    for (final t in tables) ...[
                       DropdownMenuItem<String>(
                         value: t,
                         child: _targetRow(
@@ -673,9 +703,13 @@ class _CartPanelState extends State<CartPanel> {
                               : null,
                         ),
                       ),
+                      if (tableParents[t] != null)
+                        for (final s in pos.splitsOf(tableParents[t]!.id))
+                          _splitItem(s),
+                    ],
                     // **进行中的外卖单**（点它回到那张单接着改 / 结账）。
                     // 名字和单号都在 `takeawayTag` 里：`张三 #3` / `#3`（没起名字）。
-                    for (final o in takeaways)
+                    for (final o in takeaways) ...[
                       DropdownMenuItem<String>(
                         value: '$_kSavedPrefix${o.id}',
                         child: _targetRow(
@@ -687,13 +721,18 @@ class _CartPanelState extends State<CartPanel> {
                           note: '${o.itemCount} ${L10n.t('cart.items')}',
                         ),
                       ),
+                      // 这张外卖单的分单，跟桌号那边一样挂在母单下面
+                      for (final s in pos.splitsOf(o.id)) _splitItem(s),
+                    ],
+                    // 兜底：母单已结账 / 不在上面的分单（仍然要能选回来）
+                    for (final s in looseSplits) _splitItem(s),
                   ],
                   onChanged: (v) {
                     if (v == null) return;
                     if (v.startsWith(_kSavedPrefix)) {
-                      // 进行中的外卖单：选中它 → 之后「保存 / 厨房 / 结账」都算这张单
+                      // 外卖母单 / 分单：选中它 → 之后「保存 / 厨房 / 结账」都算这张单
                       final id = v.substring(_kSavedPrefix.length);
-                      for (final o in takeaways) {
+                      for (final o in savedOrders) {
                         if (o.id == id) {
                           pos.focusOrder(o);
                           return;
@@ -726,7 +765,8 @@ class _CartPanelState extends State<CartPanel> {
           ),
           // 外卖 / 电话外卖：**名字 + 等待时间**（点一下就改；等待时间会打在厨房单上）
           // 「保存」每次也会弹这个框，这个 chip 只是"不想保存也想改一下"时的快捷入口。
-          if (open != null && open.isTakeaway) ...[
+          // 分单不显示（名字 / 等待时间属于母单，分单跟着母单走）。
+          if (open != null && open.isTakeaway && !open.isSplit) ...[
             const SizedBox(height: 6),
             Align(
               alignment: Alignment.centerLeft,
@@ -744,6 +784,22 @@ class _CartPanelState extends State<CartPanel> {
       ),
     );
   }
+
+  /// 下拉里的一张**分单**：缩进 + 蓝点，紧跟在母单下面。
+  ///
+  /// 文字用 `orderPlaceLabel`（`桌号 1-分单1` / `外卖 张三 #3-分单1`），
+  /// 跟订单页、分单界面完全一致，不会对不上号。
+  DropdownMenuItem<String> _splitItem(Order order) => DropdownMenuItem<String>(
+        value: '$_kSavedPrefix${order.id}',
+        child: Padding(
+          padding: const EdgeInsets.only(left: 20),
+          child: _targetRow(
+            orderPlaceLabel(order),
+            color: const Color(0xFF1565C0),
+            note: '${order.itemCount} ${L10n.t('cart.items')}',
+          ),
+        ),
+      );
 
   /// 桌号 / 外卖 下拉旁边那个「**⋮**」：用得少、但不该占地方的操作放这里。
   ///
@@ -795,8 +851,9 @@ class _CartPanelState extends State<CartPanel> {
           ),
           PopupMenuItem<String>(
             value: _kSplitBill,
-            // 这张桌/外卖单还没有进行中的单（或者是分单本身）→ 没东西可分
-            enabled: open != null && !open.isSplit,
+            // 有进行中的单就能进分单界面；**分单本身也能进**
+            //（界面显示的是整条线，分单还能继续往下分 / 移回母单）
+            enabled: open != null,
             child: Row(
               children: [
                 const Icon(Icons.call_split, size: 20),

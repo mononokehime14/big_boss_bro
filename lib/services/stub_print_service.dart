@@ -44,5 +44,9 @@ class UnsupportedPrintService implements ReceiptPrintService {
       PrintError.unsupported;
 
   @override
+  Future<PrintError?> openCashDrawer(Settings settings) async =>
+      PrintError.unsupported;
+
+  @override
   Future<void> dispose() async {}
 }

@@ -10,9 +10,18 @@ import '../utils/pricing.dart';
 import 'cart_sheet.dart';
 
 /// 点单页底部的购物车栏（窄屏用）。显示**整桌**件数与合计，点开就是购物车明细，
-/// 里面才是「保存 / 厨房」两个按钮。
+/// 里面才是「保存 / 厨房 / 结账」三个按钮。
 class CartBottomBar extends StatelessWidget {
-  const CartBottomBar({super.key});
+  final VoidCallback onSave;
+  final VoidCallback onKitchen;
+  final VoidCallback onCheckout;
+
+  const CartBottomBar({
+    super.key,
+    required this.onSave,
+    required this.onKitchen,
+    required this.onCheckout,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -43,7 +52,14 @@ class CartBottomBar extends StatelessWidget {
             children: [
               Expanded(
                 child: InkWell(
-                  onTap: hasAnything ? () => showCartSheet(context) : null,
+                  onTap: hasAnything
+                      ? () => showCartSheet(
+                            context,
+                            onSave: onSave,
+                            onKitchen: onKitchen,
+                            onCheckout: onCheckout,
+                          )
+                      : null,
                   borderRadius: BorderRadius.circular(12),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 8),
@@ -74,8 +90,14 @@ class CartBottomBar extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: FilledButton(
-                  onPressed:
-                      hasAnything ? () => showCartSheet(context) : null,
+                  onPressed: hasAnything
+                      ? () => showCartSheet(
+                            context,
+                            onSave: onSave,
+                            onKitchen: onKitchen,
+                            onCheckout: onCheckout,
+                          )
+                      : null,
                   child: Text(L10n.t('cart.actions')),
                 ),
               ),

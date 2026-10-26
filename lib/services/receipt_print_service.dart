@@ -74,6 +74,14 @@ abstract class ReceiptPrintService {
   /// 打印一张「日结」每日汇总。
   Future<PrintError?> printSummary(SummaryData data, Settings settings);
 
+  /// **弹出收银柜**（钱柜接在打印机的钱箱口上）。
+  ///
+  /// 发的是 ESC/POS 的 `ESC p 0 25 250`，走**当前打印通道**：
+  /// 蓝牙 / 网络 / Windows 系统打印机都行。钱柜本身不跟电脑通信。
+  ///
+  /// 结账第一步点「确认收款」时调用（**只对现金**；刷卡不开钱箱）。
+  Future<PrintError?> openCashDrawer(Settings settings);
+
   /// 释放资源。
   Future<void> dispose();
 }

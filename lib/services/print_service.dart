@@ -122,6 +122,12 @@ class UnifiedPrintService implements ReceiptPrintService {
     return _write(settings, TicketBuilder.summaryLines(data));
   }
 
+  /// **弹钱箱**：给当前打印机发 `ESC p 0 25 250`（见 `escpos.dart` 的
+  /// [kCashDrawerKickBytes]）。钱柜接在打印机背后，打印机收到后自己发脉冲。
+  @override
+  Future<PrintError?> openCashDrawer(Settings settings) =>
+      _sendBytes(settings, kCashDrawerKickBytes);
+
   /// 把行文本按当前通道发出去（编码/字体取自设置）。
   Future<PrintError?> _write(Settings settings, List<TicketLine> lines) =>
       _sendBytes(

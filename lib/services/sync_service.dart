@@ -510,6 +510,14 @@ class SyncService extends ChangeNotifier {
 
     // 2a) 已结账的单优先走 close_order()（服务器做 CAS，只成功一次）
     for (final o in outgoing.where((o) => !o.isInProgress)) {
+      // **本地回退过、又结了一次**的单：服务器上可能还是 completed，
+      // close_order 的 CAS（status <> completed）会拒绝更新、回给我们旧单。
+      // 这种单改用整单 upsert（`reopenPending` 送到服务器时是 false）。
+      if (o.reopenPending) {
+        await _upsertOrders(rest, [o]);
+        pushed++;
+        continue;
+      }
       final row = await rest.rpc('close_order', {
         'p_id': o.id,
         // 送**整份本地 JSON**（不只结账字段）：结账前刚加的菜/改的桌号不能丢

@@ -267,6 +267,30 @@ class PosController extends ChangeNotifier {
     _persistSales();
   }
 
+  /// 把 [_countSales] 加过的份数**扣回去**（已结单回退成进行中时用）。
+  ///
+  /// 不扣的话，这一单会被算两次：回退一次、再结账一次。
+  /// 减到 0 就从 map 里删掉（跟从没卖过一样）。
+  void _uncountSales(Order order) {
+    for (final l in order.lines) {
+      final item = menuItemForLine(l);
+      if (item == null) continue;
+      final itemLeft = (_itemSales[item.id] ?? 0) - l.quantity;
+      if (itemLeft > 0) {
+        _itemSales[item.id] = itemLeft;
+      } else {
+        _itemSales.remove(item.id);
+      }
+      final catLeft = (_categorySales[item.categoryId] ?? 0) - l.quantity;
+      if (catLeft > 0) {
+        _categorySales[item.categoryId] = catLeft;
+      } else {
+        _categorySales.remove(item.categoryId);
+      }
+    }
+    _persistSales();
+  }
+
   // ---------------- 排序（给点单区用）----------------
 
   /// 点单区要显示的**种类**（按 [mode] 排好）。
@@ -671,6 +695,8 @@ class PosController extends ChangeNotifier {
     _selectedTable = takeaway ? '' : table;
     _selectedTakeawayLabel = '';
     _focusedOrderId = '';
+    // 换目标后别再让「结账」兜底到上一张单（自动回选桌页之后尤其重要）
+    _lastTouchedOrderId = '';
     notifyListeners();
   }
 
@@ -683,6 +709,7 @@ class PosController extends ChangeNotifier {
     _selectedTable = '';
     _selectedTakeawayLabel = order.label.trim();
     _focusedOrderId = '';
+    _lastTouchedOrderId = order.id;
     notifyListeners();
   }
 
@@ -697,6 +724,7 @@ class PosController extends ChangeNotifier {
     _selectedType = order.orderType;
     _selectedTable = order.isTakeaway ? '' : order.table;
     _selectedTakeawayLabel = order.isTakeaway ? order.label.trim() : '';
+    _lastTouchedOrderId = order.id;
     notifyListeners();
   }
 
@@ -709,6 +737,7 @@ class PosController extends ChangeNotifier {
     _selectedType = OrderType.dineIn;
     _selectedTakeawayLabel = '';
     _focusedOrderId = '';
+    _lastTouchedOrderId = '';
     notifyListeners();
   }
 
@@ -744,11 +773,18 @@ class PosController extends ChangeNotifier {
       }
       return null;
     }
+    return openParentForTable(_selectedTable);
+  }
+
+  /// 某个桌号当前进行中的**母单**（不含分单；没有就 null）。
+  ///
+  /// 下拉列表要把它分出来的分单挂在它下面显示，所以单独抽出来（见 `cart_panel.dart`）。
+  Order? openParentForTable(String table) {
     for (final o in _orders) {
       if (o.isInProgress &&
           !o.isSplit && // 分单不算（选桌要打开的是**母单**）
           o.orderType == OrderType.dineIn &&
-          o.table == _selectedTable) {
+          o.table == table) {
         return o;
       }
     }
@@ -767,7 +803,7 @@ class PosController extends ChangeNotifier {
     final out = _orders
         .where((o) =>
             o.isInProgress &&
-            !o.isSplit && // 分单不出现在下拉里（它们跟着母单走）
+            !o.isSplit && // 分单不单独列（下拉里挂在母单下面，见 `openSplitOrders`）
             o.isTakeaway)
         .toList();
     out.sort((a, b) => a.dailyNo.compareTo(b.dailyNo));
@@ -1070,6 +1106,13 @@ class PosController extends ChangeNotifier {
     return out;
   }
 
+  /// **所有进行中的分单**（不分组）。
+  ///
+  /// 点单界面的下拉列表用它兜底：母单已经结账、或者桌号不在设置里时，
+  /// 分单仍然要能被选出来接着操作，不能只留在订单页。
+  List<Order> get openSplitOrders =>
+      _orders.where((o) => o.isInProgress && o.isSplit).toList();
+
   /// 这条线（母单 + 分单）的**根母单 id**：传母单给母单自己的 id，传分单给它的 `parentId`。
   String rootIdOf(String orderId) {
     final o = findOrder(orderId);
@@ -1153,11 +1196,23 @@ class PosController extends ChangeNotifier {
       }
     }
 
-    // 分单跟着换桌（它们的显示带桌号）
+    // 分单跟着换桌 / 换类型（它们的显示带桌号、类型）
     for (var k = 0; k < _orders.length; k++) {
       final s = _orders[k];
-      if (s.isInProgress && s.parentId == result.id && s.table != to) {
-        _orders[k] = s.copyWith(table: to).touch(deviceId: deviceId);
+      if (s.isInProgress &&
+          s.parentId == result.id &&
+          (s.table != to ||
+              s.orderType != result.orderType ||
+              s.label != result.label ||
+              s.waitMinutes != result.waitMinutes)) {
+        _orders[k] = s
+            .copyWith(
+              table: to,
+              orderType: result.orderType,
+              label: result.label,
+              waitMinutes: result.waitMinutes,
+            )
+            .touch(deviceId: deviceId);
       }
     }
 
@@ -1166,18 +1221,72 @@ class PosController extends ChangeNotifier {
     return result;
   }
 
-  /// **分单**：把 [sourceId] 这张单里 [indexes] 这几行挪到分单里（客人分开付钱）。
+  /// **把单子移到外卖 / 电话外卖 / 平台外卖**（不是移到某一张具体的外卖单）。
+  ///
+  /// 只改这张单的 `orderType`，并把桌号清空：
+  /// - 堂食 → 外卖：没有外卖名字 / 等待时间，名字清空；
+  /// - 外卖 → 另一种外卖（外卖 / 电话 / 平台）：名字、等待时间、单号都保留；
+  /// - **单号（id）和当天号（dailyNo）不变**，不会重新开一张单；
+  /// - 它分出来的分单也跟着改类型 / 清桌号，保证一条线显示一致。
+  ///
+  /// 返回移动后的那张单；失败（单不存在 / 目标就是堂食 / 已经是这个类型）返回 null。
+  Order? moveOrderToType(String orderId, OrderType type) {
+    if (type == OrderType.dineIn) return null; // 堂食走 moveOrderToTable
+    final from = _orderAt(orderId);
+    if (from == null) return null;
+    if (from.orderType == type) return null;
+
+    final i = _indexOfOrder(orderId);
+    // 外卖名字 / 等待时间只在"外卖之间"移动时保留；堂食单本来也没有
+    final keepTakeawayInfo = from.isTakeaway;
+    final label = keepTakeawayInfo ? from.label : '';
+    final wait = keepTakeawayInfo ? from.waitMinutes : 0;
+
+    _orders[i] = from
+        .copyWith(
+          orderType: type,
+          table: '',
+          label: label,
+          waitMinutes: wait,
+        )
+        .touch(deviceId: deviceId);
+
+    // 分单跟着母单走：类型 / 桌号 / 名字 / 等待时间一起改
+    for (var k = 0; k < _orders.length; k++) {
+      final s = _orders[k];
+      if (s.isInProgress && s.parentId == from.id) {
+        _orders[k] = s
+            .copyWith(
+              orderType: type,
+              table: '',
+              label: label,
+              waitMinutes: wait,
+            )
+            .touch(deviceId: deviceId);
+      }
+    }
+
+    notifyListeners();
+    _persistOrders();
+    return _orders[i];
+  }
+
+  /// **分单 / 移回母单**：把 [sourceId] 这张单里 [indexes] 这几行挪到别的单上
+  /// （客人分开付钱，或者分错了再挪回去）。
   ///
   /// [sourceId] 可以是**母单**，也可以是**某张分单**（分单还能再往下分）。
   /// 不管从谁身上分出来，新分单一律挂在**同一个母单**下、分单号接着往后排
   /// （所以界面上永远是「母单 + 分单1 + 分单2 …」一排）。
   ///
   /// - [intoSplitId] 空 = **新建**一个分单；非空 = 挪进那张**已有的**分单；
-  /// - **出手的那张单至少留一道菜**（`indexes` 不能是它的全部行）→ 否则返回 null；
-  /// - 两边（源单 / 目标分单）的总计都按各自的折扣 / 税重算；
+  ///   传**母单 id** = 把菜**移回母单**（分单点错了能改回来）；
+  /// - **母单至少要留一道菜**；**分单可以整单移走** —— 移空之后这张分单会被删掉
+  ///   （不会留下没法结账的空单）；
+  /// - 两边（源单 / 目标单）的总计都按各自的折扣 / 税重算；
   ///   分单**单独结账**，母单不受影响。
   ///
-  /// 返回分单那张单；失败（没选行 / 全选了 / 单不存在）返回 null。
+  /// 返回**菜挪进去的那张单**（新分单 / 已有分单 / 母单）；失败（没选行 /
+  /// 母单被全选 / 单不存在）返回 null。
   Order? splitOrderLines(
     String sourceId,
     List<int> indexes, {
@@ -1190,8 +1299,8 @@ class PosController extends ChangeNotifier {
     final picked = indexes.toSet().toList()..sort();
     if (picked.isEmpty) return null;
     if (picked.any((i) => i < 0 || i >= source.lines.length)) return null;
-    // 出手的那张单必须留至少一道菜，不然它就成了空单
-    if (picked.length >= source.lines.length) return null;
+    // 母单必须留至少一道菜（不然它就成了空单）；分单允许整单移走，移空后会被删掉
+    if (!source.isSplit && picked.length >= source.lines.length) return null;
 
     final moved = <OrderLine>[for (final i in picked) source.lines[i]];
     final kept = <OrderLine>[
@@ -1199,19 +1308,25 @@ class PosController extends ChangeNotifier {
         if (!picked.contains(i)) source.lines[i],
     ];
 
-    // ---- 目标分单：已有的，还是新建一个 ----
-    Order split;
+    // ---- 目标单：已有分单 / 母单 / 新建分单 ----
+    Order target;
     if (intoSplitId.isNotEmpty) {
-      final si = _indexOfOrder(intoSplitId);
-      if (si < 0) return null;
-      final s = _orders[si];
-      // 只能挪进**同一条线**的分单里，而且不能挪回自己
-      if (!s.isInProgress || s.parentId != rootId || s.id == source.id) {
+      final ti = _indexOfOrder(intoSplitId);
+      if (ti < 0) return null;
+      final t = _orders[ti];
+      // 不能挪回自己
+      if (!t.isInProgress || t.id == source.id) return null;
+      final isParentTarget = t.id == rootId && t.parentId.isEmpty;
+      if (isParentTarget) {
+        // **移回母单**：只有分单能这么做（母单不能"移回自己"，上面已经拦了）
+        if (!source.isSplit) return null;
+      } else if (t.parentId != rootId) {
+        // 只能挪进**同一条线**的分单里
         return null;
       }
-      _orders[si] =
-          _withLines(s, [...s.lines, ...moved]).touch(deviceId: deviceId);
-      split = _orders[si];
+      _orders[ti] =
+          _withLines(t, [...t.lines, ...moved]).touch(deviceId: deviceId);
+      target = _orders[ti];
     } else {
       final nextNo = _nextSplitNo(rootId);
       final lines = <OrderLine>[...moved];
@@ -1220,7 +1335,7 @@ class PosController extends ChangeNotifier {
         taxRate: source.taxRate,
         taxIncluded: source.taxIncluded,
       );
-      split = Order(
+      target = Order(
         id: _nextOrderId(),
         createdAt: DateTime.now(),
         lines: lines,
@@ -1230,6 +1345,10 @@ class PosController extends ChangeNotifier {
         taxIncluded: source.taxIncluded,
         table: source.table,
         label: source.label,
+        // 外卖的当天单号 / 等待时间跟着母单走：分单和母单是**同一单生意**，
+        // 下拉里显示成「外卖 #3-分单1」，厨房单也打同一个号 / 等待时间。
+        dailyNo: source.dailyNo,
+        waitMinutes: source.waitMinutes,
         orderType: source.orderType,
         status: OrderStatus.inProgress,
         cashier: source.cashier,
@@ -1237,16 +1356,28 @@ class PosController extends ChangeNotifier {
         splitNo: nextNo,
         deviceId: deviceId,
       );
-      _orders.insert(0, split);
+      _orders.insert(0, target);
     }
 
-    // ---- 出手的那张单留下剩下的菜 ----
+    // ---- 出手的那张单：留下剩下的菜；分单被搬空就删掉 ----
     final pi = _indexOfOrder(sourceId);
-    _orders[pi] = _withLines(_orders[pi], kept).touch(deviceId: deviceId);
+    if (kept.isEmpty) {
+      _orders.removeAt(pi);
+      // 后台也删（跟 deleteOrder 一样进「待删除」名单）
+      if (!_pendingDeleted.contains(sourceId)) _pendingDeleted.add(sourceId);
+      unawaited(_persistDeleted());
+      if (_focusedOrderId == sourceId) {
+        _focusedOrderId = '';
+        _selectedTakeawayLabel = '';
+      }
+      if (_lastTouchedOrderId == sourceId) _lastTouchedOrderId = '';
+    } else {
+      _orders[pi] = _withLines(_orders[pi], kept).touch(deviceId: deviceId);
+    }
 
     notifyListeners();
     _persistOrders();
-    return split;
+    return target;
   }
 
   /// 这张母单下一个分单号（1 起，取已有最大值 +1；已结账的分单号也会占位，不会重号）。
@@ -1334,13 +1465,97 @@ class PosController extends ChangeNotifier {
           changeAmount: isCash ? changeAmount : null,
           cashier: cashier.isEmpty ? o.cashier : cashier,
         )
-        // 标脏：下一次同步会用 close_order() 把这个「已结账」同步上去
+        // 标脏：下一次同步会把「已结账」推上去
+        //（回退过又重结的单走整单 upsert，见 `Order.reopenPending`）
         .touch(deviceId: deviceId);
     notifyListeners();
     _persistOrders();
     // 流行度：**只在这里**（结账确认）把这一单的份数记进去，点单区可以按它排序
     _countSales(_orders[i]);
     return _orders[i];
+  }
+
+  /// **已结单 → 进行中**（收银员手快、把还没收完的单点成已结账时用）。
+  ///
+  /// 只允许同时满足这三条：
+  /// - 这张单**是已结账**的；
+  /// - **今天结的**（按 `closedAt`；老数据没有就用 `createdAt`，跟已结单列表同一套）；
+  /// - **不跟别的进行中单冲突**：
+  ///   - 堂食：同一桌不能已经有**另一条线**的进行中单
+  ///     （同一张单自己的母单 / 分单不算冲突）；
+  ///   - 外卖：不能已经有**同名**的进行中单（没起名字的外卖单每单独立，不算）；
+  ///   - 分单：母单必须还在（不然回退后认不到属于哪条线）。
+  ///
+  /// 成功返回 `null`；失败返回**提示文案的 key**（界面直接 `L10n.t`）。
+  /// 回退会清掉收款记录、把结账时加过的流行度扣回去。
+  String? reopenOrder(String orderId) {
+    final i = _indexOfOrder(orderId);
+    if (i < 0) return 'order.reopen.notFound';
+    final o = _orders[i];
+    if (o.isInProgress) return 'order.reopen.notClosed';
+
+    // 只退今天结的（跟「已结单」列表的"哪一天"同一套算法）
+    if (dateKey(o.closedAt ?? o.createdAt) != dateKey(DateTime.now())) {
+      return 'order.reopen.notToday';
+    }
+
+    // 分单必须有母单；母单可能已经结账（那就只剩分单），但不能被删掉
+    final parent = o.isSplit ? findOrder(o.parentId) : null;
+    if (o.isSplit && parent == null) {
+      return 'order.reopen.parentMissing';
+    }
+
+    // 这条线的根：母单自己 / 分单的母单 id
+    final rootId = o.isSplit ? o.parentId : o.id;
+
+    // 分单跟着母单走：冲突要按**母单现在的位置 / 名字**判断
+    // （母单可能在分单结账之后换过桌 / 改过名字）
+    final targetIsTakeaway =
+        (parent?.orderType ?? o.orderType) != OrderType.dineIn;
+    final targetTable = parent?.table ?? o.table;
+    final targetLabel = parent?.label ?? o.label;
+
+    for (final other in _orders) {
+      if (!other.isInProgress || other.id == o.id) continue;
+      // 同一条线（自己的母单 / 自己的分单）不算冲突
+      final otherRoot = other.isSplit ? other.parentId : other.id;
+      if (otherRoot == rootId) continue;
+
+      if (targetIsTakeaway) {
+        // 外卖按名字认单；空名字的外卖单每单独立，不算冲突
+        final mine = targetLabel.trim().toLowerCase();
+        if (mine.isNotEmpty &&
+            other.isTakeaway &&
+            other.label.trim().toLowerCase() == mine) {
+          return 'order.reopen.conflict';
+        }
+      } else {
+        // 堂食按桌号：同一桌已经有另一条线的进行中单 → 会认错单
+        // （不看 other.orderType：分单换桌后类型可能还是旧的外卖类型）
+        if (targetTable.isNotEmpty && other.table == targetTable) {
+          return 'order.reopen.conflict';
+        }
+      }
+    }
+
+    var reopened = o.reopened(deviceId: deviceId);
+    if (parent != null) {
+      // 分单跟着母单走：母单可能已经换过桌 / 改过名字 / 改过等待时间
+      reopened = reopened.copyWith(
+        table: parent.table,
+        label: parent.label,
+        orderType: parent.orderType,
+        dailyNo: parent.dailyNo,
+        waitMinutes: parent.waitMinutes,
+      );
+    }
+
+    _orders[i] = reopened;
+    // 结账时加过的流行度要扣回去，否则再结一次会算两遍
+    _uncountSales(o);
+    notifyListeners();
+    _persistOrders();
+    return null;
   }
 
   /// 从一张**进行中**的单里删掉一行菜（购物车里的垃圾桶按钮用）。
@@ -1521,6 +1736,33 @@ class PosController extends ChangeNotifier {
       '${d.year}-${_pad2(d.month)}-${_pad2(d.day)}';
 
   static String _pad2(int n) => n.toString().padLeft(2, '0');
+
+  /// **常用备注的使用次数**：只统计**已结账**的单子（含分单）。
+  ///
+  /// 用途：点菜框里的「常用备注」按这个次数从多到少排。
+  /// 一条备注在一张单的同一条菜里出现两次就算两次；**不看份数**（一份菜加备注
+  /// 和十份菜加同样的备注，都只算"用了一次"）。
+  ///
+  /// **跨设备**：已结账单本身就走 Supabase 同步（启动全量 + 之后增量，见
+  /// `SyncService._pullOrders`），所以每台设备用自己本地的 `_orders` 算出来
+  /// 就是同一套结果 —— **不需要另开一张"使用次数"表**，也不会出现
+  /// "结账 +1、回退没 -1"这种计数器对不上的问题。
+  ///
+  /// 每次打开点菜框时算一遍即可（订单历史可能很多，别每敲一个字都算）。
+  Map<String, int> noteUsageCounts() {
+    final out = <String, int>{};
+    for (final o in _orders) {
+      if (o.status != OrderStatus.completed) continue;
+      for (final l in o.lines) {
+        for (final n in l.notes) {
+          final key = n.trim();
+          if (key.isEmpty) continue;
+          out[key] = (out[key] ?? 0) + 1;
+        }
+      }
+    }
+    return out;
+  }
 
   /// 某一天「已结单」的订单（日结用）。
   List<Order> completedOrdersOn(String dateKey) => _orders
