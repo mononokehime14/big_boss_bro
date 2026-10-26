@@ -21,7 +21,9 @@ import 'takeaway_name_dialog.dart';
 ///
 /// 结构（从上到下）：
 /// 1. **桌号 / 外卖下拉**（堂食外卖出这里选；有菜的桌子显示橙色 +「已有 N」；
-///    **分单缩进挂在母单（桌号 / 外卖单）下面**，选中后就是编那张分单）；
+///    **没选时显示「请选择桌号 / 外卖」**；下单 / 下厨 / 结账时如果还没选，
+///    会先弹同一个列表让用户选）。
+///    **分单缩进挂在母单（桌号 / 外卖单）下面**，选中后就是编那张分单；
 ///    右边一个「**⋮**」：**清空购物车**这类用得少的操作放在里面；
 /// 2. **已在单上**：这张桌**当前这张单**里的菜（选桌后自动带出来）。
 ///    其中**已经下过厨房**的用绿色 +「已下厨」标出来，
@@ -64,19 +66,6 @@ class CartPanel extends StatefulWidget {
 
 class _CartPanelState extends State<CartPanel> {
   @override
-  void initState() {
-    super.initState();
-    // 还没选桌就先默认选第一张桌，保证「保存 / 厨房」一直可用（用户可以随时在下拉里换）
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final pos = context.read<PosController>();
-      if (pos.hasTableSelected) return;
-      final tables = context.read<SettingsController>().settings.tables;
-      if (tables.isNotEmpty) pos.selectTable(tables.first);
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
     final pos = context.watch<PosController>();
     final settings = context.watch<SettingsController>().settings;
@@ -100,16 +89,13 @@ class _CartPanelState extends State<CartPanel> {
     final hasAnything = placed.isNotEmpty || !pos.cartEmpty;
 
     // 三个按钮**分别**判断能不能点（之前两个共用一个条件，导致「先点保存就再也打不了厨房」）：
-    // - 「保存」：**只要有桌/外卖就能点，不限次数**（想保存就保存）；
-    //   购物车是空的也没关系 —— 那等于"再确认一次这张单"（没有新菜就什么都不变）。
-    // - 「厨房」：只要有**还没下厨的菜**就行 —— 包括先点「保存」留在单上的那些
-    //   （这时购物车是空的，但单上还有未下厨的菜，仍然要能打给厨房）；
-    // - 「结账」：购物车里有新菜，**或者**当前这张单/刚动过的那张单还没结
-    //   （那种"菜都下过厨房了、就等收钱"的情况也要能结）。
-    final canSave = pos.hasTableSelected;
-    final canKitchen = pos.hasTableSelected && (!pos.cartEmpty || unsent > 0);
-    final canCheckout = pos.hasTableSelected &&
-        (!pos.cartEmpty || open != null || pos.lastTouchedOrder != null);
+    // - 「保存」：选了桌/外卖，**或者购物车里有菜**就能点 —— 后者会先弹选桌列表；
+    // - 「厨房」：购物车里有菜，或者当前单上还有没下厨的菜；没选桌但有菜时也会先弹列表；
+    // - 「结账」：购物车里有菜，或者当前这张单 / 刚动过的那张单还没结。
+    final canSave = pos.hasTableSelected || !pos.cartEmpty;
+    final canKitchen = !pos.cartEmpty || (pos.hasTableSelected && unsent > 0);
+    final canCheckout = !pos.cartEmpty ||
+        (pos.hasTableSelected && (open != null || pos.lastTouchedOrder != null));
 
     return Container(
       color: Colors.white,
@@ -823,6 +809,8 @@ class _CartPanelState extends State<CartPanel> {
                 pos.clearOrderAndCart(open.id);
               } else {
                 pos.clearCart();
+                // 清空后回到「未选桌 / 未选外卖」状态
+                pos.clearTable();
               }
             case _kMoveOrder:
               // 当前这张是**分单**的话，默认选它的母单（分单要跟着母单一起挪）

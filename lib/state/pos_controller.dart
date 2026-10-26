@@ -731,7 +731,7 @@ class PosController extends ChangeNotifier {
   /// 现在是不是"从订单页调出来改"的状态。
   bool get hasFocusedOrder => _focusedOrderId.isNotEmpty;
 
-  /// 回到「选桌」这一步。
+  /// 清掉当前桌 / 外卖，回到「**未选择**」状态（购物车里的菜不动）。
   void clearTable() {
     _selectedTable = '';
     _selectedType = OrderType.dineIn;
@@ -1812,6 +1812,9 @@ class PosController extends ChangeNotifier {
     }
     if (_lastTouchedOrderId == orderId) _lastTouchedOrderId = '';
     deleteOrder(orderId);
+    // 整张单删掉之后如果这个桌/外卖已经没有进行中的单了 → 回到「未选择」。
+    // 删的是分单、母单还在时，openOrderForSelectedTable() 会找到母单，保留选择。
+    if (openOrderForSelectedTable() == null) clearTable();
   }
 
   void _persistOrders({bool notifySync = true}) {

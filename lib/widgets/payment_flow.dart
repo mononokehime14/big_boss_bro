@@ -13,6 +13,7 @@ import '../utils/order_label.dart';
 import '../utils/pricing.dart';
 import 'bank_card_anim.dart';
 import 'takeaway_name_dialog.dart';
+import 'target_picker.dart';
 
 /// 结账窗口**第二步点「结束」**后交回去的结果。
 ///
@@ -1242,16 +1243,8 @@ Future<Order?> saveOrderFlow(BuildContext context) =>
 ///
 /// 厨房单打的是这张单上**所有还没下厨的行**（包括之前「保存」过的），
 /// 所以厨房不会漏菜；打成功了才把这些行标成「已下厨」（失败可以再点一次重打）。
-///
-/// 打印失败 / 被「跳过」时返回 null：点餐页据此**不自动回选桌页**，
-/// 收银员可以留在原地再点一次「厨房」重打。
-Future<Order?> kitchenOrderFlow(BuildContext context) async {
-  final order = await _submitOrder(context, toKitchen: true);
-  if (order == null || !context.mounted) return order;
-  // `_submitOrder` 打印失败被跳过时也会把单交回来；看还有没有没下厨的行。
-  final pending = context.read<PosController>().kitchenTicketLines(order.id).lines;
-  return pending.isEmpty ? order : null;
-}
+Future<Order?> kitchenOrderFlow(BuildContext context) =>
+    _submitOrder(context, toKitchen: true);
 
 /// 购物车下面**右边那个「结账」**：**先记单**（跟「保存」一样），
 /// 然后**直接打开这张单的结账窗口**（就是订单页那个「结账」）。
@@ -1273,7 +1266,8 @@ Future<Order?> checkoutOrderFlow(BuildContext context) async {
   final order =
       saved ?? pos.openOrderForSelectedTable() ?? pos.lastTouchedOrder;
   if (order == null) return null; // 没东西可结
-  // 返回真正结掉的那张单；用户取消结账窗口 → null（点餐页据此判断要不要回选桌页）
+  // 返回真正结掉的那张单；用户取消结账窗口 → null
+  // （点餐页据此判断要不要清掉当前桌/外卖）。
   return settleOrderFlow(context, order);
 }
 
@@ -1298,7 +1292,13 @@ Future<Order?> _submitOrder(
   final cashier = context.read<AuthController>().currentName;
   final settings = settingsCtl.settings;
 
-  if (!pos.hasTableSelected) return null;
+  // 没选桌 / 外卖：购物车里有菜 → 先弹「桌号 / 外卖」列表让用户选。
+  // 选完（返回 true）继续执行刚才按下的保存 / 厨房 / 结账；取消就什么都不做。
+  if (!pos.hasTableSelected) {
+    if (pos.cartEmpty) return null;
+    final picked = await showTargetPicker(context);
+    if (!picked || !context.mounted || !pos.hasTableSelected) return null;
+  }
 
   // 这张单要打/要记的（下面两个分支都会赋值）
   final Order order;
@@ -1450,7 +1450,7 @@ Future<Order?> _submitOrder(
 /// 两步都能打、可以打多次；**点「结束」的时候不再出纸**。
 /// 打印失败的处理（重试 / 跳过）在窗口内部（见 `_printBill`）。
 ///
-/// 返回**真正结掉的单**；取消结账窗口返回 null（点餐页据此判断要不要回选桌页）。
+/// 返回**真正结掉的单**；取消结账窗口返回 null（点餐页据此判断要不要清掉当前桌/外卖）。
 Future<Order?> settleOrderFlow(BuildContext context, Order order) async {
   final pos = context.read<PosController>();
   final settingsCtl = context.read<SettingsController>();

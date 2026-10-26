@@ -74,28 +74,21 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
   final Map<String, String> _selected = {};
 
   /// 已经加进这一行的**特别备注**（可以多条）。
-  late final List<String> _notes =
-      List.of(widget.initial?.notes ?? const <String>[]);
+  ///
+  /// ⚠️ 这两个列表都在 [initState] 里**先按 initial 建好**，不能用
+  /// `late final _notePrices = [for (i < _notes.length) ...]`：
+  /// 第一次加备注时 `_notes.add` 已经先执行，`_notePrices` 的 lazy 初始化
+  /// 会看到多出来的那一条，先建出一个 0 —— 结果所有价格整体错位一位
+  /// （真实 bug：第一条备注 0，第二条拿到第一条的价）。
+  late final List<String> _notes;
 
   /// 每条备注的**加价**（跟 [_notes] 一一对应；「换炒饭 +70」就是 70，可以为负）。
   ///
   /// 编辑老单进来时**原样带过来**（已经有的备注默认不变金额）。
-  late final List<double> _notePrices = [
-    for (var i = 0; i < _notes.length; i++)
-      (i < (widget.initial?.notePrices.length ?? 0))
-          ? widget.initial!.notePrices[i]
-          : 0.0,
-  ];
+  late final List<double> _notePrices;
 
   /// 第 [i] 条备注的加价（越界 = 0）。
   double _priceAt(int i) => i < _notePrices.length ? _notePrices[i] : 0;
-
-  /// **最后动过的是第几条备注**（点常用备注标签 / 「加进备注」时更新；-1 = 没动过）。
-  ///
-  /// 用途：**备注文字框空着、只有右边加价框填了数** 的时候，这个数归这条备注
-  /// （最常见的一步操作：点常用备注标签 → 在加价框打 70 → 直接点「加入购物车」）。
-  /// 没有它，这一步填的 70 会被**默默丢掉** —— 看着就是"金额没生效"。
-  int _lastTouched = -1;
 
   /// 备注文字后面跟的价签（` +70` / ` -60`；0 就不显示）。
   String _priceTag(double price) =>
@@ -173,6 +166,15 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
   @override
   void initState() {
     super.initState();
+    // 先按初始备注建好两个列表，再让用户往里加：
+    // 这样 `_notes` 和 `_notePrices` 从第一帧起就严格一一对应。
+    _notes = List.of(widget.initial?.notes ?? const <String>[]);
+    _notePrices = [
+      for (var i = 0; i < _notes.length; i++)
+        (i < (widget.initial?.notePrices.length ?? 0))
+            ? widget.initial!.notePrices[i]
+            : 0.0,
+    ];
     // 常用备注排序用的使用次数：打开框时算一次（测试里没 PosController → 空）
     try {
       _noteUsage = context.read<PosController>().noteUsageCounts();
@@ -281,26 +283,20 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
   ///
   /// 跟 `_confirm()` 一个口径：
   /// - 输入框里的文字**还没加进列表** → 加上它的加价；
-  /// - 文字**已经在列表里了** → 以加价框为准（填了数才是改价，没填就还是原价）；
-  /// - 文字框**空着**但加价框里有数 → 这个数是给**最后动过的那条**备注的
-  ///   （典型操作：点常用备注标签 → 在加价框打 70 → 直接确认）。
+  /// - 文字**已经在列表里了** → 加价框填了数才当成改价，否则仍按原价；
+  /// - 文字框**空着**时，加价框里的数**不算**（它只服务于旁边正在填的这条备注）。
   double get _noteTotal {
     var sum = 0.0;
     for (var i = 0; i < _notes.length; i++) {
       sum += _priceAt(i);
     }
-    final box = _notePriceCtl.text.trim();
     final typed = _noteCtl.text.trim();
-    if (typed.isEmpty) {
-      final i = _lastTouched;
-      if (box.isEmpty || i < 0 || i >= _notes.length) return sum;
-      return sum - _priceAt(i) + _typedPrice;
-    }
+    if (typed.isEmpty) return sum;
     final typedPrice = _typedPrice;
     final i = _notes.indexOf(typed);
     if (i < 0) return sum + typedPrice;
     // 已经在列表里：加价框**填了数**才当成改价，否则这条仍按原来的加价算
-    if (box.isEmpty) return sum;
+    if (_notePriceCtl.text.trim().isEmpty) return sum;
     return sum - _priceAt(i) + typedPrice;
   }
 
@@ -327,17 +323,46 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
     });
   }
 
+  /// 加价框里显示用：整数不带小数尾巴（`70` 而不是 `70.00`）。
+  String _fmtPrice(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+
+  /// 点已经加进去的备注 chip：把它**填回输入框**，方便改加价。
+  ///
+  /// 改完按「加进备注」（同一条会更新）或直接「加入购物车」。
+  /// 要改备注文字就删掉 chip 重新加。
+  /// 这样加价框永远只服务于**输入框里这条**，不会变成跨备注的隐式暂存价。
+  void _editNote(int i) {
+    _noteCtl.text = _notes[i];
+    final p = _priceAt(i);
+    _notePriceCtl.text = p == 0 ? '' : _fmtPrice(p);
+    _noteFocus.requestFocus();
+  }
+
+  /// 一条常用备注的 chip（标签带价签，点击按自己存的价格加入）。
+  ///
+  /// 用方法参数把 [note] / [price] 固定住，避免在集合 `for` 的闭包里
+  /// 引用循环变量造成歧义。
+  Widget _savedNoteChip(String note, double price) => FilterChip(
+        selected: false,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        onSelected: (_) => _toggleSavedNote(note, true, price),
+        // 标签上也把加价写出来，免得点了才知道加钱
+        label: Text('$note${_priceTag(price)}'),
+        showCheckmark: false,
+        labelStyle: const TextStyle(
+          color: Color(0xFF232829),
+          fontWeight: FontWeight.w600,
+        ),
+      );
+
   /// 点「常用备注」标签：选中 = 加进备注，再点 = 去掉。
   ///
-  /// **加价从哪来**（这是"金额好像没生效"的关键）：
-  /// 1. 优先用**设置里给这条常用备注存的加价**（设置 → 常用备注 那个小金额框，
-  ///    标签上会写成 `换炒饭 +70`）；
-  /// 2. 没存过（老数据，或者老板当初没填）→ **用右边加价框里现在填的数**。
-  ///    所以「先在加价框打 70，再点常用备注标签」也能把这 70 带上去；
-  /// 3. 两个都没有 → 0（就是一条不改钱的备注，跟以前一样）。
+  /// **加价只认这条常用备注在设置里存的价格**（没存 = 0，不改价）。
+  /// 不拿右边加价框里的数来兜底 —— 那个框是给旁边**正在输入的新备注**用的，
+  /// 拿它兜底会把上一条残留的 50 悄悄算到下一条免费备注上（真实 bug）。
   ///
-  /// 带上加价之后还会把它填进右边那个框：让人**看得见**这条备注加了多少钱，
-  /// 想改就直接改那个数再点「加进备注」。
+  /// 加完**马上清空文字框和加价框**，接着加下一条。
   void _toggleSavedNote(String n, bool on, double savedPrice) {
     if (!on) {
       final i = _notes.indexOf(n);
@@ -345,30 +370,28 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
         setState(() {
           _notes.removeAt(i);
           if (i < _notePrices.length) _notePrices.removeAt(i);
-          if (_lastTouched == i) _lastTouched = -1;
         });
+        // 删掉这条之后，加价框里可能还留着它的价格；清掉，别影响下一条
+        _notePriceCtl.clear();
       }
       return;
     }
     if (_notes.contains(n)) return;
-    final price = savedPrice != 0 ? savedPrice : _typedPrice;
     setState(() {
       _notes.add(n);
-      _notePrices.add(price);
-      _lastTouched = _notes.length - 1;
-      if (price != 0) _notePriceCtl.text = _fmtPrice(price);
+      _notePrices.add(savedPrice);
     });
+    // 这条已经是一条 chip 了：清空输入，接着加下一条
+    _noteCtl.clear();
+    _notePriceCtl.clear();
   }
-
-  /// 加价框里显示用：整数不带小数尾巴（`70` 而不是 `70.00`）。
-  String _fmtPrice(double v) =>
-      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
 
   /// 「加进备注」：把输入框里的文字（+ 右边那个小框里的加价）存成一条备注，
   /// 清空两个输入框准备填下一条。
   void _addNote() {
     final text = _noteCtl.text.trim();
     if (text.isEmpty) return;
+    final box = _notePriceCtl.text.trim();
     final price = _typedPrice;
     if (_saveAsTag) {
       // 存成常用标签时**连加价一起存**（下次点这个标签，加价自动跟着来）
@@ -379,28 +402,29 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
     setState(() {
       final i = _notes.indexOf(text);
       if (i >= 0) {
-        // 同一条备注再加一次 = 改它的加价
-        _notePrices[i] = price;
-        _lastTouched = i;
+        // 同一条备注再加一次：**加价框明确填了数**才改价；
+        // 空着就保留原来这条的价格（不拿自动单价把它覆盖掉）。
+        if (box.isNotEmpty) _notePrices[i] = price;
       } else {
         _notes.add(text);
         _notePrices.add(price);
-        _lastTouched = _notes.length - 1;
       }
-      _noteCtl.clear();
-      _notePriceCtl.clear();
     });
+    _noteCtl.clear();
+    _notePriceCtl.clear();
     // 光标留在输入框里，方便接着填下一条
     _noteFocus.requestFocus();
   }
 
   /// 去掉第 [i] 条备注（文字和加价一起删）。
-  void _removeNote(int i) => setState(() {
-        _notes.removeAt(i);
-        if (i < _notePrices.length) _notePrices.removeAt(i);
-        // 下标会往前挪，干脆忘掉"最后动过的那条"，免得加价框里的数记到错的备注上
-        if (_lastTouched == i) _lastTouched = -1;
-      });
+  void _removeNote(int i) {
+    setState(() {
+      _notes.removeAt(i);
+      if (i < _notePrices.length) _notePrices.removeAt(i);
+    });
+    // 框里可能还留着这条的价格；清掉，别让下一条备注捡走
+    _notePriceCtl.clear();
+  }
 
   /// 备注要存到哪个种类下（编辑老单时可能没有对应菜单项 → 存到「通用」）。
   String get _categoryId => widget.item?.categoryId ?? '';
@@ -419,20 +443,12 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
     if (typed.isNotEmpty) {
       final i = notes.indexOf(typed);
       if (i >= 0) {
-        // 这条已经在列表里（多半是刚点的常用备注标签）：
-        // **加价框里填了数就改成这个数** —— 否则"点标签带进来 0、再填 70 确认"
-        // 会把 70 默默丢掉，看着就是"金额没生效"。
+        // 这条已经在列表里：**加价框明确填了数**才改价；空着就保留原价。
         if (_notePriceCtl.text.trim().isNotEmpty) prices[i] = _typedPrice;
       } else {
         notes.add(typed);
         prices.add(_typedPrice);
       }
-    } else if (_notePriceCtl.text.trim().isNotEmpty &&
-        _lastTouched >= 0 &&
-        _lastTouched < prices.length) {
-      // 备注框空着、只有加价框填了数 → 这个数归**最后动过的那条**备注
-      // （最常见的一步操作：点常用备注标签 → 加价框打 70 → 直接点「加入购物车」）
-      prices[_lastTouched] = _typedPrice;
     }
 
     Navigator.pop(
@@ -661,6 +677,8 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                               label: Text(
                                 '${_notes[i]}${_priceTag(_priceAt(i))}',
                               ),
+                              // 点 chip 本体 = 填回输入框改价；✕ 才是删除
+                              onPressed: () => _editNote(i),
                               onDeleted: () => _removeNote(i),
                             ),
                         ],
@@ -736,24 +754,11 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                         _LimitedWrap(
                           children: [
                             for (final n in visibleNotes)
-                              FilterChip(
-                                selected: false,
-                                materialTapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap,
-                                onSelected: (_) => _toggleSavedNote(
-                                  n,
-                                  true,
-                                  settings.notePriceFor(_categoryId, n),
-                                ),
-                                // 标签上也把加价写出来，免得点了才知道加钱
-                                label: Text(
-                                  '$n${_priceTag(settings.notePriceFor(_categoryId, n))}',
-                                ),
-                                showCheckmark: false,
-                                labelStyle: const TextStyle(
-                                  color: Color(0xFF232829),
-                                  fontWeight: FontWeight.w600,
-                                ),
+                              // 用方法传参，避免闭包捕获循环变量导致
+                              // "点第一条却加了最后一条"的歧义。
+                              _savedNoteChip(
+                                n,
+                                settings.notePriceFor(_categoryId, n),
                               ),
                           ],
                         ),

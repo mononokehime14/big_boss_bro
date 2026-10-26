@@ -358,10 +358,11 @@ void main() {
 
   // ---- 常用备注（以前存好的那些）的加价 ----
   //
-  // ⚠️ 这里**不去点常用备注那个 chip**：在这个对话框里，测试点 chip 的中心/文字都会
-  //    `warnIfMissed`（点空但不报错），备注加不进去，测试就假失败。
-  //    chip 的点击留给真机手测；下面用"**打同样的备注文字**"这条稳定的路来验加价
-  //    （产品上也做了同一件事：打常用备注的名字 = 点那个标签）。
+  // ⚠️ 测试里**不直接 tap 常用备注 chip**：在这个对话框里，点 chip 的中心/文字都会
+  //    `warnIfMissed`（点空但不报错）；直接调 `onSelected` 在测试环境里也不会
+  //    稳定触发状态更新。所以这里统一走"**打备注名字 + 加进备注**"这条真实路径，
+  //    它和点标签最终都写进同一份 `_notes` / `_notePrices`。
+  //    chip 本身的手感留给真机手测。
 
   testWidgets('常用备注**存过**加价：标签写着 +70，打同样的备注也自动带 70', (tester) async {
     final captured = <ItemEditResult?>[];
@@ -420,5 +421,48 @@ void main() {
     await tester.tap(find.text('加入购物车'));
     await tester.pumpAndSettle();
     expect(captured.single!.notePrices, [70]);
+  });
+
+  testWidgets('多条特别备注：+50、+20、免费各算各的（价格不能串到下一条）',
+      (tester) async {
+    final captured = <ItemEditResult?>[];
+    await pumpDialog(tester, menuItem: item, captured: captured);
+
+    final noteField = find.byKey(const ValueKey('itemNoteField'));
+    final priceField = find.byKey(const ValueKey('itemNotePriceField'));
+    final addBtn = find.text('加进备注');
+
+    // 第一条：+50
+    await tester.enterText(noteField, 'Noodle');
+    await tester.enterText(priceField, '50');
+    await tester.ensureVisible(addBtn);
+    await tester.tap(addBtn);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(priceField).controller!.text,
+      isEmpty,
+      reason: '加完备注后加价框要清空，不能让下一条备注捡走 50',
+    );
+
+    // 第二条：+20
+    await tester.enterText(noteField, 'Extra');
+    await tester.enterText(priceField, '20');
+    await tester.ensureVisible(addBtn);
+    await tester.tap(addBtn);
+    await tester.pumpAndSettle();
+
+    // 第三条：金额空着 → 0，不能继承前面的 50/20
+    await tester.enterText(noteField, 'Free');
+    await tester.ensureVisible(addBtn);
+    await tester.tap(addBtn);
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('加入购物车'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('加入购物车'));
+    await tester.pumpAndSettle();
+    expect(captured.single!.notes, ['Noodle', 'Extra', 'Free']);
+    expect(captured.single!.notePrices, [50, 20, 0],
+        reason: '100 + 50 + 20 + 0 的备注加价要一一对应，免费那条必须是 0');
   });
 }
