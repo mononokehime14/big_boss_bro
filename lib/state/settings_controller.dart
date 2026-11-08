@@ -173,6 +173,12 @@ class SettingsController extends ChangeNotifier {
     _store.save(_settings);
   }
 
+  void setDailyExpenseUsd(String dateKey, double value) {
+    _settings.setExpenseUsd(dateKey, value);
+    notifyListeners();
+    _store.save(_settings);
+  }
+
   // ---- 菜品管理密码 ----
 
   void setMenuPassword(String password) {

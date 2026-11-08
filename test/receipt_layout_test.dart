@@ -1172,9 +1172,9 @@ void main() {
   });
 
   // ---------------------------------------------------------------------
-  // 日结：整张按「特大」打（跟厨师单的菜品一样大）
+  // 日结：整张按「大号」打（三列：名字左 / 金额中 / 右侧留白手写）
   // ---------------------------------------------------------------------
-  group('日结小票：整张「特大」', () {
+  group('日结小票：大号三列', () {
     SummaryData data({String paperWidth = '58'}) => SummaryData(
           storeName: '我的餐厅',
           dateLabel: '2026-10-18',
@@ -1203,26 +1203,69 @@ void main() {
           ),
         );
 
-    test('每行都是特大，而且不超过特大下的列数（58mm = 16 列）', () {
+    test('每行都是大号，而且不超过大号下的列数（58mm = 32 列）', () {
       final lines = TicketBuilder.summaryLines(data());
       expect(lines, isNotEmpty);
       for (final l in lines) {
-        expect(l.scale, TicketScale.xlarge, reason: '日结要按特大打：${l.text}');
-        expect(displayWidth(l.text), lessThanOrEqualTo(16),
+        expect(l.scale, TicketScale.large, reason: '日结要按大号打：${l.text}');
+        expect(displayWidth(l.text), lessThanOrEqualTo(32),
             reason: '超宽会被打印机自己折行：`${l.text}`');
       }
       final text = lines.map((l) => l.text).join('\n');
       expect(text, contains('总营业额'));
       expect(text, contains('112.00'));
       expect(text, contains('日结'));
+      // 现金固定两行：MXN / USD（USD 没有收款也显示 0）
+      expect(text, contains('现金 MXN'));
+      expect(text, contains('现金 USD'));
     });
 
-    test('80mm 同样一行不超宽（特大下 24 列）', () {
+    test('80mm 同样一行不超宽（大号下 48 列）', () {
       final lines = TicketBuilder.summaryLines(data(paperWidth: '80'));
       for (final l in lines) {
-        expect(displayWidth(l.text), lessThanOrEqualTo(24),
+        expect(displayWidth(l.text), lessThanOrEqualTo(48),
             reason: '`${l.text}`');
       }
+    });
+
+    test('中文行强制 GBK 中文模式（西语编码下也不会变问号）', () {
+      final lines = TicketBuilder.summaryLines(data());
+      final title = lines.firstWhere((l) => l.text.contains('日结'));
+      expect(title.raw, isNotNull,
+          reason: '中文标题要自己进出中文模式，不能交给 cp850/latin1');
+      expect(title.raw, contains(0x1C)); // FS
+      expect(title.raw, contains(0x26)); // &
+      // 纯 ASCII 的分隔线仍走普通编码，不需要切换中文模式
+      final divider = lines.firstWhere((l) => l.text.startsWith('='));
+      expect(divider.raw, isNull);
+    });
+
+    test('打印顺序：分类 → 现金 MXN/USD → 刷卡 → 支出 → 总营业额，明细不空行', () {
+      final lines = TicketBuilder.summaryLines(data());
+      final texts = lines.map((l) => l.text.trim()).toList();
+      int at(String prefix) =>
+          texts.indexWhere((t) => t.startsWith(prefix));
+
+      final iDine = at('堂食');
+      final iCashMxn = at('现金 MXN');
+      final iCashUsd = at('现金 USD');
+      final iCard = at('刷卡');
+      final iExpense = at('支出');
+      final iTotal = at('总营业额');
+      expect(iDine, greaterThanOrEqualTo(0));
+      expect(iCashMxn, greaterThanOrEqualTo(0));
+      expect(iCashUsd, greaterThanOrEqualTo(0));
+      expect(iDine, lessThan(iCashMxn));
+      expect(iCashMxn, lessThan(iCashUsd));
+      expect(iCashUsd, lessThan(iCard));
+      expect(iCard, lessThan(iExpense));
+      expect(iExpense, lessThan(iTotal));
+
+      // 每条明细一行；不再插入空行
+      expect(texts.where((t) => t.isEmpty), isEmpty);
+      expect(texts[iDine + 1], isNotEmpty);
+      expect(texts[iCashMxn + 1], isNotEmpty);
+      expect(texts[iExpense + 1], isNotEmpty);
     });
 
     // 平台外卖（Uber / DiDi 这种）：**左侧单独一行**；
@@ -1270,9 +1313,9 @@ void main() {
       final cardRow = lines.firstWhere((l) => l.text.trimLeft().startsWith('刷卡'));
       expect(cardRow.text, contains('5.00'));
       expect(cardRow.text, isNot(contains('37.00')));
-      // 一行都不超宽（58mm 特大 = 16 列）
+      // 一行都不超宽（58mm 大号 = 32 列）
       for (final l in lines) {
-        expect(displayWidth(l.text), lessThanOrEqualTo(16),
+        expect(displayWidth(l.text), lessThanOrEqualTo(32),
             reason: '超宽会被打印机自己折行：`${l.text}`');
       }
     });

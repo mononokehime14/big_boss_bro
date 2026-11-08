@@ -164,3 +164,25 @@ SalesTotals computeSalesTotals(List<Order> orders) {
     orderCount: orders.length,
   );
 }
+
+/// 日结**显示用**的现金行：**MXN / USD 固定都有**（没有收款也显示 0），
+/// 其他币种（RMB / 老数据没币种的 ''）有记录才补在后面。
+///
+/// 为什么固定两行：老板要在日结纸上手写实际清点的 MXN / USD，
+/// 哪怕今天没有美刀收款，也要留出 `现金 USD  0.00` 这一行。
+Map<String, double> cashDisplayRows(Map<String, double> raw) {
+  final out = <String, double>{
+    'MXN': raw['MXN'] ?? 0,
+    'USD': raw['USD'] ?? 0,
+  };
+  final others = raw.keys
+      .where((c) => c != 'MXN' && c != 'USD' && c != '')
+      .toList()
+    ..sort();
+  for (final c in others) {
+    out[c] = raw[c]!;
+  }
+  // 老数据没记币种：有这一项才补「现金」一行
+  if (raw.containsKey('')) out[''] = raw['']!;
+  return out;
+}

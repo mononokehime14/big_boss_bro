@@ -279,13 +279,29 @@ class TicketBuilder {
 
   /// 日结小票。
   ///
-  /// ⚠️ **整张都是「特大」字号**（双倍宽 + 双倍高，跟厨师单的菜品一样大）——
-  /// 行宽已经由 `buildSummaryLines()` 按特大下的列数（58mm = 16 列）排好了，
-  /// 这里只负责把字号贴上去。
+  /// **整张用「大号」**（[TicketScale.large] = 宽 1 倍、高 2 倍）——
+  /// 比原来的「特大」窄一半，58mm 有 32 列，刚好排成三列：
+  /// 名字靠左、金额居中、右边留白给老板手写实际清点。
+  ///
+  /// **中文行强制 GBK 中文模式**：日结的标题 / 分类 / 现金等标签都是中文，
+  /// 而小票编码可能设成 `cp850` / `latin1`（西语机）—— 那种编码下中文会变成 `?`。
+  /// 所以只要这一行含中文，就用 `gbkLineBytes` 自己进出中文模式，跟厨房单的
+  /// 「堂食/外卖」中文徽标同一套做法；纯西文/数字行仍走当前编码。
   static List<TicketLine> summaryLines(SummaryData data) =>
-      buildSummaryLines(data)
-          .map((l) => TicketLine(l, scale: TicketScale.xlarge))
-          .toList();
+      buildSummaryLines(data).map((l) {
+        if (_hasCjk(l)) {
+          return TicketLine(
+            l,
+            scale: TicketScale.large,
+            raw: gbkLineBytes(l, scale: TicketScale.large),
+          );
+        }
+        return TicketLine(l, scale: TicketScale.large);
+      }).toList();
+
+  /// 有没有中日韩文字（日结标签判断要不要强制中文模式）。
+  static bool _hasCjk(String s) => s.runes.any((r) =>
+      (r >= 0x3400 && r <= 0x9FFF) || (r >= 0xF900 && r <= 0xFAFF));
 
   /// 测试页（内容已按需求固定）。
   ///

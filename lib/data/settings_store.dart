@@ -127,7 +127,15 @@ class Settings {
   Map<String, double> exchangeRates;
 
   /// 日结：每天填的「支出」，键是日期 `yyyy-MM-dd`。
+  ///
+  /// 这是 **MXN（本位币）** 支出；USD 支出单独存在 [dailyExpensesUsd]，
+  /// 打印/净额时按 [rateFor] 的汇率折成 MXN。
   Map<String, double> dailyExpenses;
+
+  /// 日结：每天填的「美元支出」，键是日期 `yyyy-MM-dd`。
+  ///
+  /// 只存 **USD 原值**；最终统计仍用 MXN（`USD × rateFor('USD')`）。
+  Map<String, double> dailyExpensesUsd;
 
   // ---------------- 后台同步（Supabase）----------------
   //
@@ -223,13 +231,15 @@ class Settings {
     List<String>? menuOrder,
     Map<String, double>? exchangeRates,
     Map<String, double>? dailyExpenses,
+    Map<String, double>? dailyExpensesUsd,
   })  : tables = tables ?? List.of(defaultTables),
         notesByCategory = notesByCategory ?? <String, List<String>>{},
         notePricesByCategory =
             notePricesByCategory ?? <String, Map<String, double>>{},
         menuOrder = menuOrder ?? <String>[],
         exchangeRates = exchangeRates ?? <String, double>{},
-        dailyExpenses = dailyExpenses ?? <String, double>{};
+        dailyExpenses = dailyExpenses ?? <String, double>{},
+        dailyExpensesUsd = dailyExpensesUsd ?? <String, double>{};
 
   /// 某个币种的汇率（1 个该币种 = 多少本位币）。
   /// 本位币恒为 1；没设过返回 0（= 不能用它收款）。
@@ -306,6 +316,16 @@ class Settings {
       dailyExpenses.remove(dateKey);
     } else {
       dailyExpenses[dateKey] = value;
+    }
+  }
+
+  double expenseUsdFor(String dateKey) => dailyExpensesUsd[dateKey] ?? 0;
+
+  void setExpenseUsd(String dateKey, double value) {
+    if (value == 0) {
+      dailyExpensesUsd.remove(dateKey);
+    } else {
+      dailyExpensesUsd[dateKey] = value;
     }
   }
 }
@@ -385,6 +405,7 @@ class SettingsStore {
   static const _kMenuOrder = 'menu_order';
   static const _kMenuPassword = 'menu_password';
   static const _kDailyExpenses = 'daily_expenses';
+  static const _kDailyExpensesUsd = 'daily_expenses_usd';
   static const _kTaxRate = 'tax_rate';
   static const _kTaxIncluded = 'tax_included';
   static const _kBaseCurrency = 'base_currency';
@@ -524,6 +545,7 @@ class SettingsStore {
       baseCurrency: prefs.getString(_kBaseCurrency) ?? kDefaultBaseCurrency,
       exchangeRates: _decodeExpenses(prefs.getString(_kExchangeRates)),
       dailyExpenses: _decodeExpenses(prefs.getString(_kDailyExpenses)),
+      dailyExpensesUsd: _decodeExpenses(prefs.getString(_kDailyExpensesUsd)),
       // 后台同步
       // ⚠️ 开关默认 true、URL/anon key/邮箱用【临时默认值】预填（见文件上方那段说明）：
       //    新设备只要输一次密码就能用。**密码本身没有默认值**，留空。
@@ -577,6 +599,8 @@ class SettingsStore {
     await prefs.setString(_kBaseCurrency, settings.baseCurrency);
     await prefs.setString(_kExchangeRates, jsonEncode(settings.exchangeRates));
     await prefs.setString(_kDailyExpenses, jsonEncode(settings.dailyExpenses));
+    await prefs.setString(
+        _kDailyExpensesUsd, jsonEncode(settings.dailyExpensesUsd));
     // 后台同步
     await prefs.setBool(_kSyncEnabled, settings.syncEnabled);
     await prefs.setString(_kSupabaseUrl, settings.supabaseUrl);

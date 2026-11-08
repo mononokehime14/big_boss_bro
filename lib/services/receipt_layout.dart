@@ -1,6 +1,7 @@
 import '../models/order.dart';
 import '../utils/pricing.dart';
 import 'escpos.dart';
+import 'sales_totals.dart';
 
 /// 小票上的文案（随界面语言变）。
 class ReceiptLabels {
@@ -1237,7 +1238,15 @@ class SummaryData {
   final double taxTotal;
 
   final double total;
+
+  /// **MXN（本位币）支出**。
   final double expense;
+
+  /// **USD 支出**（输入的是美元原值；净额按 [usdRate] 折成 MXN 再减）。
+  final double expenseUsd;
+
+  /// 1 USD = 多少 MXN（来自设置里的汇率；0 = 没设汇率）。
+  final double usdRate;
   final int orderCount;
   final SummaryLabels labels;
 
@@ -1261,39 +1270,66 @@ class SummaryData {
     this.subtotalTotal = 0,
     this.discountTotal = 0,
     this.taxTotal = 0,
+    this.expenseUsd = 0,
+    this.usdRate = 0,
   });
 }
 
 /// 排成日结小票的一行行文本。
 ///
-/// ⚠️ **整张日结按「特大」打**（跟厨师单的菜品一样大 —— 老板在店里隔着柜台看得清），
-/// 所以这里必须按**特大下的列数**排版：特大 = 双倍宽 → 一行只有
-/// `receiptColumns() ~/ 2` 列（58mm = **16 列**、80mm = **24 列**）。
-/// 字号在 `TicketBuilder.summaryLines()` 里统一设成 [TicketScale.xlarge]。
+/// ⚠️ **整张日结按「大号」打**（[TicketScale.large] = 宽 1 倍、高 2 倍）——
+/// 比原来的「特大」（2×2）窄一半，58mm 有 **32 列**、80mm 有 **48 列**。
+/// 这样每条明细正好排成三列：
 ///
-/// 金额列：58mm 给 8 列（`¥1234.50` 就放不下 → 金额另起一行靠右，绝不切数字）；
-/// 80mm 给 10 列。
+/// ```text
+/// 名字（靠左）        金额（居中）        右边留白（手写实际清点）
+/// 堂食                $120.00
+/// 现金 MXN            $80.00
+/// 现金 USD            $40.00
+/// ```
+///
+/// **每条明细只占一行**（不再插入空行），字号由 `TicketBuilder.summaryLines()`
+/// 统一设成 [TicketScale.large]。
 List<String> buildSummaryLines(SummaryData d) {
-  final cols = receiptColumns(d.paperWidth) ~/ 2; // 特大：列数减半
-  final amountW = cols >= 20 ? 10 : 8;
-  final labelW = cols - amountW;
+  final cols = receiptColumns(d.paperWidth); // 大号：宽不放大，列数不折半
+  // 三列：58mm = 12 / 8 / 12；80mm = 18 / 12 / 18。
+  // - 名字列够放「电话外卖」「现金 MXN」「Efectivo USD」；
+  // - 金额列正好在页面正中间（58mm 的 12~20 列，中心 = 16）；
+  // - 右侧留白给老板手写实际清点。
+  final baseNameW = (cols * 3 / 8).floor();
+  final amountW = (cols / 4).floor();
+  final rightW = cols - baseNameW - amountW;
   final lines = <String>[];
   final divider = '=' * cols;
   final thin = '-' * cols;
 
-  /// 「标签 …… 金额」一行。
+  /// 「名字（左）  金额（中）  右边留白（手写）」一行。
   ///
-  /// 特大下右边那列只有 8~10 列 —— **放不下就分两行**（标签一行、金额靠右一行），
-  /// 绝不会把数字截断成 `¥12` 这种（对账时最忌讳这个）。
+  /// - 名字过长只截名字，**金额绝不截断**；
+  /// - 金额比中间列宽时，先从右侧留白借位置，再借名字列，保证一行放得下。
   void addRow(String label, double amount, {String? symbol}) {
     final s = symbol ?? d.currency;
     final text = '$s${amount.toStringAsFixed(2)}';
-    if (displayWidth(label) <= labelW && displayWidth(text) <= amountW) {
-      lines.add(padRight(label, labelW) + padLeft(text, amountW));
-    } else {
-      lines.add(_truncateToWidth(label, cols));
-      lines.add(padLeft(text, cols));
+    final textW = displayWidth(text);
+
+    var nameW = baseNameW;
+    var aW = amountW;
+    var rW = rightW;
+    if (textW > aW) {
+      final extra = textW - aW;
+      final fromRight = extra <= rW ? extra : rW;
+      aW += fromRight;
+      rW -= fromRight;
+      if (textW > aW) {
+        final need = textW - aW;
+        nameW = nameW > need ? nameW - need : 0;
+        aW += need;
+      }
     }
+
+    final name = padRight(_truncateToWidth(label, nameW), nameW);
+    final amountCell = padCenter(text, aW);
+    lines.add(name + amountCell + (' ' * rW));
   }
 
   if (d.storeName.isNotEmpty) {
@@ -1304,28 +1340,20 @@ List<String> buildSummaryLines(SummaryData d) {
   lines.add(_truncateToWidth('${d.labels.date}: ${d.dateLabel}', cols));
   lines.add(thin);
 
-  // 左：堂食 / 外卖（电话外卖、平台外卖有单的时候才多打一行）
+  // 先打营业额分类：堂食 / 外卖 / 电话外卖 / 平台外卖（没有单也打 0，保证四行齐）
   addRow(d.labels.dineIn, d.dineInTotal);
   addRow(d.labels.takeaway, d.takeawayTotal);
-  if (round2(d.phoneTakeawayTotal) != 0) {
-    addRow(d.labels.phoneTakeaway, d.phoneTakeawayTotal);
-  }
-  if (round2(d.platformTakeawayTotal) != 0) {
-    addRow(d.labels.platformTakeaway, d.platformTakeawayTotal);
-  }
+  addRow(d.labels.phoneTakeaway, d.phoneTakeawayTotal);
+  addRow(d.labels.platformTakeaway, d.platformTakeawayTotal);
   lines.add(thin);
 
-  // 现金分币种
-  if (d.cashByCurrency.isEmpty) {
-    addRow(d.labels.cash, 0, symbol: d.currency);
-  } else {
-    d.cashByCurrency.forEach((code, amount) {
-      final sym = kCurrencySymbols[code] ?? d.currency;
-      final label = code.isEmpty ? d.labels.cash : '${d.labels.cash} $code';
-      addRow(label, amount, symbol: sym);
-    });
-  }
-  if (d.cardTotal != 0) addRow(d.labels.card, d.cardTotal);
+  // 再打收款方式：现金（MXN / USD 固定两行，其他币种有就补）/ 刷卡 / 平台刷卡 / 扫码
+  cashDisplayRows(d.cashByCurrency).forEach((code, amount) {
+    final sym = kCurrencySymbols[code] ?? d.currency;
+    final label = code.isEmpty ? d.labels.cash : '${d.labels.cash} $code';
+    addRow(label, amount, symbol: sym);
+  });
+  addRow(d.labels.card, d.cardTotal);
   // 平台外卖刷的卡：单独一行（平台的到账 / 手续费跟店里自己的刷卡不一样）
   if (round2(d.platformCardTotal) != 0) {
     addRow(d.labels.platformCard, d.platformCardTotal);
@@ -1343,11 +1371,20 @@ List<String> buildSummaryLines(SummaryData d) {
     lines.add(thin);
   }
 
+  // 支出在总营业额前面（老板的对账顺序：现金/刷卡/支出/总营业额）。
+  // 支出分 MXN / USD 两行；USD 原值打印，净额按设置汇率折成 MXN 再减。
+  addRow('${d.labels.expense} MXN', d.expense);
+  addRow(
+    '${d.labels.expense} USD',
+    d.expenseUsd,
+    symbol: kCurrencySymbols['USD'] ?? d.currency,
+  );
   addRow(d.labels.total, d.total);
-  addRow(d.labels.expense, d.expense);
-  addRow(d.labels.net, d.total - d.expense);
+  addRow(
+    d.labels.net,
+    d.total - d.expense - d.expenseUsd * d.usdRate,
+  );
   lines.add(thin);
   lines.add(_truncateToWidth('${d.labels.orders}: ${d.orderCount}', cols));
-  lines.add('');
   return lines;
 }

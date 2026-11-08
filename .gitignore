@@ -20,3 +20,6 @@ Thumbs.db
 android/.gradle/
 android/local.properties
 android/app/build/
+
+# Data
+data/

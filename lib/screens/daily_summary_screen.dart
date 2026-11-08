@@ -49,10 +49,12 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
   String? _expenseFor;
 
   final _expenseCtl = TextEditingController();
+  final _expenseUsdCtl = TextEditingController();
 
   @override
   void dispose() {
     _expenseCtl.dispose();
+    _expenseUsdCtl.dispose();
     super.dispose();
   }
 
@@ -69,8 +71,12 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
     final orders = pos.completedOrdersOn(dateKey);
     final totals = computeSalesTotals(orders);
     final expense = settings.expenseFor(dateKey);
+    final expenseUsd = settings.expenseUsdFor(dateKey);
+    final usdRate = settings.rateFor('USD');
     if (_expenseFor != dateKey) {
       _expenseCtl.text = expense == 0 ? '' : expense.toString();
+      _expenseUsdCtl.text =
+          expenseUsd == 0 ? '' : expenseUsd.toString();
       _expenseFor = dateKey;
     }
 
@@ -87,7 +93,8 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
           // 打印日结
           IconButton(
             tooltip: L10n.t('summary.print'),
-            onPressed: () => _print(totals, expense, dateKey),
+            onPressed: () =>
+                _print(totals, expense, expenseUsd, usdRate, dateKey),
             icon: const Icon(Icons.print),
           ),
           const AccountMenuButton(),
@@ -125,20 +132,16 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
                               _bigRow(L10n.t('summary.takeaway'),
                                   totals.takeaway, symbol,
                                   const Color(0xFF37474F)),
-                              // 电话外卖（打电话点的）：有单才显示这一行
-                              if (totals.phoneTakeaway != 0) ...[
-                                const SizedBox(height: 12),
-                                _bigRow(L10n.t('summary.phonecallTakeaway'),
-                                    totals.phoneTakeaway, symbol,
-                                    const Color(0xFF6A1B9A)),
-                              ],
-                              // 平台外卖（Uber / DiDi 这种 App 来的）：有单才显示这一行
-                              if (totals.platformTakeaway != 0) ...[
-                                const SizedBox(height: 12),
-                                _bigRow(L10n.t('summary.platformTakeaway'),
-                                    totals.platformTakeaway, symbol,
-                                    const Color(0xFF00695C)),
-                              ],
+                              // 电话外卖 / 平台外卖：**固定列出**，没有单就是 0
+                              // （老板要求日结单上四类都看得到，打印也一样）
+                              const SizedBox(height: 12),
+                              _bigRow(L10n.t('summary.phonecallTakeaway'),
+                                  totals.phoneTakeaway, symbol,
+                                  const Color(0xFF6A1B9A)),
+                              const SizedBox(height: 12),
+                              _bigRow(L10n.t('summary.platformTakeaway'),
+                                  totals.platformTakeaway, symbol,
+                                  const Color(0xFF00695C)),
                               const Divider(height: 32),
                               _smallRow(L10n.t('summary.orders'),
                                   '${totals.orderCount}'),
@@ -179,18 +182,18 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
                                       money(totals.tax, symbol)),
                                 const Divider(height: 24),
                               ],
-                              if (totals.cashByCurrency.isEmpty)
-                                _smallRow(L10n.t('summary.cash'),
-                                    money(0, symbol))
-                              else
-                                for (final e in totals.cashByCurrency.entries)
-                                  _smallRow(
-                                    e.key.isEmpty
-                                        ? L10n.t('summary.cash')
-                                        : '${L10n.t('summary.cash')} ${e.key}',
-                                    '${kCurrencySymbols[e.key] ?? symbol}'
-                                        '${e.value.toStringAsFixed(2)}',
-                                  ),
+                              // 现金固定显示 MXN / USD 两行（没有收款也显示 0，
+                              // 方便在日结纸上手写实际清点）；其他币种有就补在后面。
+                              for (final e
+                                  in cashDisplayRows(totals.cashByCurrency)
+                                      .entries)
+                                _smallRow(
+                                  e.key.isEmpty
+                                      ? L10n.t('summary.cash')
+                                      : '${L10n.t('summary.cash')} ${e.key}',
+                                  '${kCurrencySymbols[e.key] ?? symbol}'
+                                      '${e.value.toStringAsFixed(2)}',
+                                ),
                               _smallRow(L10n.t('summary.card'),
                                   money(totals.card, symbol)),
                               // 平台外卖刷的卡：单独一行（现金已经并进上面的「现金」里）
@@ -202,18 +205,15 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
                                 _smallRow(L10n.t('summary.qr'),
                                     money(totals.qr, symbol)),
                               const Divider(height: 24),
-                              _smallRow(L10n.t('summary.total'),
-                                  money(totals.total, symbol),
-                                  bold: true),
-                              const SizedBox(height: 12),
-                              // 支出：留一个空让用户填
+                              // 支出分 MXN / USD 两行；USD 最终按设置汇率折成 MXN。
                               TextField(
                                 controller: _expenseCtl,
                                 keyboardType:
                                     const TextInputType.numberWithOptions(
                                         decimal: true),
                                 decoration: InputDecoration(
-                                  labelText: L10n.t('summary.expense'),
+                                  labelText:
+                                      '${L10n.t('summary.expense')} MXN',
                                   border: const OutlineInputBorder(),
                                   isDense: true,
                                   prefixText: symbol,
@@ -225,10 +225,50 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
                                       0,
                                 ),
                               ),
+                              const SizedBox(height: 10),
+                              TextField(
+                                controller: _expenseUsdCtl,
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
+                                        decimal: true),
+                                decoration: InputDecoration(
+                                  labelText:
+                                      '${L10n.t('summary.expense')} USD',
+                                  border: const OutlineInputBorder(),
+                                  isDense: true,
+                                  prefixText:
+                                      kCurrencySymbols['USD'] ?? symbol,
+                                ),
+                                onChanged: (v) =>
+                                    settingsCtl.setDailyExpenseUsd(
+                                  dateKey,
+                                  double.tryParse(
+                                          v.trim().replaceAll(',', '.')) ??
+                                      0,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '1 USD = ${money(usdRate, symbol)}',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: usdRate > 0
+                                      ? Colors.grey.shade600
+                                      : Colors.red.shade700,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              _smallRow(L10n.t('summary.total'),
+                                  money(totals.total, symbol),
+                                  bold: true),
                               const SizedBox(height: 12),
                               _smallRow(
                                 L10n.t('summary.net'),
-                                money(totals.total - expense, symbol),
+                                money(
+                                    totals.total -
+                                        expense -
+                                        expenseUsd * usdRate,
+                                    symbol),
                                 bold: true,
                               ),
                             ],
@@ -244,7 +284,8 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: () => _print(totals, expense, dateKey),
+                onPressed: () =>
+                    _print(totals, expense, expenseUsd, usdRate, dateKey),
                 icon: const Icon(Icons.print),
                 label: Text(L10n.t('summary.print')),
               ),
@@ -309,6 +350,8 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
   Future<void> _print(
     SalesTotals totals,
     double expense,
+    double expenseUsd,
+    double usdRate,
     String dateKey,
   ) async {
     final settingsCtl = context.read<SettingsController>();
@@ -333,25 +376,34 @@ class _DailySummaryScreenState extends State<DailySummaryScreen> {
       taxTotal: totals.tax,
       total: totals.total,
       expense: expense,
+      expenseUsd: expenseUsd,
+      usdRate: usdRate,
       orderCount: totals.orderCount,
+      // 打印文案跟**小票语言**走（不是界面语言）：打印机设成西语时，
+      // 日结单也打西语，不会因为界面是中文就打出 `?`。
       labels: SummaryLabels(
-        title: L10n.t('summary.title'),
-        date: L10n.t('summary.date'),
-        dineIn: L10n.t('summary.dineIn'),
-        takeaway: L10n.t('summary.takeaway'),
-        phoneTakeaway: L10n.t('summary.phonecallTakeaway'),
-        platformTakeaway: L10n.t('summary.platformTakeaway'),
-        platformCard: L10n.t('summary.platformCard'),
-        cash: L10n.t('summary.cash'),
-        card: L10n.t('summary.card'),
-        qr: L10n.t('summary.qr'),
-        subtotal: L10n.t('receipt.labelSubtotal'),
-        discount: L10n.t('receipt.labelDiscount'),
-        tax: L10n.t('receipt.labelTax'),
-        total: L10n.t('summary.total'),
-        expense: L10n.t('summary.expense'),
-        net: L10n.t('summary.net'),
-        orders: L10n.t('summary.orders'),
+        title: L10n.tFor(settings.receiptLang, 'summary.title'),
+        date: L10n.tFor(settings.receiptLang, 'summary.date'),
+        dineIn: L10n.tFor(settings.receiptLang, 'summary.dineIn'),
+        takeaway: L10n.tFor(settings.receiptLang, 'summary.takeaway'),
+        phoneTakeaway:
+            L10n.tFor(settings.receiptLang, 'summary.phonecallTakeaway'),
+        platformTakeaway:
+            L10n.tFor(settings.receiptLang, 'summary.platformTakeaway'),
+        platformCard:
+            L10n.tFor(settings.receiptLang, 'summary.platformCard'),
+        cash: L10n.tFor(settings.receiptLang, 'summary.cash'),
+        card: L10n.tFor(settings.receiptLang, 'summary.card'),
+        qr: L10n.tFor(settings.receiptLang, 'summary.qr'),
+        subtotal:
+            L10n.tFor(settings.receiptLang, 'receipt.labelSubtotal'),
+        discount:
+            L10n.tFor(settings.receiptLang, 'receipt.labelDiscount'),
+        tax: L10n.tFor(settings.receiptLang, 'receipt.labelTax'),
+        total: L10n.tFor(settings.receiptLang, 'summary.total'),
+        expense: L10n.tFor(settings.receiptLang, 'summary.expense'),
+        net: L10n.tFor(settings.receiptLang, 'summary.net'),
+        orders: L10n.tFor(settings.receiptLang, 'summary.orders'),
       ),
     );
 

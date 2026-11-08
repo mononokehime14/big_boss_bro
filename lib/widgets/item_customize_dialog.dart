@@ -469,7 +469,7 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
     final item = widget.item;
     final symbol = settings.currencySymbol;
 
-    // ---- 常用备注：搜索 / 按已结账单的使用次数排序 / 最多显示两行 ----
+    // ---- 常用备注：搜索 / 按已结账单的使用次数排序 / 最多显示三行 ----
     final noteQuery = _noteCtl.text.trim();
     // 通用（''）+ 这个分类的；**已经加进这一行的**不重复显示（上面有 InputChip）。
     final seen = <String>{};
@@ -732,7 +732,7 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
                       ],
                     ),
                     // 常用备注：输入时就是**搜索结果**；没输入时按「已结账单使用次数」
-                    // 从多到少排。最多显示**两行**，剩下的用「…」省略（继续打字可搜出来）。
+                    // 从多到少排。最多显示**三行**，剩下的用「…」省略（继续打字可搜出来）。
                     if (visibleNotes.isNotEmpty || noteQuery.isNotEmpty) ...[
                       const SizedBox(height: 10),
                       if (noteQuery.isNotEmpty)
@@ -888,7 +888,7 @@ class _ItemCustomizeDialogState extends State<ItemCustomizeDialog> {
   }
 }
 
-/// **两行高的可滚动框**：常用备注太多时，框本身还是两行，
+/// **三行高的可滚动框**：常用备注太多时，框本身还是三行，
 /// 右边出现一个**可拖动的滚动条**（就像网页右侧那条），用户往下拖看更多。
 ///
 /// 不用省略号：备注仍然都在，只是藏在框里，滚一下就能看到；
@@ -903,8 +903,8 @@ class _LimitedWrap extends StatefulWidget {
 }
 
 class _LimitedWrapState extends State<_LimitedWrap> {
-  /// 两行的高度：FilterChip 用了 `shrinkWrap`，一行 32；两行 + 4 行距 = 68。
-  static const double _maxHeight = 68;
+  /// 三行的高度：FilterChip 用了 `shrinkWrap`，一行 32；三行 + 4 行距 = 104。
+  static const double _maxHeight = 104;
 
   /// 滚动条和滚动内容**共用**这个 controller，拖动条才能控制内容。
   final ScrollController _scrollCtl = ScrollController();

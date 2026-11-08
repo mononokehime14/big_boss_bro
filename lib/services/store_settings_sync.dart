@@ -43,6 +43,8 @@ class StoreSettingsSync {
         'menuPassword': s.menuPassword,
         // 常用备注的加价（「换炒饭 +70」）—— 加在**末尾**（见上面那条说明）
         'notePricesByCategory': s.notePricesByCategory,
+        // 日结的 USD 支出（加在末尾；老设备没有这一项时保持本机值）
+        'dailyExpensesUsd': s.dailyExpensesUsd,
       };
 
   /// 稳定的 JSON 字符串：本机有没有改过，就靠「现在这份」和「上次同步的那份」比。
@@ -108,6 +110,9 @@ class StoreSettingsSync {
     final expenses = _numMap(data['dailyExpenses']);
     if (expenses != null) s.dailyExpenses = expenses;
 
+    final expensesUsd = _numMap(data['dailyExpensesUsd']);
+    if (expensesUsd != null) s.dailyExpensesUsd = expensesUsd;
+
     final password = _str(data['menuPassword']);
     if (password != null && password.trim().isNotEmpty) {
       s.menuPassword = password.trim();
@@ -126,6 +131,7 @@ class StoreSettingsSync {
       s.taxRate == 0 &&
       s.notesByCategory.values.every((list) => list.isEmpty) &&
       s.dailyExpenses.isEmpty &&
+      s.dailyExpensesUsd.isEmpty &&
       _sameList(s.tables, Settings.defaultTables);
 
   /// 本机配置和「上次同步的那份」是不是一样（一样 = 没有本机改动要推）。
