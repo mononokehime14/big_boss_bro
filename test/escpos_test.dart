@@ -66,6 +66,15 @@ void main() {
           reason: 'GS V B 0 → 切纸');
     });
 
+    test('Font A 关闭时明确发 ESC M 1（Font B），不是什么都不发', () {
+      final b = buildEscPosBytes([const TicketLine('AB')],
+          codec: 'gbk', fontA: false);
+      expect(_contains(b, [0x1B, 0x4D, 0x01]), isTrue,
+          reason: 'ESC M 1 → Font B');
+      expect(_contains(b, [0x1B, 0x4D, 0x00]), isFalse,
+          reason: '关闭 Font A 就不能再发 Font A');
+    });
+
     test('编码=latin1 时不发中文模式指令', () {
       final b = buildEscPosBytes([const TicketLine('AB')], codec: 'latin1');
       expect(_contains(b, [0x1C, 0x26]), isFalse);

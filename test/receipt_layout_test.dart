@@ -354,7 +354,7 @@ void main() {
     });
   });
 
-  group('厨师单菜品列：**数量 | 菜名（居中）| 备注**', () {
+  group('厨师单菜品列：**数量 + 两格 + 菜名（左对齐）**', () {
     KitchenData data({String paperWidth = '58'}) =>
         KitchenData(
           table: '8',
@@ -382,45 +382,30 @@ void main() {
     List<TicketRow> rowsOf({String paperWidth = '58'}) =>
         buildKitchenRows(data(paperWidth: paperWidth));
 
-    test('表头是「数量 菜名 备注」，数量在最左、备注在最右', () {
+    test('不再打「数量 菜名」表头（Cant. / Producto 已取消）', () {
       final l = lines();
-      final header = l.firstWhere((x) => x.contains('菜名'));
-      expect(header.trimLeft().startsWith('数量'), isTrue,
-          reason: '表头应该是「数量 菜名 备注」：$header');
-      expect(header.indexOf('数量') < header.indexOf('菜名'), isTrue,
-          reason: '数量必须排在菜名左边：$header');
-      expect(header.indexOf('菜名') < header.indexOf('备注'), isTrue,
-          reason: '备注必须在菜名右边：$header');
-      expect(header.trimRight().endsWith('备注'), isTrue,
-          reason: '备注居右（贴着右边缘）：$header');
+      expect(l.any((x) => x.contains('数量') && x.contains('菜名')), isFalse,
+          reason: '表头整行已经取消：\n${l.join('\n')}');
 
       for (final name in const ['牛肉炒饭', '可乐']) {
         final row = l.firstWhere((x) => x.contains(name));
-        expect(row.trimLeft().startsWith('数量'), isFalse);
         expect(row.indexOf(name) > 0, isTrue,
             reason: '$name 前面应该有数量：$row');
-        // 数量在菜名**之前**：第一个非空格字符是数量（数字开头）
         expect(RegExp(r'^\s*\d').hasMatch(row), isTrue,
             reason: '数量应该在菜名左边：$row');
       }
-      // 带单位的菜：数量列写「2 份」
       expect(l.any((x) => x.trimLeft().startsWith('2 份')), isTrue);
     });
 
-    test('菜名在中间那一列**居中**（中心列对齐，不再挤在数量旁边）', () {
+    test('菜名从固定第 6 格开始（数量列固定 5 格）', () {
       final l = lines();
-      final a = l.firstWhere((x) => x.contains('牛肉炒饭'));
-      final b = l.firstWhere((x) => x.contains('可乐'));
-      // 注意：要比的是**显示列数**（中文算 2 列），字符串下标在中文行上不等价
-      double centerOf(String row, String name) =>
-          displayWidth(row.substring(0, row.indexOf(name))) +
-          displayWidth(name) / 2;
-      expect((centerOf(a, '牛肉炒饭') - centerOf(b, '可乐')).abs() <= 1, isTrue,
-          reason: '菜名居中的话，两行菜名的中心应该对齐：\n"$a"\n"$b"');
-      // 短名字最能看出居中：`可乐` 前面应该有留白（不是紧贴着数量列）
-      final padBefore = displayWidth(b.substring(0, b.indexOf('可乐')));
-      expect(padBefore, greaterThan(kKitchenQtyColumns),
-          reason: '菜名应该居中（前面留白），而不是紧贴数量列：$b');
+      for (final name in const ['牛肉炒饭', '可乐']) {
+        final row = l.firstWhere((x) => x.contains(name));
+        final before = row.substring(0, row.indexOf(name));
+        // 菜品行是特大字：数量列固定 5 个显示列，菜名从第 6 列开始。
+        expect(displayWidth(before), 5,
+            reason: '所有菜名应该从同一列开始：\n"$row"');
+      }
     });
 
     test('行不超宽（58/80mm 都不爆，按每行自己的字号算）', () {
@@ -485,13 +470,20 @@ void main() {
     ///
     /// ⚠️ 厨师单的虚线是 `- - - -`（**中间有空格**），所以不能用 `_isDivider()`
     /// （那个是给小票的实线 `--------` 用的）。
-    bool isDashRow(TicketRow r) =>
-        r.scale == TicketScale.normal &&
-        r.text.trim().isNotEmpty &&
-        r.text.runes.every((c) => c == 0x2D || c == 0x20); // 只有 '-' 和空格
+    bool isDashRow(TicketRow r) {
+      final plain = r.text.replaceAll('◆', '').replaceAll('#', '').trim();
+      return r.scale == TicketScale.normal &&
+          plain.isNotEmpty &&
+          plain.runes.every((c) => c == 0x2D || c == 0x20); // 只有 '-' 和空格
+    }
 
     List<TicketRow> badgeOf(KitchenData k) {
-      final rows = buildKitchenRows(k);
+      final framed = !k.isTakeaway && k.paperWidth == '80';
+      var rows = buildKitchenRows(k, frame: framed);
+      if (framed) {
+        rows = addDineInSidePattern(rows,
+            contentCols: receiptColumns('80') - 12);
+      }
       final last = rows.lastIndexWhere(isDashRow);
       expect(last, greaterThan(0), reason: '菜品区后面应该有一条虚线');
       return rows.sublist(last + 1);
@@ -514,14 +506,26 @@ void main() {
           reason: '时间那行占满整行（居中）');
     });
 
-    test('② 门牌**紧跟时间**（中间不空行）；堂食门牌 = 桌号（特大、居中）', () {
+    test('②a 堂食左右边纹：80mm 下每行左右加 ◆', () {
+      final dine = addDineInSidePattern(
+          buildKitchenRows(ticket(paperWidth: '80'), frame: true),
+          contentCols: receiptColumns('80') - 12);
+      final item = dine.firstWhere((r) => r.text.contains('牛肉炒饭'));
+      expect(item.text.startsWith('◆'), isTrue,
+          reason: '左边纹：${item.text}');
+      expect(item.text.trimRight().endsWith('◆'), isTrue,
+          reason: '右边纹：${item.text}');
+      expect(item.raw, isNotNull, reason: '边纹要走原始字节（◆ 强制 GBK）');
+    });
+
+    test('② 门牌**紧跟时间**（中间不空行）；堂食门牌 = AQUI + 堂食 + 桌号（超大）', () {
       final rows = buildKitchenRows(ticket());
       final time = rows.indexWhere((r) => r.text.contains('13:45'));
       // 票面上半截要短：时间下面直接就是门牌，不空行
       final who = rows[time + 1];
-      expect(who.text.trim(), '桌号 8',
+      expect(who.text.trim(), 'AQUI 堂食 桌号 8',
           reason: '时间下面应该紧接着就是门牌：\n${rows.map((r) => r.text).join('\n')}');
-      expect(who.scale, kKitchenWhoScale);
+      expect(who.scale, TicketScale.huge, reason: '堂食门牌要超大');
       final left = displayWidth(who.text) - displayWidth(who.text.trimLeft());
       final right = displayWidth(who.text) - displayWidth(who.text.trimRight());
       expect((left - right).abs() <= 1, isTrue, reason: '应该居中："${who.text}"');
@@ -568,22 +572,22 @@ void main() {
       expect(noWait.any((r) => r.text.contains('等待')), isFalse);
     });
 
-    test('⑤ 底部徽标：空行 → **西文** → **中文**，两行都是最大字号（没有图案了）', () {
+    test('⑤ 底部徽标：空行 → 一行「AQUI 堂食」，最大字号', () {
       final badge = badgeOf(ticket());
       expect(badge.first.text.trim(), isEmpty, reason: '徽标前面空一行');
-      // 只有两行字：第一行西文、第二行中文（ASCII 图案已经去掉了）
-      expect(badge.length, 3, reason: '徽标 = 空行 + 西文 + 中文：\n${badge.map((r) => r.text).join('\n')}');
-      final western = badge[1];
-      expect(western.text.trim(), 'AQUI');
-      expect(western.scale, kKitchenBadgeScale, reason: '西文那行要最大');
-      final chinese = badge[2];
-      expect(chinese.text.trim(), '堂食');
-      expect(chinese.scale, kKitchenBadgeScale, reason: '中文那行要最大');
+      expect(badge.length, 2,
+          reason: '徽标 = 空行 + 一行合并的 AQUI 堂食：\n${badge.map((r) => r.text).join('\n')}');
+      final line = badge[1];
+      expect(line.text, contains('AQUI'));
+      expect(line.text, contains('堂食'));
+      // 58mm 不套边纹；80mm 才套（见 ②a）
+      expect(line.scale, kKitchenBadgeScale, reason: '徽标要最大');
+      expect(line.bold, isTrue);
       // 徽标是票面**最后**的内容（切纸前那一块，插在杆上正好露出来）
-      expect(badge.last.text.trim(), '堂食');
+      expect(badge.last.text, contains('堂食'));
     });
 
-    test('⑥ 徽标里**没有** ASCII 图案了（厨师不看图案，那几行纸全省下来）', () {
+    test('⑥ 徽标合并成一行；外卖是「LLEVAR 外卖」，不再分两行', () {
       for (final takeaway in [false, true]) {
         final badge = badgeOf(ticket(
           table: takeaway ? '' : '8',
@@ -591,24 +595,25 @@ void main() {
           western: takeaway ? 'LLEVAR' : 'AQUI',
           chinese: takeaway ? '外卖' : '堂食',
         ));
-        // 空行之后只剩两行字，而且都是纯文字（没有 `|` `_` `/` 这些图案字符）
-        expect(badge.length, 3);
+        expect(badge.length, 2);
+        // 没有 `|` `_` `/` 这些老 ASCII 图案
         for (final r in badge.skip(1)) {
           expect(RegExp(r'[<>|_/\\]').hasMatch(r.text), isFalse,
-              reason: '徽标里不该再有图案字符："${r.text}"');
+              reason: '徽标里不该再有 ASCII 图案字符："${r.text}"');
         }
       }
-      // 外卖的徽标是西文 `LLEVAR` + 中文 `外卖`
       final takeaway = badgeOf(ticket(
           table: '', takeaway: true, western: 'LLEVAR', chinese: '外卖'));
-      expect(takeaway[1].text.trim(), 'LLEVAR');
-      expect(takeaway[2].text.trim(), '外卖');
+      expect(takeaway[1].text, contains('LLEVAR'));
+      expect(takeaway[1].text, contains('外卖'));
+      expect(takeaway[1].text, isNot(contains('◆')),
+          reason: '边纹只给堂食单');
     });
 
-    test('⑦ 中文那行**强制中文模式**打（整张票设 cp850 也不会变成 `?`）', () {
+    test('⑦ 中文徽标**强制中文模式**打（整张票设 cp850 也不会变成 `?`）', () {
       final badge = badgeOf(ticket());
-      final chinese = badge[2];
-      expect(chinese.text.trim(), '堂食');
+      final chinese = badge[1];
+      expect(chinese.text, contains('堂食'));
       // 关键：中文行是**原始字节行**（自带 FS & … FS .），不看当前编码设置
       expect(chinese.raw, isNotNull,
           reason: '中文徽标要走 gbkLineBytes（自己进出中文模式），否则 cp850 下会变 `?`');
@@ -618,29 +623,26 @@ void main() {
       expect(_indexOfSeq(raw, const [0x1C, 0x2E]), greaterThanOrEqualTo(0),
           reason: '缺 FS .（退出中文模式）');
 
-      // 传空 = 这一行不打（只留西文）
+      // 传空 = 只留西文（堂食仍有边纹）
       final none = badgeOf(ticket(chinese: ''));
       expect(none.any((r) => r.text.contains('堂食')), isFalse);
       expect(none.any((r) => r.text.contains('AQUI')), isTrue,
-          reason: '西文那行照打');
+          reason: '西文照打');
     });
 
     test('⑦b 底部徽标：**加粗** + 比菜品再高一档（huge = 2 倍宽 / 3 倍高）', () {
       final badge = badgeOf(ticket());
-      final western = badge[1];
-      final chinese = badge[2];
+      final line = badge[1];
 
-      expect(western.scale, TicketScale.huge, reason: '西文那行用最高一档字号');
-      expect(chinese.scale, TicketScale.huge);
+      expect(line.scale, TicketScale.huge, reason: '徽标用最高一档字号');
       expect(kKitchenBadgeScale, TicketScale.huge,
           reason: '这个常量就是徽标的字号，改它就能整体升降档');
       // GS ! 的参数：宽 2 倍（高位 1）、高 3 倍（低位 2）→ 0x12
       expect(TicketScale.huge.gsBangParam, 0x12);
 
-      expect(western.bold, isTrue, reason: '西文行要加粗');
-      expect(chinese.bold, isTrue, reason: '中文行要加粗');
+      expect(line.bold, isTrue, reason: '徽标要加粗');
       // 中文行走原始字节 → 加粗的 ESC E 1 / ESC E 0 要编进 raw 里
-      final raw = chinese.raw!.toList();
+      final raw = line.raw!.toList();
       expect(_indexOfSeq(raw, const [0x1B, 0x45, 0x01]), greaterThanOrEqualTo(0),
           reason: '中文徽标缺 ESC E 1（加粗）');
       expect(_indexOfSeq(raw, const [0x1B, 0x45, 0x00]), greaterThanOrEqualTo(0),
@@ -659,7 +661,7 @@ void main() {
           reason: '两道菜之间应该空一行：\n${rows.join('\n')}');
     });
 
-    test('⑨ **第一条**备注跟菜名同一行（大、不加粗）；剩下的**一条一行**从最左边', () {
+    test('⑨ 菜名独占一行；定制项/备注从下一行、从菜名列开始', () {
       final rows = buildKitchenRows(ticket(lines: const [
         OrderLine(
           name: '牛肉炒饭',
@@ -670,40 +672,34 @@ void main() {
         ),
       ]));
       final itemCols = kitchenItemColumns('58');
-      final qtyW = kKitchenQtyColumns;
-      final noteWXl = itemCols ~/ kKitchenNoteColumnsDivisor;
-      final nameW = itemCols - qtyW - noteWXl;
 
-      // ① 第一行 = 「数量 + 菜名」：**特大加粗**、**不换行**（`continueLine`）
-      final head = rows.firstWhere((r) => r.text.contains('牛肉炒饭'));
-      expect(head.scale, kKitchenItemScale);
-      expect(head.bold, isTrue, reason: '数量和菜名要加粗');
-      expect(head.continueLine, isTrue, reason: '第一条备注要紧跟着打在同一行上');
-      expect(displayWidth(head.text), qtyW + nameW,
-          reason: '正好是"数量列 + 菜名列"，剩下的地方留给备注');
+      // ① 菜品行 = 数量 + 菜名，菜名独占这一行
+      final item = rows.firstWhere((r) =>
+          r.scale == kKitchenItemScale && r.text.contains('牛肉炒饭'));
+      expect(item.bold, isTrue, reason: '数量和菜名要加粗');
+      expect(item.continueLine, isFalse, reason: '不再跟备注并排');
+      expect(displayWidth(item.text), itemCols);
+      expect(item.text.trimLeft().startsWith('1'), isTrue,
+          reason: '数量贴最左：${item.text}');
 
-      // ② 同一行接着打第一条备注（**大**、不加粗、**贴右边缘**）
-      final note1 = rows[rows.indexOf(head) + 1];
-      expect(note1.text.trim(), '加辣');
-      expect(note1.scale, TicketScale.large, reason: '备注是「大」，不是「特大」');
-      expect(note1.bold, isFalse, reason: '**备注不加粗**');
-      expect(note1.continueLine, isFalse, reason: '这段打完要换行');
-      // 居右：数量+菜名（特大，算双倍列宽）+ 这一条 = 正好一张纸宽
-      expect(displayWidth(head.text) * 2 + displayWidth(note1.text), 32,
-          reason: '第一条要顶到纸的右边缘（不然跟菜名挤在中间）：\n'
-              '"${head.text}" + "${note1.text}"');
-
-      // ③ 剩下的备注：**一条一行、从最左边**（大、不加粗）
-      final note2 = rows[rows.indexOf(note1) + 1];
-      expect(note2.text, '不要香菜');
-      expect(note2.text.startsWith(' '), isFalse, reason: '从最左边开始打');
-      expect(note2.scale, TicketScale.large);
-      expect(note2.bold, isFalse);
-      final note3 = rows[rows.indexOf(note2) + 1];
-      expect(note3.text, '少放盐', reason: '第三条也要单独一行');
+      // ② 定制项 / 备注从下一行开始，从第 6 格（普通字号第 11 列）开始；
+      //    58mm 让出数量列后一行放不下三条，会按 ` / ` 分两行，每行都从菜名列开始。
+      final i = rows.indexOf(item);
+      final noteLine = rows[i + 1];
+      expect(noteLine.text.trim(), '加辣 / 不要香菜');
+      expect(noteLine.scale, TicketScale.large, reason: '备注是「大」');
+      expect(noteLine.bold, isFalse, reason: '备注不加粗');
+      expect(noteLine.continueLine, isFalse);
+      expect(displayWidth(noteLine.text), 32, reason: '整行铺满');
+      expect(noteLine.text,
+          padRight('${' ' * 10}加辣 / 不要香菜', 32),
+          reason: '备注要和菜名从同一列开始：${noteLine.text}');
+      final noteLine2 = rows[i + 2];
+      expect(noteLine2.text.trim(), '少放盐');
+      expect(noteLine2.text, padRight('${' ' * 10}少放盐', 32));
     });
 
-    test('⑨a **只有特别备注、没有定制项**：第一条同样在菜品这一行、**贴右边缘**', () {
+    test('⑨a **只有特别备注、没有定制项**：同样从下一行、从菜名那一列开始', () {
       final rows = buildKitchenRows(ticket(lines: const [
         OrderLine(
           name: '牛肉炒饭',
@@ -713,64 +709,45 @@ void main() {
         ),
       ]));
 
-      final head = rows.firstWhere((r) => r.text.contains('牛肉炒饭'));
-      expect(head.continueLine, isTrue,
-          reason: '没有定制项时，第一条特别备注也要留在菜品这一行');
-      final first = rows[rows.indexOf(head) + 1];
-      expect(first.text.trim(), '不要香菜');
-      expect(first.scale, TicketScale.large);
-      expect(displayWidth(head.text) * 2 + displayWidth(first.text), 32,
-          reason: '第一条备注要贴右边缘');
-
-      // 第二条回到最左边、单独一行
-      final second = rows[rows.indexOf(first) + 1];
-      expect(second.text, '少辣');
-      expect(second.text.startsWith(' '), isFalse);
+      final item = rows.firstWhere((r) =>
+          r.scale == kKitchenItemScale && r.text.contains('牛肉炒饭'));
+      expect(item.continueLine, isFalse);
+      final i = rows.indexOf(item);
+      final noteLine = rows[i + 1];
+      expect(noteLine.text.trim(), '不要香菜 / 少辣');
+      expect(noteLine.scale, TicketScale.large);
+      expect(noteLine.text,
+          padRight('${' ' * 10}不要香菜 / 少辣', 32));
     });
 
-    test('⑨a2 第一个太长：**借菜名的地方**也要留在同一行（还是贴右边缘）', () {
+    test('⑨a2 长定制项不抢菜名位置：菜名一行，定制项下一行从菜名列开始', () {
       final rows = buildKitchenRows(ticket(lines: const [
         OrderLine(
           name: '牛肉炒饭',
           quantity: 1,
           unitPrice: 28,
-          options: ['Sin cebolla'], // 11 列 > 默认 8 列的备注列，但没到上限
+          options: ['Sin cebolla'], // 11 列，以前会挤到菜名右边
           notes: ['少辣'],
         ),
       ]));
 
-      // 菜名列被借窄了（8 → 6 个特大列），所以「牛肉炒饭」会折成两行 ——
-      // 用 `continueLine` 认这一行（菜品行的前半段就是它）
-      final head = rows.firstWhere((r) => r.continueLine);
-      expect(head.text.trimLeft().startsWith('1'), isTrue, reason: '数量贴最左');
-      final first = rows[rows.indexOf(head) + 1];
-      expect(first.text.trim(), 'Sin cebolla', reason: '西文单词不能被劈开');
-      expect(displayWidth(head.text) * 2 + displayWidth(first.text), 32,
-          reason: '借完地方之后仍然正好顶到右边缘：\n"${head.text}" + "${first.text}"');
-      // 菜名那一列被压窄了（< 默认），所以「数量+菜名」比默认短
-      final defaultNameW = kitchenItemColumns('58') -
-          kKitchenQtyColumns -
-          kitchenItemColumns('58') ~/ kKitchenNoteColumnsDivisor;
-      expect(displayWidth(head.text), lessThan(kKitchenQtyColumns + defaultNameW));
-      // 菜名折行了，但**一个字都没丢** —— 只看这道菜里**特大字号**的那几行
-      // （「数量 + 菜名」+ 菜名的折行续行；从 head 往后数，别把前面的门牌/备注混进来）
-      final nameRows = rows
-          .skip(rows.indexOf(head))
-          .where((r) => r.scale == kKitchenItemScale)
-          .map((r) => r.text)
-          .join()
-          .replaceAll(' ', '');
-      expect(nameRows, contains('牛肉炒饭'),
-          reason: '菜名折成两行也不能丢字：$nameRows');
-      // 剩下的备注回到最左边、单独一行（它前面可能还有菜名的折行续行，所以按内容找）
-      final restNote = rows
-          .skip(rows.indexOf(first))
-          .firstWhere((r) => r.text.trim() == '少辣');
-      expect(restNote.text, '少辣', reason: '剩下那条备注要从最左边开始打');
-      expect(restNote.text.startsWith(' '), isFalse);
+      final item = rows.firstWhere((r) =>
+          r.scale == kKitchenItemScale && r.text.contains('牛肉炒饭'));
+      expect(item.bold, isTrue);
+      expect(item.continueLine, isFalse);
+      expect(displayWidth(item.text), kitchenItemColumns('58'),
+          reason: '菜名不再让地方给右边备注');
+      expect(item.text, contains('牛肉炒饭'));
+
+      final i = rows.indexOf(item);
+      final noteLine = rows[i + 1];
+      expect(noteLine.text.trim(), 'Sin cebolla / 少辣');
+      expect(noteLine.scale, TicketScale.large);
+      expect(noteLine.text,
+          padRight('${' ' * 10}Sin cebolla / 少辣', 32));
     });
 
-    test('⑨a3 **80mm 纸**：数量贴左、第一个贴右（一行 48 列），菜名列更宽', () {
+    test('⑨a3 **80mm 纸**：菜名占满 24 列，备注下一行从菜名列开始', () {
       final rows = buildKitchenRows(ticket(
         paperWidth: '80',
         lines: const [
@@ -784,18 +761,18 @@ void main() {
         ],
       ));
 
-      final head = rows.firstWhere((r) => r.continueLine);
-      final first = rows[rows.indexOf(head) + 1];
-      expect(first.text.trim(), '加辣');
-      // 80mm：一行 48 列；「数量+菜名」（特大，双倍宽）+ 这一条 = 48
-      expect(displayWidth(head.text) * 2 + displayWidth(first.text), 48,
-          reason: '80mm 上第一个也要贴右边缘：\n"${head.text}" + "${first.text}"');
-      // 80mm 默认菜名列 = 24 − 4 − (24 ÷ 4 = 6) = 14 个特大列
-      expect(displayWidth(head.text), kKitchenQtyColumns + 14,
-          reason: '80mm 的菜名列比 58mm（8 列）宽得多');
+      final item = rows.firstWhere((r) =>
+          r.scale == kKitchenItemScale && r.text.contains('牛肉炒饭'));
+      expect(item.continueLine, isFalse);
+      expect(displayWidth(item.text), kitchenItemColumns('80'));
+      final noteLine = rows[rows.indexOf(item) + 1];
+      expect(noteLine.text.trim(), '加辣 / 不要香菜');
+      expect(noteLine.scale, TicketScale.large);
+      expect(noteLine.text,
+          padRight('${' ' * 10}加辣 / 不要香菜', 48));
     });
 
-    test('⑨b 一条备注特别长：按整张纸宽**折行**打，一个字都不丢', () {
+    test('⑨b 一条备注特别长：按可用宽度**折行**打，每段都从菜名列开始，一个字都不丢', () {
       const long = '不要香菜不要洋葱不要辣椒不要葱花不要蒜末不要柠檬不要冰';
       final rows = buildKitchenRows(ticket(lines: const [
         OrderLine(
@@ -805,12 +782,10 @@ void main() {
           notes: [long],
         ),
       ]));
-      final itemCols = kitchenItemColumns('58');
 
-      // 第一条太长了（> 8 列的备注列）→ 整条挪到下面的行里，按 32 列折
-      final item = rows.firstWhere((r) => r.text.contains('牛肉炒饭'));
-      expect(item.continueLine, isFalse,
-          reason: '第一条太长了，就别硬塞在这行尾巴上');
+      final item = rows.firstWhere((r) =>
+          r.scale == kKitchenItemScale && r.text.contains('牛肉炒饭'));
+      expect(item.continueLine, isFalse);
       bool isDashText(String s) =>
           s.trim().isNotEmpty && s.trim().runes.every((c) => c == 0x2D || c == 0x20);
       final noteRows = <TicketRow>[];
@@ -822,12 +797,13 @@ void main() {
       for (final r in noteRows) {
         expect(r.bold, isFalse, reason: '备注不加粗');
         expect(r.scale, TicketScale.large, reason: '备注是「大」');
-        expect(displayWidth(r.text) <= 32, isTrue, reason: '备注行超宽: ${r.text}');
+        expect(displayWidth(r.text), 32, reason: '每一段都铺满');
+        expect(r.text, padRight('${' ' * 10}${r.text.trim()}', 32),
+            reason: '每段都要从菜名列开始：${r.text}');
       }
       // 折行之后内容一模一样（去掉空白再比）—— 一个字都没丢
       final flat = rows.map((r) => r.text).join().replaceAll(' ', '');
       expect(flat, contains(long));
-      expect(itemCols, 16);
     });
 
     test('⑨c 没有选项 / 备注时：菜品行**铺满整行**，不会多出备注尾巴', () {
@@ -839,13 +815,11 @@ void main() {
       expect(item.continueLine, isFalse);
     });
 
-    test('⑨d 表头多了一列「备注」', () {
+    test('⑨d 不再有表头行', () {
       final rows = buildKitchenLines(ticket(lines: const [
         OrderLine(name: '牛肉炒饭', quantity: 2, unitPrice: 28),
       ]));
-      final header = rows.firstWhere((r) => r.contains('菜名'));
-      expect(header, contains('数量'));
-      expect(header, contains('备注'));
+      expect(rows.any((r) => r.contains('菜名') && r.contains('数量')), isFalse);
     });
 
     test('⑩ 58 / 80mm 每一行都不超过**自己字号**的列数（长名字 / 长备注也不爆）', () {
@@ -917,13 +891,12 @@ void main() {
           Settings(),
         ).map((l) => l.text).join('\n');
 
-    /// **去掉空白和换行**再比。
+    /// **去掉空白、边纹和换行**再比。
     ///
-    /// 为什么：厨师单的菜品是**特大**字号，58mm 一行只有 16 列，
-    /// 减去数量列 5 列，**菜名只剩 11 列** —— `Chop Suey Pollo`（15 列）放不下，
-    /// 会按规则**折成两行**（优先在空格处断、整行居中）。折行不等于丢字，
-    /// 所以这里把空白去掉再断言。
-    String flat(String ticket) => ticket.replaceAll(RegExp(r'\s+'), '');
+    /// 边纹只可能是 `◆`（cp850 的 `#` 退路只用于打印字节，不会出现在这里的
+    /// 默认 gbk 版式测试里；`#` 本身也是昵称 `L #1` 的正常字符，不能删）。
+    String flat(String ticket) =>
+        ticket.replaceAll(RegExp(r'[\s◆]+'), '');
 
     test('厨房单打**昵称**', () {
       expect(flat(kitchen()), contains('L#1'));
@@ -1037,9 +1010,10 @@ void main() {
           ),
         );
 
-    /// 「数量 + 菜名」那一行（菜品行的前半段）。
+    /// 「数量 + 菜名」那一行（菜品行本体）。
     TicketRow itemHead(OrderLine l, {String codec = 'gbk'}) =>
-        rows(l, codec: codec).firstWhere((r) => r.continueLine);
+        rows(l, codec: codec).firstWhere((r) =>
+            r.scale == kKitchenItemScale && r.text.contains(l.displayName));
 
     test('Grande → 份数（1 份写 1、2 份写 2）', () {
       expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'Grande')), '1');
@@ -1094,32 +1068,38 @@ void main() {
       expect(kitchenQtyShorthandLabel(line(qty: 1, size: 'Chico')), '①');
     });
 
-    test('真打在小票上：数量列 2/2，右边备注列照常写 Mediano', () {
+    test('真打在小票上：数量列 2/2，定制项 Mediano 从下一行菜名列开始', () {
       final l = line(qty: 2, size: 'Mediano');
       final rs = rows(l);
-      final head = rs.firstWhere((r) => r.continueLine);
-      expect(head.text.startsWith('2/2'), isTrue,
-          reason: '数量列应该从 2/2 开始：`${head.text}`');
-      expect(head.scale, kKitchenItemScale);
+      final item = rs.firstWhere((r) =>
+          r.scale == kKitchenItemScale && r.text.contains(l.displayName));
+      expect(item.text.startsWith('2/2'), isTrue,
+          reason: '数量列应该从 2/2 开始：`${item.text}`');
+      expect(item.scale, kKitchenItemScale);
       // 一行都不超宽（58mm = 32 列；每一行按自己的字号换算）
       for (final r in rs) {
         expect(displayWidth(r.text), lessThanOrEqualTo(r.scale.columnsFor(32)),
             reason: '超宽会被打印机自己折行：`${r.text}`');
       }
-      // 备注列（右边）跟以前一样：选项 Mediano 照打
-      expect(rs.map((r) => r.text).join('\n'), contains('Mediano'));
+      // 定制项 Mediano 从下一行开始，从菜名列开始
+      final note = rs[rs.indexOf(item) + 1];
+      expect(note.text.trim(), 'Mediano');
+      expect(note.text, padRight('${' ' * 10}Mediano', 32));
     });
 
     test('Chico 1 份：数量列打 ①（按 2 列算，整行不会挤歪）', () {
       final l = line(qty: 1, size: 'Chico');
       final rs = rows(l);
-      final head = rs.firstWhere((r) => r.continueLine);
-      expect(head.text.startsWith('①'), isTrue, reason: '`${head.text}`');
+      final item = rs.firstWhere((r) =>
+          r.scale == kKitchenItemScale && r.text.contains(l.displayName));
+      expect(item.text.startsWith('①'), isTrue, reason: '`${item.text}`');
       for (final r in rs) {
         expect(displayWidth(r.text), lessThanOrEqualTo(r.scale.columnsFor(32)),
             reason: '超宽会被打印机自己折行：`${r.text}`');
       }
-      expect(rs.map((r) => r.text).join('\n'), contains('Chico'));
+      final note = rs[rs.indexOf(item) + 1];
+      expect(note.text.trim(), 'Chico');
+      expect(note.text, padRight('${' ' * 10}Chico', 32));
     });
 
     test('份数太多放不下（150 份 Mediano = `150/2`，5 列 > 4 列）→ 退回真实份数', () {

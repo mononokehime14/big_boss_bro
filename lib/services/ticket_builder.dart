@@ -268,7 +268,17 @@ class TicketBuilder {
     // `raw` / `continueLine` 必须带过去：
     // - `raw`：厨师单的"空半行"是**只走纸的原始行**（`ESC J n`，见 kKitchenBlankRowDots）；
     // - `continueLine`：菜品行 = 「数量+菜名」（加粗、不换行）紧跟「备注」（不加粗、同一行）。
-    return buildKitchenRows(data)
+    // 堂食单：左右加 `◆` 边纹（不增加纸长；从两端空白里吃位置）。
+    final framed = !order.isTakeaway;
+    var rows = buildKitchenRows(data, frame: framed);
+    if (framed) {
+      rows = addDineInSidePattern(
+        rows,
+        contentCols: receiptColumns(settings.paperWidth) - 12,
+        codec: settings.receiptCodec,
+      );
+    }
+    return rows
         .map((r) => TicketLine(r.text,
             scale: r.scale,
             bold: r.bold,

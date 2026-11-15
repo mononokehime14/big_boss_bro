@@ -338,11 +338,8 @@ const TicketScale kKitchenWhoScale = TicketScale.xlarge;
 /// 选项 / 备注（「加辣」「不要香菜」）：**大**（双倍高、单倍宽），**不加粗**。
 ///
 /// 比菜名小一档：「点名要的话」要看得到，但不能压过菜名。
-/// 第一条跟在菜名右边（同一行），剩下的**一条一行**从最左边打
+/// 现在**所有**定制项 / 备注都从菜品下一行开始，**一条一行、整行居中**
 /// （见 `buildKitchenRows` ④段）。
-///
-/// 💡 「大」是**单倍宽**，所以备注列能用的列数是普通列数（58mm = 8 列），
-/// 不是菜品行那种半宽的 16 列。
 const TicketScale kKitchenDetailScale = TicketScale.large;
 
 /// 菜品行里「**数量**」占几列（**特大字号下的列数**）。
@@ -356,20 +353,12 @@ const TicketScale kKitchenDetailScale = TicketScale.large;
 /// 把这里改成 5 就能多放一列，代价是菜名少一列。
 const int kKitchenQtyColumns = 4;
 
-/// 菜品行里「**备注**」占几列的除数：备注列 = 整行 ÷ 这个数。
-///
-/// 58mm（特大一行 16 列）→ 4 列；80mm（24 列）→ 6 列。
-/// - 想让**菜名更宽敞** → 把这个数调**大**（备注列更窄，备注更容易折到下一行）；
-/// - 想给**备注更多地方** → 调**小**（3 = 备注占 1/3、菜名只剩一半）。
-///
-/// ⚠️ 这只是**默认**宽度：第一个「定制项 / 备注」比它长的时候会自动**借菜名的地方**
-/// （最多借到菜名只剩 [kKitchenMinNameColumns] 列），好让它留在菜品那一行的右边缘上。
+/// 旧版「首条备注挤在菜名右边」的备注列除数；现在备注独占下一行，这个常量保留兼容，
+/// 不再参与排版。
 const int kKitchenNoteColumnsDivisor = 4;
 
-/// 菜品行里「**菜名**」列**最少**留几列（**特大列**）：默认 4（= 8 个普通列宽）。
-///
-/// 右边的「第一个定制项 / 备注」太长时，会从这里借地方（借到只剩这么多为止）；
-/// 再长就整条挪到菜品下面去（不劈字、不丢字）。
+/// 旧版「首条备注挤在菜名右边」时菜名至少留几列；现在备注独占下一行，
+/// 这个常量保留兼容，不再参与排版。
 const int kKitchenMinNameColumns = 4;
 
 /// 底部「外卖 / 堂食」徽标（**西文一行 + 中文一行**）：**最大 + 加粗**。
@@ -434,6 +423,8 @@ int displayWidth(String s) {
 
 bool _isWide(int rune) {
   // 简化判断：常见中文/全角符号落在这些区间。
+  // `◆`（边纹）在 GBK 里是全角（2 列），不按 2 列算的话加边纹会撑宽一行。
+  if (rune == 0x25C6) return true;
   return (rune >= 0x2E80 && rune <= 0xA4CF) ||
       (rune >= 0xAC00 && rune <= 0xD7A3) ||
       (rune >= 0xF900 && rune <= 0xFAFF) ||
@@ -617,8 +608,9 @@ List<String> buildReceiptLines(ReceiptData r) =>
 ///                                 ← 空一行，分块
 /// - - - - - - - - - - - - - - - - ← 虚线（普通字号、整张纸宽）
 ///    数量      菜名      备注       ← 普通：表头（菜名居中、备注居右）
-///   2     牛肉炒饭   加辣          ← 菜品：**特大**，数量(右对齐·加粗) | 菜名(居中·加粗) | **第一条**备注(大、不加粗)
-///  poner salsa aparte             ← 剩下的备注 → **一条一行、从最左边**（大、不加粗、不丢字）
+///   2     牛肉炒饭                ← 菜品：**特大**，数量(贴左·加粗) | 菜名(居中·加粗)
+///         加辣                    ← 定制项 / 备注：**从下一行开始、一条一行、整行居中**（大、不加粗）
+///  poner salsa aparte             ← 一条太长就按整张纸宽折，每一段都居中、不丢字
 ///                                 ← 空一行，下一道菜
 /// - - - - - - - - - - - - - - - -
 ///                                 ← 空一行
@@ -631,9 +623,10 @@ List<String> buildReceiptLines(ReceiptData r) =>
 ///    （[kKitchenTopBlankRows]），接着才是**不太要紧**的信息（编号 + 时间）；
 /// 2. **紧接着是"门牌"**：堂食打桌号、外卖打「外卖 名字/号」、电话外卖再加一行
 ///    等待时间，**特大**、居中，不再跟时间之间空行（票面上半截要短）；
-/// 3. **菜品区是主体**：一行三列「数量 | 菜名 | 备注」（列宽见
-///    [kKitchenQtyColumns] / [kKitchenNoteColumnsDivisor]）：
-///    **第一条**备注跟在菜名右边，**剩下的每一条单独一行**从最左边打；
+/// 3. **菜品区是主体**：一行只放「数量 | 菜名」：
+///    数量**贴最左**，菜名在剩下的区域**居中**；菜名太长就折到下一行继续居中；
+///    **所有定制项 / 特别备注都从下一行开始，一条一行、整行居中**，
+///    不再挤在菜名右边（避免菜名和备注互相抢地方、错位）；
 /// 4. **底部是徽标**：**西文 + 中文**各一行，**最大**字号（[kKitchenBadgeScale]）——
 ///    单子插在杆上时露出来的正好是这一块。中文那行是**固定的**（哪怕票面语言是
 ///    西语 / 英语、哪怕整张票设的是 `cp850` 也一样出中文，见 [_badgeRows]）。
@@ -646,18 +639,26 @@ List<String> buildReceiptLines(ReceiptData r) =>
 /// 所以**任何一行都不会被切字**。
 ///
 /// 想自己调版式：直接改这个函数里的 add 顺序/内容就行，见 `kitchen_ticket.md`。
-List<TicketRow> buildKitchenRows(KitchenData k) {
+List<TicketRow> buildKitchenRows(KitchenData k, {bool frame = false}) {
   // ⚠️ 这里是**纸张原始列数**（58mm = 32、80mm = 48）；每一行再按**自己的字号**
   // 用 [TicketScale.columnsFor] 换算能放多少列。**不要**在这里先按菜品字号缩一遍 ——
   // 那样虚线 / 表头这些**普通字号**的行会被当成半宽，菜品行还会被缩两次
   // （特大档下菜名只剩 3 列，就是以前"餐品挤成一团、没利用空间"的原因）。
-  final cols = receiptColumns(k.paperWidth);
+  final paperCols = receiptColumns(k.paperWidth);
+  // `frame` = 堂食单套边纹；内容宽度预留左右各 6 个普通列。
+  final framed = frame && !k.isTakeaway;
+  final cols = framed ? paperCols - 12 : paperCols;
   final labels = k.labels;
   final rows = <TicketRow>[];
 
+  // 堂食边纹单的“空行”也要有边框：用普通字号的一整行空格，
+  // 再用 addDineInSidePattern() 统一套框；58mm / 外卖仍走原来的只走纸空行。
+  TicketRow blankRow() =>
+      framed ? TicketRow(' ' * cols) : _blankRow();
+
   // ---- ⓪ 顶部留白：**别针区**（夹子 / 针扎的地方，见 kKitchenTopBlankRows）----
   for (var i = 0; i < kKitchenTopBlankRows; i++) {
-    rows.add(_blankRow());
+    rows.add(blankRow());
   }
 
   // ---- ① 标题：厨师单 1 / 厨师单 2（**大**）----
@@ -677,9 +678,16 @@ List<TicketRow> buildKitchenRows(KitchenData k) {
   // 这一段是票面上最大的一块：堂食靠桌号认单，外卖靠名字 / 号喊单。
   // 「堂食 / 外卖」这四个字搬到票面**最下面**（西文 + 中文徽标），这里只留最要紧的。
   // ⚠️ 它**紧跟时间**（中间不空行）：票面上半截越短，菜和徽标就越大。
-  final who = _whoText(k);
+  //
+  // **堂食**：门牌 = `AQUI 堂食 桌号 8`（西文 + 中文 + 桌号），用「超大」字；
+  // 外卖保持原来的「外卖 名字 / #3」，用特大。
+  final who = k.isTakeaway ? _whoText(k) : _dineInWho(k);
   if (who.isNotEmpty) {
-    rows.add(_headline(who, cols, preferred: kKitchenWhoScale));
+    rows.add(_headline(
+      who,
+      cols,
+      preferred: k.isTakeaway ? kKitchenWhoScale : TicketScale.huge,
+    ));
   }
   // 外卖 / 电话外卖：**要等多久**（跟名字同一档字号 —— 厨房一眼就看到，别漏了）
   if (k.waitMinutes > 0 && labels.wait.isNotEmpty) {
@@ -687,62 +695,35 @@ List<TicketRow> buildKitchenRows(KitchenData k) {
         cols,
         preferred: kKitchenWhoScale));
   }
-  rows.add(_blankRow()); // 空一行：顶部信息和菜品区之间透口气（参考图也是这样分块的）
+  rows.add(blankRow()); // 空一行：顶部信息和菜品区之间透口气（参考图也是这样分块的）
 
   rows.add(TicketRow(_dash(cols)));
 
-  // ---- ④ 菜品（票面主体）：**数量 | 菜名 | 备注** 三列，字号**特大** ----
-  // 一行的样子（58mm 特大一行只有 16 列）：
-  // ```
-  //  2      牛肉炒饭           加辣    ← 数量**贴最左**、菜名居中（特大加粗）| 第一条（大、不加粗）**贴最右**
-  //  不要香菜                        ← 剩下的：一条一行、从最左边（大、不加粗）
-  // ```
-  // 「右边那一条」= **定制项和特别备注里的第一个**（定制项优先）；
-  // 没有定制项时，它自然就是第一条特别备注 —— 照样跟在菜名右边、贴右边缘。
+  // ---- ④ 菜品（票面主体）：**数量 + 两格 + 菜名**，字号**特大** ----
+  // 菜名不再居中：紧跟数量右边（至少空两个字符），写不下就从下一行继续；
+  // 定制项 / 特别备注仍从**下一行**开始、整体居中。
   //
   // ⚠️ **数量那一列不一定是数字**：认到规则表里的定制项（默认 `Size`）时会换成
   // 老板手写单的习惯（`Grande → 份数`、`Mediano → 份数/2`、`Chico → ①`），
   // 见 `kitchenQtyShorthandLabel` / `kKitchenQtyRules`。
-  // 例：`①     Chun Kun            Chico` —— 数量列是圆圈 1、右边备注照常写 Chico。
   final itemScale = kKitchenItemScale;
-  // 菜品行能用的列数（特大 = 双倍宽）：58mm = 16、80mm = 24
-  final itemCols = kitchenItemColumns(k.paperWidth);
-  // 三列：数量[固定] + 菜名[剩下] + 备注[整行 ÷ kKitchenNoteColumnsDivisor]
-  // ⚠️ 用 [_clampInt] 而不是 `.clamp()`：`clamp` 的静态返回类型是 `num`，
-  //    后面拿去做列宽（int）会编译不过。
-  final qtyW = _clampInt(kKitchenQtyColumns, 1, itemCols - 2);
-  final noteWXl = _clampInt(itemCols ~/ kKitchenNoteColumnsDivisor, 1,
-      itemCols - qtyW - 2); // 至少给菜名留 2 列
-  final nameW = itemCols - qtyW - noteWXl;
-  // 备注是**「大」字号**（单倍宽），所以它能用的列数是普通列数：
-  //   数量+菜名 占 `qtyW + nameW` 个特大列 = 它们的**两倍**普通列，剩下的全给备注。
-  //   默认宽：58mm 32 - 2×12 = **8 列**；80mm 48 - 2×18 = **12 列**。
-  //   （每一行的实际宽会在下面按「第一个定制项 / 备注」的长度重算 —— 太长就从菜名借）
-  // 备注列**最多能长多宽**：把菜名压到 [kKitchenMinNameColumns] 之后剩下的都给它。
-  // 这样「第一个定制项 / 备注」长一点时，宁可**借菜名的地方**也要挤在同一行的
-  // 右边缘上（而不是掉到下面一行、看着跟这道菜没关系）。
-  final minNameW = _clampInt(kKitchenMinNameColumns, 1, nameW);
-  final maxNoteW = cols - 2 * (qtyW + minNameW);
+  // 菜品行能用的“字符列数”（特大 = 双倍宽）：
+  // - 80mm 套边纹后内容 36 普通列 → 18 个特大字符；
+  // - 58mm 不套边纹，整张 32 列 → 16 个特大字符。
+  final itemCols = framed ? cols ~/ 2 : kitchenItemColumns(k.paperWidth);
+  // 菜品数量固定占 5 个“菜品字号”格：
+  // - `10`（2 格）后空 3 格；
+  // - `①`（2 格）后空 3 格；
+  // - `1/2`（3 格）后空 2 格。
+  // 菜名、续行、定制项/备注都从同一个位置（第 6 格）开始。
+  const qtyFieldW = 5;
+  final nameIndent = qtyFieldW * itemScale.width; // 普通字号下的缩进
+  final nameW = itemCols - qtyFieldW;
 
   // 菜品加粗（`kKitchenBoldItemNames`）：加粗 + 放大，厨房隔着两米也看得清。
   TicketRow itemRow(String text) => kKitchenBoldItemNames
       ? TicketRow.bold(text, itemScale)
       : TicketRow(text, itemScale);
-
-  // 「数量 + 菜名」那一段（**加粗**）：后面紧跟「第一个定制项 / 备注」（同一行、不加粗）
-  TicketRow itemHead(String text) => kKitchenBoldItemNames
-      ? TicketRow.headBold(text, itemScale)
-      : TicketRow.head(text, itemScale);
-
-  // 表头：**普通字号**（列数正好是特大下的两倍）：
-  // **数量贴左**、菜名居中（跟下面的菜名对齐）、**备注贴右**。
-  final hQtyW = qtyW * 2;
-  final hNoteW = noteWXl * 2;
-  final hNameW = cols - hQtyW - hNoteW;
-  rows.add(TicketRow(
-      padRight(_truncateToWidth(labels.colQty, hQtyW), hQtyW) +
-          padCenter(_truncateToWidth(labels.colName, hNameW), hNameW) +
-          padLeft(_truncateToWidth(labels.colNote, hNoteW), hNoteW)));
 
   for (var i = 0; i < k.lines.length; i++) {
     final l = k.lines[i];
@@ -751,54 +732,52 @@ List<TicketRow> buildKitchenRows(KitchenData k) {
     if (i == k.drinksFrom && i > 0) {
       rows.add(TicketRow(_dash(cols)));
     }
-    // 数量**贴最左**（`2` / `12` / `2 份` 都从纸的左边缘开始）
-    final qty = padRight(_qtyCell(l, qtyW, k.codec), qtyW);
-    // 「第一个」= 定制项在前，没有定制项才用第一条特别备注
-    final notes = _noteItems(l);
-    String noteHead = '';
-    var noteRest = notes;
-    if (notes.isNotEmpty && displayWidth(notes.first) <= maxNoteW) {
-      noteHead = notes.first;
-      noteRest = notes.sublist(1);
-    }
-    // 菜名列 = 整行 − 数量列 − 备注列；
-    // 「第一个」太长时**从菜名这里借地方**（最多借到只剩 [kKitchenMinNameColumns] 列），
-    // 好让它留在菜品这一行的右边缘上（不用借就还是默认宽度，表头才对得齐）。
-    final need = noteHead.isEmpty ? 0 : displayWidth(noteHead);
-    final fitting = (cols - 2 * qtyW - need) ~/ 2;
-    final nameCols = noteHead.isEmpty
-        ? itemCols - qtyW
-        : _clampInt(fitting < nameW ? fitting : nameW, minNameW, itemCols - qtyW);
-    // 备注列宽 = 剩下的普通列（这样「第一个」正好顶到纸的右边缘，中间不留缝）
-    final headNoteW = noteHead.isEmpty ? 0 : cols - 2 * (qtyW + nameCols);
-    // 菜名在中间那一列**居中**；一个放不下就**折到下一行**（整行居中），一个字都不丢。
-    // ⚠️ 用 `displayName`：**厨师单看昵称**（顾客小票那边用的才是全名 `name`）。
-    final name = _wrapToWidth(kitchenItemName(l.displayName), nameCols);
 
-    final head = qty + padCenter(name.first, nameCols);
-    if (noteHead.isNotEmpty) {
-      // 同一行：前半段（数量+菜名，特大加粗、不换行）+ 后半段（第一个备注，大、不加粗）
-      rows.add(itemHead(head));
-      // **贴右边缘**：前面垫空格，让这一条正好顶到纸的右边
-      final padN = headNoteW - displayWidth(noteHead);
-      rows.add(TicketRow(
-          '${padN > 0 ? ' ' * padN : ''}$noteHead', kKitchenDetailScale));
-    } else {
-      // 没有选项也没有备注（或者第一条长到放不下）：整行还是**铺满**
-      rows.add(itemRow(padRight(head, itemCols)));
-    }
-    // 菜名放不下 → 折到下一行（整行居中）
-    for (final more in name.skip(1)) {
-      rows.add(itemRow(padCenter(more, itemCols)));
-    }
-    // 剩下的备注 → **一条一行、从最左边**打（大、不加粗；一条太长就按整张纸宽折）
-    for (final item in noteRest) {
-      for (final s in _wrapToWidth(item, cols)) {
+    /// 饮料：紧凑一行 —— 数量、空两格、名字、空两格、备注，写不下才从左边换行。
+    // 饮品和菜品分开排，厨师一眼能看出“下面是饮料”。
+    if (k.drinksFrom >= 0 && i >= k.drinksFrom) {
+      // 饮品数量只打份数（或 Size 手写习惯），**不要带单位**：
+      // 菜单里个别饮品单位写成 "1" 时，会出现 `1 1` 这种重复。
+      final drinkQty =
+          kitchenQtyShorthandLabel(l, codec: k.codec) ?? '${l.quantity}';
+      final parts = <String>[
+        drinkQty,
+        kitchenItemName(l.displayName).trim(),
+        ..._noteItems(l).map((e) => e.trim()).where((e) => e.isNotEmpty),
+      ].where((e) => e.isNotEmpty).toList();
+      final drinkLine = parts.join('  ');
+      for (final s in _wrapToWidth(drinkLine, cols)) {
+        // 不从中间对齐，也不加粗：饮料是配角，紧凑、左对齐
         rows.add(TicketRow(s, kKitchenDetailScale));
       }
+      if (i != k.lines.length - 1) rows.add(blankRow());
+      continue;
+    }
+
+    // 数量固定在 5 格：菜名从第 6 格开始，所有菜品对齐。
+    final qtyField = padRight(
+        _truncateToWidth(_qtyCell(l, qtyFieldW, k.codec).trim(), qtyFieldW),
+        qtyFieldW);
+
+    // ⚠️ 用 `displayName`：**厨师单看昵称**（顾客小票那边用的才是全名 `name`）。
+    // 菜名不居中：紧跟在固定数量列后面，续行也缩进到第 6 格。
+    final name = _wrapToWidth(
+        kitchenItemName(l.displayName), nameW > 0 ? nameW : 1);
+    rows.add(itemRow(padRight(qtyField + name.first, itemCols)));
+    for (final more in name.skip(1)) {
+      rows.add(itemRow(
+          padRight('${' ' * qtyFieldW}$more', itemCols)));
+    }
+    // 定制项 / 特别备注：**从下一行开始**，也从第 6 格开始，和菜名对齐；
+    // 一行尽量多放几个，用 ` / ` 分隔；每个备注完整放在一行里。
+    for (final line
+        in _packNoteLines(_noteItems(l), cols - nameIndent)) {
+      rows.add(TicketRow(
+          padRight('${' ' * nameIndent}$line', cols),
+          kKitchenDetailScale));
     }
     // 菜品之间空一行：一道菜一块，厨师扫的时候不会串行（跟顾客小票一样）
-    if (i != k.lines.length - 1) rows.add(_blankRow());
+    if (i != k.lines.length - 1) rows.add(blankRow());
   }
 
   rows.add(TicketRow(_dash(cols)));
@@ -806,10 +785,76 @@ List<TicketRow> buildKitchenRows(KitchenData k) {
   // ---- ⑤ 底部徽标：**西文 + 中文**（票面上最大的一块）----
   // 单子插在杆子上时，露在外面的就是这一块 —— 所以"堂食还是外卖"放在这里，
   // 只有两行大字，不再画图案（图案实测没用还费纸）。
-  rows.addAll(_badgeRows(k));
+  rows.addAll(_badgeRows(k, cols, framed));
 
+  // 堂食单：左右边纹（现在统一在 `TicketBuilder.kitchenLines()` 里加，
+  // 这样直接调 `buildKitchenRows()` 做版式预览/测试时不会混进装饰字符）。
   return rows;
 }
+
+/// 堂食单的**左右边纹**：每一行左右各一个 **特大号 `◆`**，并留一个空格。
+///
+/// 80mm 堂食单在 [buildKitchenRows] 里已经把内容宽度缩到 36 个普通列
+/// （纸张 48 列 − 左右各 6 列边框；58mm 则是 20 列），这里只负责：
+/// 1. 把每行内容补齐到自己的列宽；
+/// 2. 左边打 `◆ `、右边打 ` ◆`，`◆` 固定用 [TicketScale.xlarge]；
+/// 3. `◆` 和中文内容都强制 GBK，所以 cp850/latin1 下也不会是 `#` / `?`。
+///
+/// 每一行（包括空行、底部徽标）都会加边框，不存在“这行没框”的情况。
+List<TicketRow> addDineInSidePattern(List<TicketRow> rows,
+    {required int contentCols, String codec = 'gbk'}) {
+  const border = '◆';
+  final out = <TicketRow>[];
+
+  for (final row in rows) {
+    // 80mm 套框时，buildKitchenRows 已经把空行 / 徽标都做成文本行；
+    // 这里不再跳过任何正文行，保证每一行都有边纹。
+    if (row.raw != null) {
+      out.add(row);
+      continue;
+    }
+    final scale = row.scale;
+    final w = scale.columnsFor(contentCols);
+    final content = padRight(_truncateToWidth(row.text, w), w);
+    final lineHeight = scale.height > TicketScale.xlarge.height
+        ? scale.height
+        : TicketScale.xlarge.height;
+    final raw = <int>[
+      ...setLineSpacing(24 * lineHeight),
+      // 左边纹：特大号 ◆ + 一个空格
+      ...gsBang(TicketScale.xlarge),
+      0x1C, 0x26, ...gbkBytes(border), 0x1C, 0x2E,
+      0x20,
+      // 内容：按这一行自己的字号
+      ...gsBang(scale),
+      if (row.bold) ...emphasize(true),
+      if (_containsCjk(content)) ...[
+        0x1C, 0x26, ...gbkBytes(content), 0x1C, 0x2E,
+      ] else ...[
+        ...encodeText(content, codec),
+      ],
+      if (row.bold) ...emphasize(false),
+      // 右边纹：空格 + 特大号 ◆
+      ...gsBang(TicketScale.xlarge),
+      0x20,
+      0x1C, 0x26, ...gbkBytes(border), 0x1C, 0x2E,
+      ...gsBang(TicketScale.normal),
+      0x0A,
+      0x1B, 0x32, // ESC 2：行距复位
+    ];
+    out.add(TicketRow.bytes(
+      '$border $content $border',
+      raw,
+      scale: scale,
+      bold: row.bold,
+    ));
+  }
+  return out;
+}
+
+/// 有没有中日韩文字（决定强制走 GBK 中文模式）。
+bool _containsCjk(String s) => s.runes.any((r) =>
+    (r >= 0x3400 && r <= 0x9FFF) || (r >= 0xF900 && r <= 0xFAFF));
 
 /// 虚线：`- - - -`（整张纸宽，普通字号）。
 String _dash(int cols) => '- ' * (cols ~/ 2);
@@ -839,48 +884,98 @@ String _whoText(KitchenData k) {
       : '${k.labels.labelTable} $table';
 }
 
-/// 底部徽标：**西文一行 + 中文一行**（都是**最大**字号），上面空一行跟菜品分开。
+/// 堂食门牌：**AQUI + 堂食 + 桌号**（西文 + 中文都要，字体用「超大」）。
 ///
-/// 以前这儿还画过 ASCII 图案（堂食画桌子、外卖画打包袋）—— **实测厨师不看**，
-/// 而且占掉三四行纸，所以去掉了，只留字。
-/// 想加回来很简单：在两行字前面补一句
-/// `out.add(TicketRow(padCenter(图案行, kKitchenBadgeScale.columnsFor(cols)), kKitchenBadgeScale));`
-/// 就行（图案只能是纯 ASCII、宽度 ≤ 16 列，见 `kitchen_ticket.md` §5 例④）。
+/// 外卖还是原来的「外卖 名字 / #3」，不套这个。
+String _dineInWho(KitchenData k) {
+  final parts = <String>[
+    if (k.badgeWestern.trim().isNotEmpty) k.badgeWestern.trim(),
+    if (k.badgeChinese.trim().isNotEmpty) k.badgeChinese.trim(),
+    _whoText(k),
+  ].where((e) => e.trim().isNotEmpty).toList();
+  return parts.join(' ');
+}
+
+/// 底部徽标：**西文 + 中文合并成一行**（最大字号），上面空一行跟菜品分开。
 ///
-/// ⚠️ **中文那行是强制中文模式**打的（[gbkLineBytes]）：整张票哪怕设的是 `cp850`，
-/// 这一行也照样出中文 —— 它是"固定要有"的（见 `kitchen_ticket.md` §3.5）。
-List<TicketRow> _badgeRows(KitchenData k) {
-  final cols = receiptColumns(k.paperWidth);
-  final out = <TicketRow>[_blankRow()]; // 空一行，跟菜品分开
+/// 堂食 80mm：纯文本行，交给边纹框统一加 `◆ ... ◆`；
+/// 58mm / 外卖：中文直接走 GBK 原始行（没有边纹）。
+List<TicketRow> _badgeRows(KitchenData k, int cols, bool framed) {
+  final out = <TicketRow>[
+    framed ? TicketRow(' ' * cols) : _blankRow(),
+  ]; // 空一行，跟菜品分开
 
   final western = k.badgeWestern.trim();
-  if (western.isNotEmpty) {
-    // 西文：**加粗**（跟下面中文那行一致）
-    out.add(_headline(western, cols, preferred: kKitchenBadgeScale, bold: true));
-  }
   final chinese = k.badgeChinese.trim();
-  if (chinese.isNotEmpty) {
-    // 中文：**自己进出中文模式**（FS & … FS .），所以不看当前编码是什么。
-    // 前面的空格在正常模式里打（不会被当成双宽字），只有那几个汉字进中文模式。
-    // 加粗的 `ESC E` 指令**塞进这一行的原始字节里**（raw 行不走通用加粗包）。
-    final scale = _headlineScale(chinese, cols, kKitchenBadgeScale);
-    final w = scale.columnsFor(cols);
-    final text = _truncateToWidth(chinese, w);
-    final left = (w - displayWidth(text)) ~/ 2; // 左右居中
+  final parts = <String>[
+    if (western.isNotEmpty) western,
+    if (chinese.isNotEmpty) chinese,
+  ];
+  if (parts.isEmpty) return out;
+
+  final text = parts.join(' ');
+  final scale = _headlineScale(text, cols, kKitchenBadgeScale);
+  final w = scale.columnsFor(cols);
+  final display = _truncateToWidth(text, w);
+
+  if (!framed && chinese.isNotEmpty) {
+    // 58mm 堂食 / 外卖：中文徽标仍强制 GBK 原始行。
+    final left = (w - displayWidth(display)) ~/ 2;
     out.add(TicketRow.bytes(
-      padCenter(text, w),
-      gbkLineBytes(text, scale: scale, leadingSpaces: left, bold: true),
+      padCenter(display, w),
+      gbkLineBytes(display, scale: scale, leadingSpaces: left, bold: true),
       scale: scale,
       bold: true,
     ));
+  } else {
+    // 80mm 堂食：纯文本行，交给边纹框统一加特大号 ◆。
+    out.add(TicketRow.bold(padCenter(display, w), scale));
   }
+  return out;
+}
+
+/// 把定制项 / 备注打包成**居中显示的行**：
+/// 一行尽量多放几个，用 ` / ` 分隔；**每个备注本身不拆行**，
+/// 右边放不下就整体换到下一行。只有单条备注本身比整张纸还宽时才按纸宽折
+/// （这种极端情况不拆就必然丢字）。
+List<String> _packNoteLines(List<String> items, int width) {
+  const sep = ' / ';
+  final sepW = displayWidth(sep);
+  final out = <String>[];
+  var current = '';
+
+  for (final raw in items) {
+    final item = raw.trim();
+    if (item.isEmpty) continue;
+    final itemW = displayWidth(item);
+
+    // 单条备注比整张纸还宽：只能按纸宽折，不能丢字。
+    if (itemW > width) {
+      if (current.isNotEmpty) {
+        out.add(current);
+        current = '';
+      }
+      out.addAll(_wrapToWidth(item, width));
+      continue;
+    }
+
+    if (current.isEmpty) {
+      current = item;
+    } else if (displayWidth(current) + sepW + itemW <= width) {
+      current = '$current$sep$item';
+    } else {
+      out.add(current);
+      current = item;
+    }
+  }
+  if (current.isNotEmpty) out.add(current);
   return out;
 }
 
 /// 这一行要打的**备注条目**：定制项在前，然后每条特别备注（都是单独的字符串）。
 ///
-/// 为什么拆开：第一条要跟在菜名右边（同一行），**剩下的一条一行**从最左边打
-/// （见 `buildKitchenRows` ④段）—— 拼成一长串就没法分了。
+/// 为什么拆开：现在按 [#_packNoteLines] 打包成多行，每一条都保持完整；
+/// 拼成一长串就没法在换行时保住单条备注的完整性。
 List<String> _noteItems(OrderLine l) {
   final out = <String>[
     for (final o in l.options)
@@ -1141,7 +1236,11 @@ String? kitchenQtyShorthandLabel(OrderLine line, {String codec = 'gbk'}) {
 String _qtyCell(OrderLine l, int width, String codec) {
   final shorthand = kitchenQtyShorthandLabel(l, codec: codec);
   if (shorthand != null) {
-    return displayWidth(shorthand) <= width ? shorthand : '${l.quantity}';
+    // 数量列固定占 width，但至少要给菜名留 2 格；例如 150 份 Mediano = `150/2`
+    // 正好占满 5 格，菜名会贴死，所以退回真实份数。
+    return displayWidth(shorthand) <= width - 2
+        ? shorthand
+        : '${l.quantity}';
   }
   final unit = l.unit.trim();
   final plain = '${l.quantity}';

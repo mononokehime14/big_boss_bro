@@ -267,7 +267,10 @@ List<int> buildEscPosBytes(
 }) {
   final out = <int>[];
   out.addAll([0x1B, 0x40]); // 初始化
-  if (fontA) out.addAll([0x1B, 0x4D, 0x00]); // ESC M 0 → Font A
+  // ESC M 0 = Font A（12×24），ESC M 1 = Font B（9×17）。
+  // 以前 `fontA == false` 时**什么都不发**，打印机停在初始化后的默认字体，
+  // 很多机器默认还是 Font A —— 设置里的「Font A 关闭」看起来没效果。
+  out.addAll([0x1B, 0x4D, fontA ? 0x00 : 0x01]);
   if (codec == 'gbk') out.addAll([0x1C, 0x26]); // FS & → 中文模式（GBK）
   out.addAll([0x1B, 0x61, 0x00]); // 左对齐
   if (lineSpacingDots != null) out.addAll(setLineSpacing(lineSpacingDots));

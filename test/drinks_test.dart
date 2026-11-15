@@ -145,6 +145,42 @@ void main() {
           ),
         );
 
+    test('饮料行紧凑：数量、名字、备注挤在同一行，左对齐', () {
+      const lines = [
+        OrderLine(
+          name: '可乐',
+          quantity: 2,
+          unitPrice: 5,
+          notes: ['不要冰', '少糖'],
+        ),
+      ];
+      final rows = buildKitchenRows(ticket(lines, drinksFrom: 0));
+      final drink = rows.firstWhere((r) => r.text.contains('可乐'));
+      expect(drink.scale, TicketScale.large);
+      expect(drink.bold, isFalse);
+      expect(drink.text.startsWith('2  可乐'), isTrue,
+          reason: '数量 + 空两格 + 名字：`${drink.text}`');
+      expect(drink.text, contains('不要冰'));
+      expect(drink.text, contains('少糖'));
+      expect(drink.text.startsWith(' '), isFalse, reason: '饮料从左边开始');
+    });
+
+    test('饮品单位写成 "1" 时，不会出现 "1 1" 两个 1（Slush 那个 bug）', () {
+      const lines = [
+        OrderLine(
+          name: 'Slush',
+          quantity: 1,
+          unitPrice: 8,
+          unit: '1',
+        ),
+      ];
+      final rows = buildKitchenRows(ticket(lines, drinksFrom: 0));
+      final drink = rows.firstWhere((r) => r.text.contains('Slush'));
+      expect(drink.text.startsWith('1  Slush'), isTrue,
+          reason: '只打份数，不带单位：`${drink.text}`');
+      expect(drink.text.startsWith('1 1'), isFalse);
+    });
+
     test('drinksFrom 那行前面插一条虚线；没有饮料就只有结尾那条', () {
       const lines = [
         OrderLine(name: '牛肉炒饭', quantity: 1, unitPrice: 28),
