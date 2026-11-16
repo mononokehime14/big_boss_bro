@@ -74,9 +74,21 @@ class L10n {
     // ---- 菜品搜索（点单区右上角那个放大镜）----
     'menu.search': '搜索菜品',
     'menu.search.none': '没有搜到菜品',
-    // ---- 「⋮」里的两个操作：移动单子 / 分单 ----
+    // ---- 「⋮」里的操作：移动单子 / 合并单子 / 分单 ----
     'cart.move': '移动单子',
     'cart.split': '分单',
+    'cart.merge': '合并单子',
+    // ---- 合并单子 ----
+    'merge.title': '合并单子',
+    'merge.source': '勾选要合并的单子',
+    'merge.target': '合并到哪张单（保留）',
+    'merge.empty': '至少要有两张进行中的单',
+    'merge.needTwo': '至少勾选两张单子',
+    'merge.noTarget': '请选择要保留的那张单',
+    'merge.confirmTitle': '确认合并？',
+    'merge.confirmBody':
+        '会把勾选单子的菜品全部合并到选中的那张单里，其他单子会被删除，不能撤销。',
+    'merge.done': '已合并单子',
     'move.title': '移动单子',
     'move.source': '当前单子',
     'move.target': '移到哪张桌',
@@ -582,9 +594,21 @@ class L10n {
     // ---- 菜品搜索（点单区右上角那个放大镜）----
     'menu.search': 'Buscar platillo',
     'menu.search.none': 'No se encontró ningún platillo',
-    // ---- 「⋮」里的两个操作：移动单子 / 分单 ----
+    // ---- 「⋮」里的操作：移动单子 / 合并单子 / 分单 ----
     'cart.move': 'Mover pedido',
     'cart.split': 'Dividir cuenta',
+    'cart.merge': 'Unir pedidos',
+    // ---- 合并单子 ----
+    'merge.title': 'Unir pedidos',
+    'merge.source': 'Marca los pedidos a unir',
+    'merge.target': 'Unir en este pedido (se conserva)',
+    'merge.empty': 'Necesitas al menos dos pedidos abiertos',
+    'merge.needTwo': 'Marca al menos dos pedidos',
+    'merge.noTarget': 'Elige el pedido que se conserva',
+    'merge.confirmTitle': '¿Confirmar unión?',
+    'merge.confirmBody':
+        'Todos los platillos de los pedidos marcados se unirán al pedido elegido; los demás se eliminarán. No se puede deshacer.',
+    'merge.done': 'Pedidos unidos',
     'move.title': 'Mover pedido',
     'move.source': 'Pedido actual',
     'move.target': 'Mover a la mesa',
@@ -1084,9 +1108,21 @@ class L10n {
     // ---- 菜品搜索（点单区右上角那个放大镜）----
     'menu.search': 'Search dishes',
     'menu.search.none': 'No dishes found',
-    // ---- 「⋮」里的两个操作：移动单子 / 分单 ----
+    // ---- 「⋮」里的操作：移动单子 / 合并单子 / 分单 ----
     'cart.move': 'Move order',
     'cart.split': 'Split bill',
+    'cart.merge': 'Merge orders',
+    // ---- 合并单子 ----
+    'merge.title': 'Merge orders',
+    'merge.source': 'Select orders to merge',
+    'merge.target': 'Merge into this order (keep)',
+    'merge.empty': 'You need at least two open orders',
+    'merge.needTwo': 'Select at least two orders',
+    'merge.noTarget': 'Choose the order to keep',
+    'merge.confirmTitle': 'Confirm merge?',
+    'merge.confirmBody':
+        'All items from the selected orders will be merged into the chosen order; the others will be deleted. This cannot be undone.',
+    'merge.done': 'Orders merged',
     'move.title': 'Move order',
     'move.source': 'Current order',
     'move.target': 'Move to table',

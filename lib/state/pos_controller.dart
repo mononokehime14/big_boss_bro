@@ -1271,6 +1271,77 @@ class PosController extends ChangeNotifier {
     return _orders[i];
   }
 
+  /// **合并单子**：把 [sourceIds] 里的单子全部并进 [targetId]。
+  ///
+  /// 规则：
+  /// - 只处理**进行中**的单子；目标必须是母单（分单不拿来当合并目标）；
+  /// - 菜品 / 饮料 / 定制项 / 备注、每行的 `sentQty` 原样带过去，
+  ///   所以并完之后厨房要补打的份数不会乱；
+  /// - 目标单的桌号 / 外卖类型 / 名字 / 折扣 / 税保持不动，金额按目标单重算；
+  /// - 其他单子删除（进「待删除」名单，后台下次同步也会删）；
+  /// - 被删单子下面如果还有分单，自动改挂到目标单下，避免留下找不到母单的孤儿。
+  ///
+  /// 返回合并后的目标单；失败（目标不存在 / 没有可合并的源单）返回 null。
+  Order? mergeOrders(List<String> sourceIds, String targetId) {
+    final ti = _indexOfOrder(targetId);
+    if (ti < 0) return null;
+    final target = _orders[ti];
+    if (!target.isInProgress || target.isSplit) return null;
+
+    final ids = sourceIds
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty && e != targetId)
+        .toSet();
+    if (ids.isEmpty) return null;
+
+    final sources = _orders
+        .where((o) => o.isInProgress && ids.contains(o.id))
+        .toList();
+    if (sources.isEmpty) return null;
+
+    // 目标 + 所有源单的菜，按原顺序拼起来（不同单子的菜不合并成一行，
+    // 避免把两个单子的 `sentQty` 混在一起）。
+    final merged = <OrderLine>[
+      ...target.lines,
+      for (final s in sources) ...s.lines,
+    ];
+    _orders[ti] = _withLines(target, merged).touch(deviceId: deviceId);
+
+    // 源单删除；它们的分单改挂到目标单下。
+    final deleted = sources.map((s) => s.id).toSet();
+    _orders.removeWhere((o) => deleted.contains(o.id));
+    for (var k = 0; k < _orders.length; k++) {
+      final s = _orders[k];
+      if (s.isInProgress && deleted.contains(s.parentId)) {
+        _orders[k] = s
+            .copyWith(
+              parentId: target.id,
+              table: target.isTakeaway ? '' : target.table,
+              orderType: target.orderType,
+              label: target.label,
+              waitMinutes: target.waitMinutes,
+            )
+            .touch(deviceId: deviceId);
+      }
+    }
+    for (final id in deleted) {
+      if (!_pendingDeleted.contains(id)) _pendingDeleted.add(id);
+    }
+    unawaited(_persistDeleted());
+
+    // 合并完直接盯住目标单，收银员接着点菜 / 结账。
+    _focusedOrderId = target.id;
+    _selectedType = target.orderType;
+    _selectedTable = target.isTakeaway ? '' : target.table;
+    _selectedTakeawayLabel = target.isTakeaway ? target.label.trim() : '';
+    _lastTouchedOrderId = target.id;
+
+    notifyListeners();
+    _persistOrders();
+    final resultIndex = _indexOfOrder(target.id);
+    return resultIndex < 0 ? null : _orders[resultIndex];
+  }
+
   /// **分单 / 移回母单**：把 [sourceId] 这张单里 [indexes] 这几行挪到别的单上
   /// （客人分开付钱，或者分错了再挪回去）。
   ///

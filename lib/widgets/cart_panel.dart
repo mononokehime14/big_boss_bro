@@ -14,6 +14,7 @@ import '../utils/order_label.dart';
 import '../utils/pricing.dart';
 import 'custom_item_dialog.dart';
 import 'item_customize_dialog.dart';
+import 'merge_orders_dialog.dart';
 import 'move_order_dialog.dart';
 import 'takeaway_name_dialog.dart';
 
@@ -789,8 +790,9 @@ class _CartPanelState extends State<CartPanel> {
 
   /// 桌号 / 外卖 下拉旁边那个「**⋮**」：用得少、但不该占地方的操作放这里。
   ///
-  /// 三条：
+  /// 四条：
   /// - **移动单子**（员工选错桌时用）→ 弹窗里左边挑单、右边挑桌；
+  /// - **合并单子**（几张单并成一张）→ 勾选多张、再选保留哪一张；
   /// - **分单**（客人分开付钱）→ 去分单界面；
   /// - **清空** → **把这张桌/外卖的整张单删掉**（连购物车里没保存的菜一起清空）。
   ///   有单的时候就先弹一次确认（`cart.deleteOrder`），没单就只是清购物车。
@@ -820,6 +822,13 @@ class _CartPanelState extends State<CartPanel> {
                     ? ''
                     : (open.isSplit ? open.parentId : open.id),
               );
+            case _kMergeOrder:
+              showMergeOrdersDialog(
+                context,
+                orderId: open == null
+                    ? ''
+                    : (open.isSplit ? open.parentId : open.id),
+              );
             case _kSplitBill:
               if (open != null) showSplitBillScreen(context, open.id);
           }
@@ -834,6 +843,18 @@ class _CartPanelState extends State<CartPanel> {
                 const Icon(Icons.swap_horiz, size: 20),
                 const SizedBox(width: 10),
                 Text(L10n.t('cart.move')),
+              ],
+            ),
+          ),
+          PopupMenuItem<String>(
+            value: _kMergeOrder,
+            // 至少两张进行中的单才有合并的意义
+            enabled: pos.inProgressParents.length >= 2,
+            child: Row(
+              children: [
+                const Icon(Icons.merge_type, size: 20),
+                const SizedBox(width: 10),
+                Text(L10n.t('cart.merge')),
               ],
             ),
           ),
@@ -944,6 +965,9 @@ const String _kMoveOrder = '__move_order__';
 
 /// 「⋮」菜单里「分单」那一项的值。
 const String _kSplitBill = '__split_bill__';
+
+/// 「⋮」菜单里「合并单子」那一项的值。
+const String _kMergeOrder = '__merge_order__';
 
 /// **已下厨**那一行的底色（浅绿）—— 只靠颜色区分，不写字、不占地方。
 const Color _kSentBg = Color(0xFFF1F8F3);
